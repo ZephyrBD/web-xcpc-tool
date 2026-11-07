@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "xcpcio"
+
+# xcpcio is a vendored pnpm workspace with its own catalog and lockfile;
+# keep per-project lockfiles so root installs don't resolve its deps.
+sharedWorkspaceLockfile: false
