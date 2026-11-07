@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { Hono } from "hono";
 import { setDataDir } from "./store/store";
 import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 import { createApp } from "./server";
@@ -16,7 +17,7 @@ cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 setDataDir(DATA_DIR);
 let server: Bun.Server<never> | null = null;
 const app = createApp(cfg, { server: { requestIP: (req) => server?.requestIP(req) ?? null } });
-const serving = cfg.contextPath ? app.basePath(cfg.contextPath) : app;
+const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
 
 server = Bun.serve({
   fetch: serving.fetch,
