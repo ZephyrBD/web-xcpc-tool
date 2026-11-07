@@ -95,3 +95,7 @@ xcpcio/.claude
 ### superpowers worktrees ###
 .worktrees/
 .superpowers/
+
+### ts monorepo ###
+data/
+node_modules/

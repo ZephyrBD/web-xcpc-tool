@@ -1,0 +1,13 @@
+{
+  "name": "@cuitxcpctool/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "zod": "^3.24.0"
+  }
+}

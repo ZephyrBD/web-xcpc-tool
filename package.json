@@ -1,0 +1,8 @@
+{
+  "name": "cuitxcpctool",
+  "private": true,
+  "scripts": {
+    "server": "bun run --cwd apps/server src/index.ts",
+    "test": "bun test apps/server"
+  }
+}
