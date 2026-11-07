@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, spyOn } from "bun:test";
 import * as realFs from "node:fs";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonStore, setDataDir } from "./store";
@@ -75,6 +75,14 @@ describe("JsonStore", () => {
     expect(() => store.load()).toThrow(file);
   });
 
+  it("load throws an Error naming the tmp file when only a corrupt tmp exists", () => {
+    const dir = makeDir();
+    const file = join(dir, "data.json");
+    writeFileSync(file + ".tmp", "{oops", "utf8");
+    const store = new JsonStore<number>(file, 0);
+    expect(() => store.load()).toThrow(file + ".tmp");
+  });
+
   it("load recovers from the tmp file when the main file is missing", () => {
     const dir = makeDir();
     const file = join(dir, "data.json");
@@ -119,6 +127,5 @@ describe("leftover tmp handling on save", () => {
     const store = new JsonStore<number>(file, 0);
     store.save(3);
     expect(JSON.parse(readFileSync(file, "utf8"))).toBe(3);
-    unlinkSync(file);
   });
 });

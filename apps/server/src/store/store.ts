@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 let dataDir = "";
 
 /** Set the base directory used to resolve relative store paths. */
+// relative paths: dataDir if set, else CWD
 export function setDataDir(dir: string): void {
   dataDir = dir;
 }
@@ -36,10 +37,16 @@ export class JsonStore<T> {
     const tmpPath = this.filePath + ".tmp";
     if (existsSync(tmpPath)) {
       const raw = readFileSync(tmpPath, "utf8");
-      const value = JSON.parse(raw) as T;
+      let value: T;
+      try {
+        value = JSON.parse(raw) as T;
+      } catch (e) {
+        // corrupt tmp is unrecoverable — surface the path like the main-file branch
+        throw new Error(
+          `Failed to parse store file ${tmpPath}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
       // Recover: promote the tmp file to the main file.
-      this.ensureDir();
-      writeFileSync(tmpPath, raw, "utf8");
       renameSync(tmpPath, this.filePath);
       return value;
     }
