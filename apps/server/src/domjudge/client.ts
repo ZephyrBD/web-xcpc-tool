@@ -43,6 +43,17 @@ export class DjApiError extends Error {
   }
 }
 
+export type DjJudgementType = {
+  id: string;
+  sorting_key?: string;
+};
+
+export type DjProblem = {
+  id: string;
+  label: string;
+  name: string;
+};
+
 export class DjClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -81,6 +92,14 @@ export class DjClient {
 
   getSubmissions(contestId: string): Promise<DjSubmission[]> {
     return this.get<DjSubmission[]>(`contests/${contestId}/submissions`);
+  }
+
+  getJudgementTypes(contestId: string): Promise<DjJudgementType[]> {
+    return this.get<DjJudgementType[]>(`contests/${contestId}/judgement-types`);
+  }
+
+  getProblems(contestId: string): Promise<DjProblem[]> {
+    return this.get<DjProblem[]>(`contests/${contestId}/problems`);
   }
 
   getJudgings(contestId: string, since?: string): Promise<DjJudging[]> {

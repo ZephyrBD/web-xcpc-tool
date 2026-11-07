@@ -12,12 +12,14 @@ import { verifyClient } from "./domjudge/verify";
 import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
+import type { BalloonService } from "./balloon/service";
 
 export type Deps = {
   dataDir: string;
   authQueue: AuthQueue;
   printQueue: PrintQueue;
   bus: SseBus;
+  balloonService?: BalloonService;
   /** Bun's Server is structurally compatible with this shape. */
   server?: { requestIP(req: Request): { address: string } | null };
 };
@@ -131,6 +133,22 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   app.post("/admin/api/auth-tasks/:id/reject", (c) => {
     const t = queue.reject(c.req.param("id"));
+    if (!t) return c.json({ error: "task not found" }, 404);
+    return c.json(t);
+  });
+
+  app.get("/admin/api/balloon-tasks", (c) => {
+    const svc = deps?.balloonService;
+    if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
+    const status = c.req.query("status");
+    const valid = ["pending", "delivered"] as const;
+    return c.json(svc.list(valid.includes(status as never) ? (status as never) : undefined));
+  });
+
+  app.post("/admin/api/balloon-tasks/:id/ack", (c) => {
+    const svc = deps?.balloonService;
+    if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
+    const t = svc.ack(c.req.param("id"));
     if (!t) return c.json({ error: "task not found" }, 404);
     return c.json(t);
   });
