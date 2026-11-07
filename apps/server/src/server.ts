@@ -12,6 +12,8 @@ import { SseBus } from "./sse/bus";
 export type Deps = {
   dataDir: string;
   authQueue: AuthQueue;
+  /** Bun's Server is structurally compatible with this shape. */
+  server?: { requestIP(req: Request): { address: string } | null };
 };
 
 const CAPTURE_FILE = "fingerprints.jsonl";
@@ -32,19 +34,27 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   }
 
   app.use("*", async (c, next) => {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of c.req.raw.headers.entries()) {
+      headers[k] = v;
+    }
+    const fp: ClientFingerprint = {
+      ip: deps?.server?.requestIP(c.req.raw)?.address ?? "unknown",
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      headers,
+    };
     if (capture) {
-      const headers: Record<string, string> = {};
-      for (const [k, v] of c.req.raw.headers.entries()) {
-        headers[k] = v;
-      }
-      const fp: ClientFingerprint = {
-        ip: "unknown",
-        method: c.req.method,
-        path: new URL(c.req.url).pathname,
-        headers,
-      };
       capture.record(fp);
-      identifyClient(fp, cfg.oms);
+    }
+    const result = identifyClient(fp, cfg.oms);
+    if (result && deps?.authQueue) {
+      // Plan 2 binds the real examNum; "unknown" is a placeholder until then.
+      deps.authQueue.enqueue({
+        examNum: "unknown",
+        clientId: c.req.raw.headers.get("x-oms-client-id"),
+        strategy: result.strategy,
+      });
     }
     await next();
   });

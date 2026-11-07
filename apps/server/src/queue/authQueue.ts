@@ -68,7 +68,7 @@ export class AuthQueue {
     let updated: AuthTask | null = null;
     this.store.update((cur) =>
       cur.map((t) => {
-        if (t.id !== id) return t;
+        if (t.id !== id || t.status !== "pending") return t;
         updated = { ...t, status };
         return updated;
       }),

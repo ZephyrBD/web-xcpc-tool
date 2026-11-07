@@ -59,6 +59,24 @@ describe("AuthQueue", () => {
     expect(q.list("auto-done").length).toBe(1);
   });
 
+  test("approve on a rejected task returns null and leaves status rejected", () => {
+    const q = makeQueue();
+    const t = q.enqueue({ examNum: "e1", clientId: "c1", strategy: "ua" });
+    q.reject(t.id);
+    expect(q.approve(t.id)).toBeNull();
+    expect(q.list("rejected").map((x) => x.id)).toEqual([t.id]);
+    expect(q.list("approved").length).toBe(0);
+  });
+
+  test("reject on an approved task returns null and leaves status approved", () => {
+    const q = makeQueue();
+    const t = q.enqueue({ examNum: "e1", clientId: "c1", strategy: "ua" });
+    q.approve(t.id);
+    expect(q.reject(t.id)).toBeNull();
+    expect(q.list("approved").map((x) => x.id)).toEqual([t.id]);
+    expect(q.list("rejected").length).toBe(0);
+  });
+
   test("list filters by status and reject transitions to rejected", () => {
     const q = makeQueue();
     const a = q.enqueue({ examNum: "e1", clientId: "c1", strategy: "ua" });

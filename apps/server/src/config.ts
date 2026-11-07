@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
@@ -40,4 +41,21 @@ export function loadConfig(path: string): Config {
 
 export function writeDefaultConfig(path: string): void {
   writeFileSync(path, JSON.stringify(configSchema.parse({}), null, 2));
+}
+
+/** Generate and persist a JWT secret on first launch; returns the secret to use for this run. */
+export function ensureJwtSecret(cfg: Config, configPath: string): string {
+  if (cfg.jwt.secret) return cfg.jwt.secret;
+  const secret = randomBytes(32).toString("hex");
+  let raw: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      raw = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch {
+      raw = {};
+    }
+  }
+  raw.jwt = { ...(typeof raw.jwt === "object" && raw.jwt !== null ? raw.jwt : {}), secret };
+  writeFileSync(configPath, JSON.stringify(raw, null, 2));
+  return secret;
 }

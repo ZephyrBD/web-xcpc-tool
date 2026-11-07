@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { setDataDir } from "./store/store";
-import { loadConfig, writeDefaultConfig } from "./config";
+import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 import { createApp } from "./server";
 
 const CONFIG_PATH = "data/settings.json";
@@ -11,17 +11,14 @@ if (!existsSync(CONFIG_PATH)) {
   writeDefaultConfig(CONFIG_PATH);
 }
 const cfg = loadConfig(CONFIG_PATH);
-
-if (!cfg.jwt.secret) {
-  console.error("FATAL: jwt.secret is empty — set it in data/settings.json before starting the server.");
-  process.exit(1);
-}
+cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 
 setDataDir(DATA_DIR);
-const app = createApp(cfg);
+let server: Bun.Server<never> | null = null;
+const app = createApp(cfg, { server: { requestIP: (req) => server?.requestIP(req) ?? null } });
 const serving = cfg.contextPath ? app.basePath(cfg.contextPath) : app;
 
-Bun.serve({
+server = Bun.serve({
   fetch: serving.fetch,
   port: cfg.port,
 });
