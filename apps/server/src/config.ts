@@ -6,8 +6,12 @@ const configSchema = z.object({
   port: z.number().int().default(8080),
   contextPath: z.string().default("/cxtool"),
   domjudge: z
-    .object({ baseUrl: z.string() })
-    .default({ baseUrl: "" }),
+    .object({
+      baseUrl: z.string().default(""),
+      adminUser: z.string().default(""),
+      adminPassword: z.string().default(""),
+    })
+    .default({ baseUrl: "", adminUser: "", adminPassword: "" }),
   jwt: z
     .object({
       secret: z.string(),

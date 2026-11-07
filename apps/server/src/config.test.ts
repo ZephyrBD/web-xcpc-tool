@@ -36,7 +36,7 @@ describe("writeDefaultConfig", () => {
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
     expect(cfg.contextPath).toBe("/cxtool");
-    expect(cfg.domjudge).toEqual({ baseUrl: "" });
+    expect(cfg.domjudge).toEqual({ baseUrl: "", adminUser: "", adminPassword: "" });
     expect(cfg.jwt.ttlSeconds).toBeGreaterThan(0);
     expect(Array.isArray(cfg.oms.strategies)).toBe(true);
     expect(cfg.oms.capture).toBe(false);
