@@ -10,10 +10,14 @@ import { identifyClient } from "./oms/identify";
 import { SseBus } from "./sse/bus";
 import { verifyClient } from "./domjudge/verify";
 import { handleDjProxy } from "./domjudge/proxy";
+import { PrintQueue } from "./print/queue";
+import { handlePrintCallback } from "./print/callback";
 
 export type Deps = {
   dataDir: string;
   authQueue: AuthQueue;
+  printQueue: PrintQueue;
+  bus: SseBus;
   /** Bun's Server is structurally compatible with this shape. */
   server?: { requestIP(req: Request): { address: string } | null };
 };
@@ -26,8 +30,11 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   const app = new Hono();
 
   const queue = deps?.authQueue ?? new AuthQueue(join(dataDir, "auth-tasks.json"));
-  const bus = new SseBus();
+  const bus = deps?.bus ?? new SseBus();
   queue.onChange((t: AuthTask) => bus.publish("admin", "auth-task", t));
+
+  const printQueue = deps?.printQueue ?? new PrintQueue(join(dataDir, "print-tasks.json"));
+  printQueue.onChange((t) => bus.publish("admin", "print-task", t));
 
   let capture: FingerprintCapture | null = null;
   if (cfg.oms.capture) {
@@ -90,8 +97,25 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     return c.redirect(`${cfg.domjudge.baseUrl}/dj/`, 302);
   });
 
+  // Print callback must be registered BEFORE the /dj/* catch-all proxy.
+  app.post("/dj/print", (c) => handlePrintCallback(c, cfg, printQueue, dataDir));
+
   // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
   app.all("/dj/*", (c) => handleDjProxy(c, cfg));
+
+  app.get("/admin/api/print-tasks", (c) => {
+    const status = c.req.query("status");
+    const valid = ["pending", "printed", "failed"] as const;
+    return c.json(printQueue.list(valid.includes(status as never) ? (status as never) : undefined));
+  });
+
+  app.post("/admin/api/print-tasks/:id/ack", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const status = body?.status === "failed" ? "failed" : "printed";
+    const t = printQueue.ack(c.req.param("id"), status);
+    if (!t) return c.json({ error: "task not found" }, 404);
+    return c.json(t);
+  });
 
   app.get("/admin/api/auth-tasks", (c) => {
     const status = c.req.query("status");

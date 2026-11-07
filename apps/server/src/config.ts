@@ -28,6 +28,9 @@ const configSchema = z.object({
       capture: z.boolean().default(false),
     })
     .default({ strategies: [], uaRegexes: [], capture: false }),
+  print: z
+    .object({ token: z.string().default("") })
+    .default({ token: "" }),
   admin: z
     .object({ username: z.string(), passwordHash: z.string() })
     .default({ username: "admin", passwordHash: "" }),
