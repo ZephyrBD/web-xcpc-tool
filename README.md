@@ -118,7 +118,7 @@ cd vue && npm install && npm run build
 
 ## TypeScript 重写（进行中）
 
-目标：单技术栈（TS 全栈）、单文件部署（`bun build --compile`）、移除 nginx 与数据库，并根治"新版 OMS 客户端识别失效"问题。
+目标：单技术栈（TS 全栈）、Bun 直接运行部署（不打包 exe）、移除 nginx 与数据库，并根治"新版 OMS 客户端识别失效"问题。
 
 - **设计文档**：[docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md](docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md)
 - **实施计划**：[docs/superpowers/plans/](docs/superpowers/plans/)（Plan 1 服务器核心已完成，Plan 2 DOMjudge 集成与 Plan 3 前端/打包待做）
@@ -152,7 +152,7 @@ curl localhost:8080/cxtool/health   # => {"ok":true}
 |---|---|---|
 | Plan 1 | monorepo 脚手架 + 配置/存储/加密/JWT/OMS 识别/认证队列/SSE | ✅ 完成 |
 | Plan 2 | DOMjudge API 客户端、全量反向代理、打印回调、气球任务、榜单数据路由 | ⏳ 待开始 |
-| Plan 3 | 管理端 Vue 重写（Vite）、单 exe 打包与 CI | ⏳ 待开始 |
+| Plan 3 | 管理端 Vue 重写（Vite）、部署脚本与 CI（不打包 exe，目标机安装 Bun） | ⏳ 待开始 |
 
 > 外部榜单功能已停止提供：Plan 2 不包含榜单数据路由，Plan 3 将从仓库移除 `xcpcio/`。
 
