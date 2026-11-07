@@ -8,6 +8,7 @@ import { FingerprintCapture } from "./oms/capture";
 import type { ClientFingerprint } from "./oms/identify";
 import { identifyClient } from "./oms/identify";
 import { SseBus } from "./sse/bus";
+import { verifyClient } from "./domjudge/verify";
 
 export type Deps = {
   dataDir: string;
@@ -60,6 +61,33 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  app.get("/dj/verify", async (c) => {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of c.req.raw.headers.entries()) {
+      headers[k] = v;
+    }
+    const fp: ClientFingerprint = {
+      ip: deps?.server?.requestIP(c.req.raw)?.address ?? "unknown",
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      headers,
+    };
+    const result = await verifyClient(
+      fp,
+      c.req.query("examNum") ?? "",
+      queue.list(),
+      cfg,
+    );
+    if (!result.ok) {
+      return c.json(result, 403);
+    }
+    c.header(
+      "Set-Cookie",
+      `cxtool-token=${result.token}; Path=/dj; HttpOnly; SameSite=Lax`,
+    );
+    return c.redirect(`${cfg.domjudge.baseUrl}/dj/`, 302);
+  });
 
   app.get("/admin/api/auth-tasks", (c) => {
     const status = c.req.query("status");
