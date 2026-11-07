@@ -13,6 +13,11 @@ import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import type { BalloonService } from "./balloon/service";
+import { DjClient, type DjTeam } from "./domjudge/client";
+import { SecretBox, ensureKeyFile } from "./store/secretbox";
+import { JsonStore } from "./store/store";
+import { TeamStore } from "./store/teams";
+import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 
 export type Deps = {
   dataDir: string;
@@ -20,6 +25,9 @@ export type Deps = {
   printQueue: PrintQueue;
   bus: SseBus;
   balloonService?: BalloonService;
+  teamStore?: TeamStore;
+  teamsStore?: JsonStore<DjTeam[]>;
+  djClient?: DjClient;
   /** Bun's Server is structurally compatible with this shape. */
   server?: { requestIP(req: Request): { address: string } | null };
 };
@@ -151,6 +159,45 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const t = svc.ack(c.req.param("id"));
     if (!t) return c.json({ error: "task not found" }, 404);
     return c.json(t);
+  });
+
+  app.get("/admin/api/teams", (c) => {
+    const teamsStore =
+      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+    // Passwords live in a separate store; this response must never contain them.
+    return c.json(teamsStore.load());
+  });
+
+  app.post("/admin/api/teams/sync", async (c) => {
+    const client = deps?.djClient;
+    if (!client) return c.json({ error: "domjudge client unavailable" }, 503);
+    const body = await c.req.json().catch(() => ({}));
+    const contestId = body?.contestId;
+    if (!contestId || typeof contestId !== "string") {
+      return c.json({ error: "contestId required" }, 400);
+    }
+    const teamsStore =
+      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+    try {
+      const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
+      return c.json({ count });
+    } catch {
+      return c.json({ error: "domjudge sync failed" }, 502);
+    }
+  });
+
+  app.post("/admin/api/teams/import-excel", async (c) => {
+    const teamStore =
+      deps?.teamStore ??
+      new TeamStore(join(dataDir, "team-passwords.json"), new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))));
+    const teamsStore =
+      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+    const form = await c.req.formData().catch(() => null);
+    const file = form?.get("file");
+    if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await importTeamsFromExcel(buffer, teamsStore.load(), teamStore);
+    return c.json(result);
   });
 
   app.get("/admin/api/events", (c) => {
