@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Hono } from "hono";
 import { loadConfig } from "../config";
 import { AuthQueue } from "../queue/authQueue";
 import { verifyTeamToken } from "../auth/token";
@@ -16,6 +17,7 @@ function testQueue(): AuthQueue {
 function testCfg() {
   return {
     ...loadConfig("/nonexistent/settings.json"),
+    contextPath: "",
     jwt: { secret: SECRET, ttlSeconds: 600 },
     domjudge: { baseUrl: "http://test.local", adminUser: "", adminPassword: "" },
     oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
@@ -102,7 +104,7 @@ describe("verifyClient", () => {
 });
 
 describe("GET /dj/verify route", () => {
-  test("success redirects to domjudge baseUrl with cxtool-token cookie", async () => {
+  test("success redirects to this server's dj path with cxtool-token cookie", async () => {
     const cfg = testCfg();
     const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
     queue.autoAccept = true;
@@ -113,7 +115,7 @@ describe("GET /dj/verify route", () => {
       redirect: "manual",
     });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("http://test.local/dj/");
+    expect(res.headers.get("location")).toBe("/dj/");
     const cookie = res.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("cxtool-token=");
     expect(cookie).toContain("Path=/dj");
@@ -122,6 +124,26 @@ describe("GET /dj/verify route", () => {
     const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
     const payload = await verifyTeamToken(SECRET, token);
     expect(payload?.examNum).toBe("E456");
+  });
+
+  test("under /cxtool mount, redirect and cookie path carry the contextPath", async () => {
+    const cfg = { ...testCfg(), contextPath: "/cxtool" };
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.autoAccept = true;
+    queue.enqueue({ examNum: "E789", clientId: null, strategy: "ua-regex" });
+    const sub = createApp(cfg, { authQueue: queue });
+    const app = new Hono().route("/cxtool", sub);
+    const res = await app.request("/cxtool/dj/verify?examNum=E789", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/cxtool/dj/");
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("Path=/cxtool/dj");
+    const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
+    const payload = await verifyTeamToken(SECRET, token);
+    expect(payload?.examNum).toBe("E789");
   });
 
   test("unapproved request returns 403 JSON", async () => {

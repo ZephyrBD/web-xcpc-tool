@@ -1,5 +1,8 @@
 import type { Config } from "../config";
 
+/** Hard ceiling for a single DOMjudge API request. */
+export const REQUEST_TIMEOUT_MS = 10_000;
+
 export type DjTeam = {
   id: string;
   icpc_id?: string;
@@ -58,12 +61,14 @@ export class DjClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
-  constructor(cfg: Config["domjudge"], fetchImpl?: typeof fetch) {
+  constructor(cfg: Config["domjudge"], fetchImpl?: typeof fetch, timeoutMs?: number) {
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/";
     this.authHeader =
       "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64");
     this.fetchImpl = fetchImpl ?? fetch;
+    this.timeoutMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
   private async get<T>(path: string): Promise<T> {
@@ -72,6 +77,7 @@ export class DjClient {
     try {
       res = await this.fetchImpl(url, {
         headers: { Authorization: this.authHeader, Accept: "application/json" },
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);

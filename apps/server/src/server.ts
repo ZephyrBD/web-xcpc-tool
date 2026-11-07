@@ -80,8 +80,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  app.get("/dj/verify", async (c) => {
-    const headers: Record<string, string> = {};
+  const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
+
+  app.get("/dj/verify", async (c) => {    const headers: Record<string, string> = {};
     for (const [k, v] of c.req.raw.headers.entries()) {
       headers[k] = v;
     }
@@ -102,9 +103,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     }
     c.header(
       "Set-Cookie",
-      `cxtool-token=${result.token}; Path=/dj; HttpOnly; SameSite=Lax`,
+      `cxtool-token=${result.token}; Path=${djRoot}; HttpOnly; SameSite=Lax`,
     );
-    return c.redirect(`${cfg.domjudge.baseUrl}/dj/`, 302);
+    return c.redirect(`${djRoot}/`, 302);
   });
 
   // Print callback must be registered BEFORE the /dj/* catch-all proxy.
@@ -200,7 +201,12 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const file = form?.get("file");
     if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await importTeamsFromExcel(buffer, teamsStore.load(), teamStore);
+    let result;
+    try {
+      result = await importTeamsFromExcel(buffer, teamsStore.load(), teamStore);
+    } catch {
+      return c.json({ ok: false, reason: "invalid excel file" }, 400);
+    }
     return c.json(result);
   });
 

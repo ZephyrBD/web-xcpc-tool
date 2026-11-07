@@ -63,4 +63,25 @@ describe("DjClient", () => {
       expect(e.message).toContain("http://mock.local/domjudge/api/v4/contests");
     }
   });
+
+  test("fetch that never resolves rejects with DjApiError after timeoutMs", async () => {
+    const fetchImpl = ((input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("timeout")));
+      })) as unknown as typeof fetch;
+    const client = new DjClient(djCfg, fetchImpl, 50);
+    let settled = false;
+    let err: unknown = null;
+    client.getContests().then(
+      () => (settled = true),
+      (e) => {
+        err = e;
+        settled = true;
+      },
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect(settled).toBe(true);
+    expect(err).toBeInstanceOf(DjApiError);
+    expect((err as DjApiError).status).toBe(0);
+  });
 });

@@ -155,8 +155,12 @@ export class BalloonService {
       await this.pollOnce();
       this.consecutiveFailures = 0;
       this.scheduleNext(this.pollIntervalMs);
-    } catch {
+    } catch (err) {
       this.consecutiveFailures++;
+      console.error(
+        `balloon poll failed for contest ${this.contestId}:`,
+        err instanceof Error ? err.message : err,
+      );
       const multiplier = Math.min(2 ** this.consecutiveFailures, MAX_BACKOFF_MULTIPLIER);
       this.scheduleNext(this.pollIntervalMs * multiplier);
     } finally {

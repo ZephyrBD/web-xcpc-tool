@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Hono } from "hono";
 import { loadConfig } from "./config";
 import { AuthQueue } from "./queue/authQueue";
 import { createApp } from "./server";
@@ -9,6 +10,8 @@ import { DjClient } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
 import { JsonStore } from "./store/store";
+import { SecretBox, ensureKeyFile } from "./store/secretbox";
+import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
 
 const CAPTURE_FILE = "fingerprints.jsonl";
@@ -136,6 +139,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
 
   const makeCfg = () => ({
     ...loadConfig("/nonexistent/settings.json"),
+    contextPath: "",
     jwt: { secret: "dod-test-secret", ttlSeconds: 3600 },
     domjudge: {
       baseUrl: `http://127.0.0.1:${upstream.port}`,
@@ -191,6 +195,48 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].status).toBe("pending");
     expect(tasks[0].teamName).toBe("Team X");
     expect(tasks[0].location).toBe("A-101");
+  });
+
+  test("verify → proxy chain works through a /cxtool mount", async () => {
+    const queue = new AuthQueue(join(dataDir, "auth-tasks-mount.json"));
+    queue.autoAccept = true;
+    queue.enqueue({ examNum: "E2", clientId: "client-2", strategy: "ua-regex" });
+    const cfg = { ...makeCfg(), contextPath: "/cxtool" };
+    const app = new Hono().route("/cxtool", createApp(cfg, { dataDir, authQueue: queue }));
+
+    const verifyRes = await app.request("/cxtool/dj/verify?examNum=E2", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7", "x-oms-client-id": "client-2" },
+      redirect: "manual",
+    });
+    expect(verifyRes.status).toBe(302);
+    expect(verifyRes.headers.get("location")).toBe("/cxtool/dj/");
+    const setCookie = verifyRes.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("Path=/cxtool/dj");
+    const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
+
+    const proxied = await app.request("/cxtool/dj/anything", {
+      headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
+    });
+    expect(proxied.status).toBe(200);
+    expect(await proxied.text()).toBe("upstream-ok");
+    expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
+  });
+
+  test("import-excel with an invalid file returns 400 invalid excel file", async () => {
+    const teamStore = new TeamStore(
+      join(dataDir, "team-passwords.json"),
+      new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))),
+    );
+    const app = createApp(makeCfg(), {
+      dataDir,
+      teamStore,
+      teamsStore: new JsonStore(join(dataDir, "teams.json"), []),
+    });
+    const form = new FormData();
+    form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])], "bad.xlsx"));
+    const res = await app.request("/admin/api/teams/import-excel", { method: "POST", body: form });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, reason: "invalid excel file" });
   });
 
   test("team sync refreshes the balloon service label/name lookups", async () => {

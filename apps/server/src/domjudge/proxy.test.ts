@@ -35,8 +35,9 @@ describe("DOMjudge reverse proxy", () => {
     lastReq = null;
   });
 
-  const makeCfg = () => ({
+  const makeCfg = (contextPath = "") => ({
     ...loadConfig("/nonexistent/settings.json"),
+    contextPath,
     jwt: { secret: SECRET, ttlSeconds: 3600 },
     domjudge: { baseUrl: `http://127.0.0.1:${upstreamPort}`, adminUser: "", adminPassword: "" },
   });
@@ -53,8 +54,14 @@ describe("DOMjudge reverse proxy", () => {
     expect(hits).toBe(1);
     expect(lastReq?.method).toBe("GET");
     expect(lastReq?.path).toBe("/api/contests");
-    // token cookie must not leak upstream
+    // other cookies must survive, only cxtool-token is stripped
     expect(lastReq?.cookie).toBeNull();
+
+    const res2 = await app.request("/dj/api/contests", {
+      headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
+    });
+    expect(res2.status).toBe(200);
+    expect(lastReq?.cookie).toBe("DOMjudgeSID=keep");
   });
 
   test("missing cookie returns 401 and upstream hit count stays 0", async () => {
@@ -134,10 +141,11 @@ describe("DOMjudge reverse proxy", () => {
     const { proxyFilter, resolveTarget } = await import("./proxy");
     const cfg = makeCfg();
     const fakeCtx = (path: string) => ({ req: { url: `http://host${path}` } }) as unknown as Context;
-    expect(proxyFilter(fakeCtx("/dj/api/contests"))).toBe("/api/contests");
-    expect(proxyFilter(fakeCtx("/dj/"))).toBe("/");
-    expect(proxyFilter(fakeCtx("/dj"))).toBe("/");
-    expect(proxyFilter(fakeCtx("/djx/api"))).toBeNull();
+    expect(proxyFilter(fakeCtx("/dj/api/contests"), cfg)).toBe("/api/contests");
+    expect(proxyFilter(fakeCtx("/dj/"), cfg)).toBe("/");
+    expect(proxyFilter(fakeCtx("/dj"), cfg)).toBe("/");
+    expect(proxyFilter(fakeCtx("/djx/api"), cfg)).toBeNull();
+    expect(proxyFilter(fakeCtx("/cxtool/dj/api/contests"), makeCfg("/cxtool"))).toBe("/api/contests");
     expect(resolveTarget(cfg, "/api/contests")).toBe(`http://127.0.0.1:${upstreamPort}/api/contests`);
     expect(resolveTarget(cfg, "api/x")).toBe(`http://127.0.0.1:${upstreamPort}/api/x`);
   });
