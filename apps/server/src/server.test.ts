@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "./config";
 import { AuthQueue } from "./queue/authQueue";
 import { createApp } from "./server";
+import { DjClient } from "./domjudge/client";
+import { BalloonService } from "./balloon/service";
+import { PrintQueue } from "./print/queue";
+import { JsonStore } from "./store/store";
+import { SseBus } from "./sse/bus";
 
 const CAPTURE_FILE = "fingerprints.jsonl";
 
@@ -86,5 +91,142 @@ describe("createApp", () => {
     await app.request("/health");
     const fp = JSON.parse(readFileSync(join(dataDir, CAPTURE_FILE), "utf8"));
     expect(fp.ip).toBe("1.2.3.4");
+  });
+});
+
+const TEAMS_JSON = [
+  { id: "t1", icpc_id: "icpc1", name: "Team X", location: { description: "A-101" } },
+];
+const PROBLEMS_JSON = [{ id: "p1", label: "A", name: "Alpha" }];
+const CONTEST_API: Record<string, unknown> = {
+  "/api/v4/contests/C1/teams": TEAMS_JSON,
+  "/api/v4/contests/C1/problems": PROBLEMS_JSON,
+  "/api/v4/contests/C1/judgements": [
+    { id: "j1", submission: "s1", judgement_type_id: "correct" },
+  ],
+  "/api/v4/contests/C1/judgement-types": [{ id: "correct", sorting_key: "correct" }],
+  "/api/v4/contests/C1/submissions": [
+    { id: "s1", problem: "p1", language: "cpp", team: "t1", time: "2026-01-01T00:00:00Z" },
+  ],
+};
+
+const upstreamRequests: Array<{ method: string; path: string }> = [];
+const upstream = Bun.serve({
+  port: 0,
+  fetch: (req) => {
+    const path = new URL(req.url).pathname;
+    upstreamRequests.push({ method: req.method, path });
+    const data = CONTEST_API[path];
+    if (data !== undefined) return Response.json(data);
+    return new Response("upstream-ok", { status: 200 });
+  },
+});
+afterAll(() => upstream.stop(true));
+
+describe("DoD: full verify → proxy → print → admin chain", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-dod-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const makeCfg = () => ({
+    ...loadConfig("/nonexistent/settings.json"),
+    jwt: { secret: "dod-test-secret", ttlSeconds: 3600 },
+    domjudge: {
+      baseUrl: `http://127.0.0.1:${upstream.port}`,
+      adminUser: "admin",
+      adminPassword: "pw",
+    },
+    oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
+    print: { token: "print-tok" },
+  });
+
+  test("verify → cookie → proxy hit → print → admin list share one app instance", async () => {
+    const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
+    queue.autoAccept = true;
+    queue.enqueue({ examNum: "E1", clientId: "client-1", strategy: "ua-regex" });
+    const printQueue = new PrintQueue(join(dataDir, "print-tasks.json"));
+    const app = createApp(makeCfg(), { dataDir, authQueue: queue, printQueue });
+
+    // 1. verify issues the team-token cookie
+    const verifyRes = await app.request("/dj/verify?examNum=E1", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7", "x-oms-client-id": "client-1" },
+    });
+    expect(verifyRes.status).toBe(302);
+    const setCookie = verifyRes.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("cxtool-token=");
+    const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
+
+    // 2. the cookie lets /dj/* reach the mock upstream
+    const proxied = await app.request("/dj/anything", {
+      headers: { cookie: `cxtool-token=${token}` },
+    });
+    expect(proxied.status).toBe(200);
+    expect(await proxied.text()).toBe("upstream-ok");
+    expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
+
+    // 3. print callback writes the PDF and enqueues a pending task
+    const form = new FormData();
+    form.set("file", new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "code.pdf", { type: "application/pdf" }));
+    form.set("location", "A-101");
+    form.set("teamname", "Team X");
+    form.set("teamid", "t1");
+    const printRes = await app.request("/dj/print", {
+      method: "POST",
+      headers: { "org.domjudge.print-token": "print-tok" },
+      body: form,
+    });
+    expect(printRes.status).toBe(200);
+    const pdfDir = join(dataDir, "pdf");
+    expect(readdirSync(pdfDir).length).toBe(1);
+
+    // 4. admin API lists the pending print task
+    const tasks = await (await app.request("/admin/api/print-tasks")).json();
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].status).toBe("pending");
+    expect(tasks[0].teamName).toBe("Team X");
+    expect(tasks[0].location).toBe("A-101");
+  });
+
+  test("team sync refreshes the balloon service label/name lookups", async () => {
+    const cfg = makeCfg();
+    const client = new DjClient(cfg.domjudge);
+    const bus = new SseBus();
+    const balloonService = new BalloonService({
+      client,
+      store: new JsonStore(join(dataDir, "balloon-tasks.json"), []),
+      bus,
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {}, // no background polling in tests
+    });
+    const app = createApp(cfg, {
+      dataDir,
+      djClient: client,
+      teamsStore: new JsonStore(join(dataDir, "teams.json"), []),
+      balloonService,
+    });
+
+    const syncRes = await app.request("/admin/api/teams/sync", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contestId: "C1" }),
+    });
+    expect(syncRes.status).toBe(200);
+    expect(await syncRes.json()).toEqual({ count: 1 });
+
+    // balloon service must resolve team/problem ids via refreshed lookups
+    const created = await balloonService.pollOnce();
+    expect(created).toBe(1);
+    const tasks = await (await app.request("/admin/api/balloon-tasks")).json();
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].teamName).toBe("Team X");
+    expect(tasks[0].problemLabel).toBe("A");
+    expect(tasks[0].location).toBe("A-101");
   });
 });

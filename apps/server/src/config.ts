@@ -32,8 +32,11 @@ const configSchema = z.object({
     .object({ token: z.string().default("") })
     .default({ token: "" }),
   balloon: z
-    .object({ pollIntervalSeconds: z.number().int().positive().default(30) })
-    .default({ pollIntervalSeconds: 30 }),
+    .object({
+      contestId: z.string().default(""),
+      pollIntervalSeconds: z.number().int().positive().default(30),
+    })
+    .default({ contestId: "", pollIntervalSeconds: 30 }),
   admin: z
     .object({ username: z.string(), passwordHash: z.string() })
     .default({ username: "admin", passwordHash: "" }),

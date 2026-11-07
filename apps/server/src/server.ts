@@ -180,6 +180,10 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     try {
       const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
+      if (deps?.balloonService) {
+        const problems = await client.getProblems(contestId).catch(() => []);
+        deps.balloonService.refresh(teamsStore.load(), problems);
+      }
       return c.json({ count });
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
