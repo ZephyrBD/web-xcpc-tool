@@ -19,7 +19,7 @@
 | 进程模型 | **单进程全包**：HTTP API + 托管两个前端静态资源 + 反向代理 DOMjudge + SSE，部署即单可执行文件 |
 | 数据库 | **不引入数据库**。比赛为单日生命周期、数据量几百条；用轻量 JSON 文件存储 + 原子写入（保留升级到 `bun:sqlite` 的余地） |
 | nginx | **从部署中移除**。Node 后端自己作为 DOMjudge 反向代理，验证 token 后转发 |
-| 前端 | `vue/`（管理端，Element Plus）与 `xcpcio/`（榜单 fork）功能保留，构建产物照旧进入单进程的静态资源目录；允许从 vue-cli 迁移到 Vite |
+| 前端 | `vue/`（管理端，Element Plus）功能保留，允许从 vue-cli 迁移到 Vite。**外部榜单（xcpcio/board）功能停止提供**（2026-11-07 用户决定），`xcpcio/` 目录在 Plan 3 从仓库移除 |
 | 仓库结构 | pnpm monorepo（apps/server、apps/admin、apps/board、packages/shared 等） |
 
 ## 3. OMS 客户端识别（本次重构的核心改进）
@@ -51,8 +51,8 @@ pnpm monorepo
 │   ├── server/        # Bun + HTTP 框架，全部后端逻辑
 │   ├── admin/         # 管理端（Vue3 + Element Plus，迁 Vite）
 │   └── board/         # vendored xcpcio fork（保留 pnpm workspace，构建产物出 static/board）
-├── packages/
-│   └── shared/        # API 类型定义（前后端共享 zod/类型）
+└── packages/
+    └── shared/        # API 类型定义（前后端共享 zod/类型）
 └── script/            # 部署脚本、print.sh 等运维产物（保留）
 ```
 
@@ -84,7 +84,7 @@ pnpm monorepo
 ## 8. 设计者拍板记录（builder check 后补充）
 
 - **反代范围**：全量代理 `/dj/*` 到 DOMjudge（静态资源、cookie、提交上传都过代理）；DOMjudge 的 `BaseURL` 配置为本服务地址，消除重定向/绝对路径问题。token 验证收敛在代理层。
-- **榜单数据路由冻结**：board 的四条数据端点（contest list / config / team / run）路径保持现状，xcpcio fork 尽量贴近上游，减少未来合并 upstream 的冲突。
+- **榜单数据路由**：外部榜单功能已停止提供（2026-11-07 用户决定），不再实现 board 数据端点。
 - **认证生命周期沿用现有语义**：无论哪种识别策略命中，都走"认证任务队列 → 管理端审批（含自动通过开关）→ SSE 推送"的既有流程；clientId↔examNum 绑定照旧落 `team-clients` 存储。
 - **管理端前后端彻底重设计**：现有 Vue 代码不要求原样运行，前后端用 `packages/shared` 的共享类型（zod schema）定义新契约。
 - **生产环境（已确认）**：现场服务器为 **Windows**，Chrome `--kiosk-printing` 在同机运行，DOMjudge 在同一内网（Linux 主机）。构建目标以 `windows-x64` 为主，Linux/macOS 为次要产物。

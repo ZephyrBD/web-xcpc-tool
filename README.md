@@ -1,6 +1,9 @@
 # CUIT XCPC TOOL
 
-一个用于简化代码打印和气球打印的XCPC工具，为CUIT的XCPC校赛开发。对接 DOMjudge，提供队伍认证、气球票据、代码打印（含 Chrome kiosk 自动打印）与 xcpcio 外榜。
+一个用于简化代码打印和气球打印的XCPC工具，为CUIT的XCPC校赛开发。对接 DOMjudge，提供队伍认证、气球票据与代码打印（含 Chrome kiosk 自动打印）。
+
+> [!NOTE]
+> 外部榜单（xcpcio/board）功能已停止提供，仓库中的 `xcpcio/` 目录仅为 Java 版遗留构建依赖，将在 Plan 3 中移除。
 
 > [!IMPORTANT]
 > 本项目正在用 **TypeScript + Bun** 重写（见 [重构设计](docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md)）。Java 版仍是当前可用的完整实现；新版已完成服务器核心，DOMjudge 集成与前端迁移见下方 [TypeScript 重写](#typescript-重写进行中)。
@@ -11,7 +14,7 @@
 |---|---|
 | `src/` + `build.gradle` | Java 21 / Spring Boot 4 后端（当前生产版本） |
 | `vue/` | 管理端前端（Vue 3 + Element Plus，vue-cli） |
-| `xcpcio/` | vendored 的 XCPCIO 榜单 fork（pnpm monorepo） |
+| `xcpcio/` | 已停止提供的外榜（xcpcio fork），仅为 Java 版遗留构建依赖 |
 | `apps/server/` | **新**：TypeScript/Bun 后端核心（重写中） |
 | `proxy/` | 独立的 DOMjudge 自动登录反代（Node） |
 | `script/` | 运维产物：nginx 配置示例、`print.sh`、队伍/组织 JSON 生成脚本 |
@@ -102,13 +105,12 @@ java -jar CUITXCPCTool-XXX.jar
 
 ### 构建
 
-1. 需要先构建 `xcpcio/board` 和 `vue`，构建后的文件会自动放入 `static`。
+1. 构建前端 `vue`，构建后的文件会自动放入 `static`。
 
 2. 构建 `jar`。
 
 ```bash
 cd vue && npm install && npm run build
-cd xcpcio && pnpm install && pnpm run build
 ./gradlew clean build
 ```
 
@@ -150,8 +152,10 @@ curl localhost:8080/cxtool/health   # => {"ok":true}
 |---|---|---|
 | Plan 1 | monorepo 脚手架 + 配置/存储/加密/JWT/OMS 识别/认证队列/SSE | ✅ 完成 |
 | Plan 2 | DOMjudge API 客户端、全量反向代理、打印回调、气球任务、榜单数据路由 | ⏳ 待开始 |
-| Plan 3 | 管理端 Vue 重写（Vite）、xcpcio 接入、单 exe 打包与 CI | ⏳ 待开始 |
+| Plan 3 | 管理端 Vue 重写（Vite）、单 exe 打包与 CI | ⏳ 待开始 |
+
+> 外部榜单功能已停止提供：Plan 2 不包含榜单数据路由，Plan 3 将从仓库移除 `xcpcio/`。
 
 ## License
 
-GPL-2.0（见 [LICENSE](LICENSE)）；`xcpcio/` 为 MIT（上游）。
+GPL-2.0（见 [LICENSE](LICENSE)）。
