@@ -9,6 +9,7 @@ import type { ClientFingerprint } from "./oms/identify";
 import { identifyClient } from "./oms/identify";
 import { SseBus } from "./sse/bus";
 import { verifyClient } from "./domjudge/verify";
+import { handleDjProxy } from "./domjudge/proxy";
 
 export type Deps = {
   dataDir: string;
@@ -88,6 +89,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     );
     return c.redirect(`${cfg.domjudge.baseUrl}/dj/`, 302);
   });
+
+  // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
+  app.all("/dj/*", (c) => handleDjProxy(c, cfg));
 
   app.get("/admin/api/auth-tasks", (c) => {
     const status = c.req.query("status");
