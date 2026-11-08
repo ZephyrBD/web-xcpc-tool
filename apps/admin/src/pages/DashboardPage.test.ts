@@ -38,6 +38,10 @@ function makeCodeRow(icpcId: string, withCode: boolean): TeamCodeRow {
   return { icpcId, name: `队伍 ${icpcId}`, teamCode: withCode ? `code-${icpcId}` : null, hasPassword: withCode, djUsername: null }
 }
 
+function makeEntry(icpcId: string, opts?: Partial<LoginHistoryEntry>): LoginHistoryEntry {
+  return { icpcId, teamCode: 'c', at: '2026-11-07T10:00:00.000Z', ip: null, teamName: null, djUsername: null, ...opts }
+}
+
 async function mountPage() {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -67,7 +71,7 @@ describe('DashboardPage', () => {
 
   test('renders four stat cards with counts aggregated from the list APIs', async () => {
     teamCodeRows = [makeCodeRow('t1', true), makeCodeRow('t2', true), makeCodeRow('t3', false)]
-    loginHistory = [{ icpcId: 't1', teamCode: 'c', at: '2026-11-07T10:00:00.000Z', ip: null }]
+    loginHistory = [makeEntry('t1')]
     pendingPrintTasks = [{ id: 'p1' }]
     pendingBalloonTasks = [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }]
 
@@ -107,12 +111,12 @@ describe('DashboardPage', () => {
 
   test('renders the latest login rows with a link to /team-codes', async () => {
     loginHistory = [
-      { icpcId: 't6', teamCode: 'c6', at: '2026-11-07T09:00:00.000Z', ip: null },
-      { icpcId: 't5', teamCode: 'c5', at: '2026-11-07T08:55:00.000Z', ip: null },
-      { icpcId: 't4', teamCode: 'c4', at: '2026-11-07T08:50:00.000Z', ip: null },
-      { icpcId: 't3', teamCode: 'c3', at: '2026-11-07T08:45:00.000Z', ip: null },
-      { icpcId: 't2', teamCode: 'c2', at: '2026-11-07T08:40:00.000Z', ip: null },
-      { icpcId: 't1', teamCode: 'c1', at: '2026-11-07T08:35:00.000Z', ip: null },
+      makeEntry('t6', { at: '2026-11-07T09:00:00.000Z' }),
+      makeEntry('t5', { at: '2026-11-07T08:55:00.000Z' }),
+      makeEntry('t4', { at: '2026-11-07T08:50:00.000Z' }),
+      makeEntry('t3', { at: '2026-11-07T08:45:00.000Z' }),
+      makeEntry('t2', { at: '2026-11-07T08:40:00.000Z' }),
+      makeEntry('t1', { at: '2026-11-07T08:35:00.000Z' }),
     ]
 
     const wrapper = await mountPage()
@@ -126,6 +130,23 @@ describe('DashboardPage', () => {
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
     expect(hrefs).toContain('/team-codes')
+  })
+
+  test('最近登录 renders 「队名（账号名）」 with graceful fallbacks', async () => {
+    loginHistory = [
+      makeEntry('t1', { teamName: '队伍一', djUsername: 'team1095218' }),
+      makeEntry('t2', { teamName: '队伍二' }),
+      makeEntry('t3'),
+    ]
+
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+
+    const rows = wrapper.findAll('.dash-panel')[0].findAll('.panel-row')
+    expect(rows[0].text()).toContain('队伍一（team1095218）')
+    expect(rows[1].text()).toContain('队伍二')
+    expect(rows[2].text()).toContain('t3')
   })
 
   test('renders merged print + balloon job rows sorted by createdAt desc', async () => {

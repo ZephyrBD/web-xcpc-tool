@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElButton, ElDialog, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElProgress, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
+import { loginHistoryLabel } from '@/types'
 import type { LoginHistoryEntry, TeamCodeRow, TeamCodesResponse } from '@/types'
 
 const activeTab = ref<'codes' | 'history'>('codes')
@@ -298,7 +299,7 @@ onMounted(() => void refresh())
               <template #default="{ row }">{{ formatTime((row as LoginHistoryEntry).at) }}</template>
             </el-table-column>
             <el-table-column label="队伍" min-width="140">
-              <template #default="{ row }">{{ (row as LoginHistoryEntry).icpcId }}</template>
+              <template #default="{ row }">{{ loginHistoryLabel(row as LoginHistoryEntry) }}</template>
             </el-table-column>
             <el-table-column label="队伍码" min-width="160">
               <template #default="{ row }">

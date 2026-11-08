@@ -308,10 +308,10 @@ describe('TeamCodesPage', () => {
     expect(text).toContain('所有队伍都还没有队伍码')
   })
 
-  test('history tab renders mocked login history newest first', async () => {
+  test('history tab renders mocked login history newest first with team name labels', async () => {
     loginHistory = [
-      { icpcId: 'icpc2', teamCode: 'bbbbbbbbbbbb', at: '2026-11-07T11:00:00.000Z', ip: null },
-      { icpcId: 'icpc1', teamCode: 'abcdefghjkmn', at: '2026-11-07T10:00:00.000Z', ip: '10.0.0.1' },
+      { icpcId: 'icpc2', teamCode: 'bbbbbbbbbbbb', at: '2026-11-07T11:00:00.000Z', ip: null, teamName: '队伍二', djUsername: 'team2' },
+      { icpcId: 'icpc1', teamCode: 'abcdefghjkmn', at: '2026-11-07T10:00:00.000Z', ip: '10.0.0.1', teamName: null, djUsername: null },
     ]
     const wrapper = await mountPage()
     const tabs = wrapper.findAll('.el-tabs__item')
@@ -323,11 +323,12 @@ describe('TeamCodesPage', () => {
     // el-tabs keeps both panes mounted; scope assertions to the history pane
     const pane = wrapper.find('#pane-history')
     await waitFor(() => pane.findAll('.el-table__row').length >= 2)
-    expect(pane.text()).toContain('icpc2')
+    expect(pane.text()).toContain('队伍二（team2）')
     expect(pane.text()).toContain('icpc1')
     const rows = pane.findAll('.el-table__row')
     expect(rows.length).toBe(2)
-    expect(rows[0].text()).toContain('icpc2')
+    expect(rows[0].text()).toContain('队伍二（team2）')
+    // both enriched fields unknown → falls back to the raw icpcId
     expect(rows[1].text()).toContain('icpc1')
   })
 })

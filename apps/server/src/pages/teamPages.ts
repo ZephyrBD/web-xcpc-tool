@@ -37,6 +37,7 @@ input{width:100%;margin-top:20px;padding:12px 14px;font-size:16px;border:1.5px s
 input:focus{border-color:${accent}}
 button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:600;color:#fff;background:${accent};border:none;border-radius:10px;cursor:pointer}
 button:hover{opacity:.9}
+.hint{margin-top:14px;font-size:13px;color:#8a93a3}
 </style>
 </head>
 <body>
@@ -50,8 +51,26 @@ ${body}
   });
 }
 
+/** ISO datetime → "YYYY-MM-DD HH:MM:SS" in the server's local time (teams read it against the on-screen clock). */
+function formatWindowBound(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function loginWindowLine(teamLogin?: { start: string; end: string }): string {
+  const start = teamLogin?.start ? formatWindowBound(teamLogin.start) : "不限";
+  const end = teamLogin?.end ? formatWindowBound(teamLogin.end) : "不限";
+  return `<p class="hint">登录时段：${escapeHtml(start)}~${escapeHtml(end)}</p>`;
+}
+
 /** Team code typed on the form page (HTTP 200). `next` is preserved as a hidden field. */
-export function verifyFormPage(contextPath: string, hint?: string, next?: string | null): Response {
+export function verifyFormPage(
+  contextPath: string,
+  hint?: string,
+  next?: string | null,
+  teamLogin?: { start: string; end: string },
+): Response {
   return page(
     "队伍登录",
     PALETTE.green,
@@ -62,7 +81,9 @@ ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
 ${next ? `<input type="hidden" name="next" value="${escapeHtml(next)}">` : ""}
 <input name="code" placeholder="请输入队伍码">
 <button type="submit">开始登录</button>
-</form>`,
+</form>
+<p class="hint">${escapeHtml("请查看你屏幕上类似 k3w932jattan 这种形式的代码并输入以登录Domjudge")}</p>
+${loginWindowLine(teamLogin)}`,
   );
 }
 

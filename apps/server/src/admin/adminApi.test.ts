@@ -412,13 +412,27 @@ describe("GET /admin/api/login-history", () => {
   let app: ReturnType<typeof createApp>;
   let headers: Record<string, string>;
   let history: LoginHistoryStore;
+  let teamStore: TeamStore;
 
   beforeEach(async () => {
     dataDir = mkdtempSync(join(tmpdir(), "login-history-api-"));
     history = new LoginHistoryStore(join(dataDir, "login-history.json"));
     history.append({ icpcId: "icpc1", teamCode: "codeA", at: "2026-01-01T08:00:00.000Z", ip: null });
     history.append({ icpcId: "icpc2", teamCode: "codeB", at: "2026-01-01T09:00:00.000Z", ip: "10.0.0.2" });
-    app = createApp(cfg(), { dataDir, loginHistory: history });
+    teamStore = new TeamStore(
+      join(dataDir, "team-passwords.json"),
+      new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))),
+    );
+    teamStore.setPassword("icpc1", "secret-pw-1", "team1095218");
+    app = createApp(cfg(), {
+      dataDir,
+      loginHistory: history,
+      teamStore,
+      teamsStore: new JsonStore(join(dataDir, "teams.json"), [
+        { id: "t1", icpc_id: "icpc1", name: "队伍一" },
+        { id: "t2", icpc_id: "icpc2", name: "队伍二", display_name: "Team Two" },
+      ]),
+    });
     headers = await adminAuthHeaders(cfg());
   });
 
@@ -426,11 +440,29 @@ describe("GET /admin/api/login-history", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  test("returns entries newest first", async () => {
+  test("returns entries newest first, enriched with teamName and djUsername", async () => {
     const res = await app.request("/admin/api/login-history", { headers });
-    const rows = (await res.json()) as Array<{ icpcId: string; teamCode: string; at: string; ip: string | null }>;
+    const rows = (await res.json()) as Array<{
+      icpcId: string; teamCode: string; at: string; ip: string | null; teamName: string | null; djUsername: string | null;
+    }>;
     expect(rows.map((r) => r.icpcId)).toEqual(["icpc2", "icpc1"]);
-    expect(rows[1]).toEqual({ icpcId: "icpc1", teamCode: "codeA", at: "2026-01-01T08:00:00.000Z", ip: null });
+    expect(rows[0]).toEqual({
+      icpcId: "icpc2", teamCode: "codeB", at: "2026-01-01T09:00:00.000Z", ip: "10.0.0.2",
+      teamName: "Team Two", djUsername: null,
+    });
+    expect(rows[1]).toEqual({
+      icpcId: "icpc1", teamCode: "codeA", at: "2026-01-01T08:00:00.000Z", ip: null,
+      teamName: "队伍一", djUsername: "team1095218",
+    });
+  });
+
+  test("unknown teams (deleted from teams.json) get null name and username", async () => {
+    history.append({ icpcId: "gone", teamCode: "codeG", at: "2026-01-01T10:00:00.000Z", ip: null });
+    const res = await app.request("/admin/api/login-history", { headers });
+    const rows = (await res.json()) as Array<{ icpcId: string; teamName: string | null; djUsername: string | null }>;
+    const gone = rows.find((r) => r.icpcId === "gone")!;
+    expect(gone.teamName).toBeNull();
+    expect(gone.djUsername).toBeNull();
   });
 
   test("limit is respected (default 100, capped at 500)", async () => {

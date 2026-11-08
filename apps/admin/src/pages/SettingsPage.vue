@@ -129,6 +129,12 @@ async function generateToken(): Promise<void> {
   form.printToken = randomToken();
 }
 
+/** 清空登录时段，保存后服务端按留空 = 不限制处理。 */
+function clearTeamLogin(): void {
+  form.teamLoginStart = ''
+  form.teamLoginEnd = ''
+}
+
 async function copyToken(): Promise<void> {
   if (!form.printToken) return;
   try {
@@ -215,6 +221,13 @@ onMounted(() => void refresh())
           <span class="field-label">结束时间</span>
           <input v-model="form.teamLoginEnd" class="datetime-input" type="datetime-local" />
         </label>
+        <div class="token-actions">
+          <ElButton
+            size="small"
+            :disabled="form.teamLoginStart === '' && form.teamLoginEnd === ''"
+            @click="clearTeamLogin"
+          >清除时段</ElButton>
+        </div>
       </section>
 
       <section class="settings-card">

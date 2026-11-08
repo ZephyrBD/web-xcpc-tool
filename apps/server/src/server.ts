@@ -79,7 +79,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     // No code in the URL → the team types it on the form page.
     if (raw === undefined || raw.trim() === "") {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
-      return verifyFormPage(cfg.contextPath, hint, next);
+      return verifyFormPage(cfg.contextPath, hint, next, cfg.teamLogin);
     }
     const result = await verifyTeamCode(raw.trim(), teamStore, cfg);
     if (!result.ok) {
@@ -381,7 +381,19 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     if (raw !== undefined && (!Number.isFinite(limit) || limit < 1)) {
       return c.json({ error: "limit must be a positive number" }, 400);
     }
-    return c.json(loginHistory.list(Math.min(Math.trunc(limit), 500)));
+    // Enrich each row with the team's current name and DOMjudge account name;
+    // teams may have been deleted since the login, so both may be null.
+    const nameByIcpcId = new Map(
+      teamsStore.load().map((t) => [teamAccountKey(t), t.display_name?.trim() || t.name]),
+    );
+    const rows = loginHistory
+      .list(Math.min(Math.trunc(limit), 500))
+      .map((e) => ({
+        ...e,
+        teamName: nameByIcpcId.get(e.icpcId) ?? null,
+        djUsername: teamStore.getDjUsername(e.icpcId),
+      }));
+    return c.json(rows);
   });
 
   app.get("/admin/api/events", (c) => {

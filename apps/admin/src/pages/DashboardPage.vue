@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
+import { loginHistoryLabel } from '@/types'
 import type { BalloonTask, LoginHistoryEntry, PrintTask, TeamCodeRow } from '@/types'
 
 const teamCodeRows = ref<TeamCodeRow[]>([])
@@ -118,7 +119,7 @@ onUnmounted(() => {
         </div>
         <ul v-if="recentLogins.length" class="panel-list">
           <li v-for="entry in recentLogins" :key="entry.at" class="panel-row">
-            <span class="row-main">{{ entry.icpcId }}</span>
+            <span class="row-main">{{ loginHistoryLabel(entry) }}</span>
             <span class="row-sub">{{ formatTime(entry.at) }}</span>
           </li>
         </ul>

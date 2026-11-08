@@ -268,6 +268,41 @@ describe('SettingsPage', () => {
     expect(Date.parse(body.teamLogin.end)).toBe(Date.parse('2026-11-08T12:00'))
     settingsView.teamLogin = { start: '', end: '' }
   })
+
+  test('清除时段 empties both datetime inputs and the next save PUTs empty strings', async () => {
+    settingsView.teamLogin = { start: '2026-11-08T02:00:00.000Z', end: '2026-11-08T06:00:00.000Z' }
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+
+    const datetimes = wrapper.findAll('input[type="datetime-local"]')
+    expect((datetimes[0]!.element as HTMLInputElement).value).not.toBe('')
+
+    const clearBtn = wrapper.findAll('button').find((b) => b.text() === '清除时段')!
+    expect(clearBtn).toBeDefined()
+    await clearBtn.trigger('click')
+    await flush()
+
+    expect((datetimes[0]!.element as HTMLInputElement).value).toBe('')
+    expect((datetimes[1]!.element as HTMLInputElement).value).toBe('')
+
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    const body = putCalls[0]!.body as Record<string, { start: string; end: string }>
+    expect(body.teamLogin).toEqual({ start: '', end: '' })
+    settingsView.teamLogin = { start: '', end: '' }
+  })
+
+  test('清除时段 is disabled while both fields are already empty', async () => {
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+    const clearBtn = wrapper.findAll('button').find((b) => b.text() === '清除时段')!
+    expect(clearBtn.attributes('disabled')).toBeDefined()
+  })
 })
 
 function formToken(wrapper: ReturnType<typeof mountPage>): string {

@@ -42,10 +42,19 @@ export interface TeamCodesResponse {
   unassigned: number
 }
 
-/** Entry of GET /admin/api/login-history (newest first). */
+/** Entry of GET /admin/api/login-history (newest first).
+ *  teamName/djUsername are joined server-side and null when the team was deleted or never provisioned. */
 export interface LoginHistoryEntry {
   icpcId: string
   teamCode: string
   at: string
   ip: string | null
+  teamName: string | null
+  djUsername: string | null
+}
+
+/** 「队名（账号名）」 label, falling back to whichever is known, then the raw icpcId. */
+export function loginHistoryLabel(e: Pick<LoginHistoryEntry, 'icpcId' | 'teamName' | 'djUsername'>): string {
+  if (e.teamName && e.djUsername) return `${e.teamName}（${e.djUsername}）`
+  return e.teamName || e.djUsername || e.icpcId
 }
