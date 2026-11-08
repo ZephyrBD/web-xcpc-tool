@@ -1,11 +1,11 @@
-# CUIT XCPC TOOL（Web XCPC Tool）
+# Web XCPC Tool
 
 一个用于简化代码打印和气球打印的 XCPC 工具，为 CUIT 的 XCPC 校赛开发。对接 DOMjudge，提供队伍认证（team-code 登录）、DOMjudge 反向代理、代码打印（含 Chrome kiosk 自动打印）、气球票据与管理端控制台。
 
 当前实现为 **TypeScript + Bun 单进程版本**（设计文档见 [docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md](docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md)）。
 
 > [!NOTE]
-> 旧的 Java 版已移至 `legacy/java` 分支（完整保留 `src/`、`vue/` 与 Gradle 构建，可通过 `git show legacy/java:src/main/java` 查看）。主分支不再包含 Java 代码。
+> 项目的早期实现已移至 `legacy/java` 分支（完整保留，可通过 `git show legacy/java:src/main/java` 查看）。主分支不再包含早期代码。
 
 > [!NOTE]
 > 外部榜单（xcpcio/board）功能已停止提供，TS 版不包含榜单数据路由。
@@ -74,4 +74,4 @@ GitHub Actions（`.github/workflows/ci.yml`）在 push/PR 到 main 时分别跑 
 
 ## License
 
-GPL-2.0（见 [LICENSE](LICENSE)），对本仓库全部代码生效；Java 历史版本同样保留在 `legacy/java` 分支。
+GPL-2.0（见 [LICENSE](LICENSE)），对本仓库全部代码生效；早期实现同样保留在 `legacy/java` 分支。
