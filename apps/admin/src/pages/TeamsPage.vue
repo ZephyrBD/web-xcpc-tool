@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElButton, ElInput, ElMessage, ElTable, ElTableColumn } from 'element-plus'
+import { ElButton, ElInput, ElMessage, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
+import { usePagination } from '@/composables/usePagination'
 
 type DjTeam = {
   id: string
@@ -13,6 +14,7 @@ type DjTeam = {
 }
 
 const teams = ref<DjTeam[]>([])
+const { page, pageSize, paged: pagedTeams } = usePagination(teams)
 const contestId = ref('')
 const syncing = ref(false)
 const uploading = ref(false)
@@ -137,7 +139,7 @@ onMounted(() => void refresh())
     </div>
 
     <div v-if="teams.length" class="table-fill-wrap">
-      <el-table :data="teams" height="100%">
+      <el-table :data="pagedTeams" height="100%">
       <el-table-column prop="icpc_id" label="ICPC ID" min-width="110">
         <template #default="{ row }">{{ row.icpc_id ?? '—' }}</template>
       </el-table-column>
@@ -152,6 +154,15 @@ onMounted(() => void refresh())
       </el-table-column>
     </el-table>
     </div>
+    <el-pagination
+      v-if="teams.length"
+      class="table-pagination"
+      v-model:current-page="page"
+      v-model:page-size="pageSize"
+      :total="teams.length"
+      :page-sizes="[20, 50, 100]"
+      layout="total, sizes, prev, pager, next"
+    />
     <div v-else class="empty-state">
       <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
         <circle cx="80" cy="52" r="38" fill="var(--brand-blue)" opacity="0.15" />
@@ -173,6 +184,11 @@ onMounted(() => void refresh())
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.table-pagination {
+  flex-shrink: 0;
+  justify-content: flex-end;
 }
 
 .teams-toolbar {

@@ -207,4 +207,38 @@ describe('TeamsPage', () => {
     expect(messageMock.error).toHaveBeenCalled()
     expect(messageMock.success).not.toHaveBeenCalled()
   })
+
+  test('paginates: 25 teams show 20 rows on page 1 and the rest on page 2', async () => {
+    teams = Array.from({ length: 25 }, (_, i) => makeTeam(`t${i + 1}`))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const rows = () => wrapper.findAll('.el-table__body tbody tr').map((r) => r.text())
+    expect(rows().length).toBe(20)
+    expect(wrapper.text()).toContain('25')
+
+    const { ElPagination } = await import('element-plus')
+    const pagination = wrapper.findComponent(ElPagination)
+    expect(pagination.exists()).toBe(true)
+    pagination.vm.$emit('update:current-page', 2)
+    await flush()
+
+    const page2 = rows()
+    expect(page2.length).toBe(5)
+    expect(page2[0]).toContain('t21')
+  })
+
+  test('switching page size to 50 shows all teams on one page', async () => {
+    teams = Array.from({ length: 25 }, (_, i) => makeTeam(`t${i + 1}`))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const { ElPagination } = await import('element-plus')
+    wrapper.findComponent(ElPagination).vm.$emit('update:page-size', 50)
+    await flush()
+
+    expect(wrapper.findAll('.el-table__body tbody tr').length).toBe(25)
+  })
 })

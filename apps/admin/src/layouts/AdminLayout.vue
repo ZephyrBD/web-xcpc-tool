@@ -89,8 +89,8 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
 }
 
 .layout-header-inner {
-  max-width: 1720px;
-  margin: 0 auto;
+  /* 完全铺满：不设 max-width，全宽下只留固定 40px 边距。 */
+  width: 100%;
   padding: 0 40px;
   height: 64px;
   display: flex;
@@ -171,8 +171,6 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 1720px;
-  margin: 0 auto;
   padding: 24px 40px 32px;
   display: flex;
   flex-direction: column;
