@@ -45,7 +45,7 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-green)',
     blocks: [
       {
-        note: '队伍在 GET /dj/verify 页面输入「队伍码」登录：本工具校验队伍码（大小写不敏感），并检查当前是否在「设置 → 登录时段」允许的时段内；通过后签发 cxtool-token Cookie，队伍浏览器直接进入 /dj/ 反代访问 DOMjudge，无需再输入 DOMjudge 账号密码。队伍访问 DOMjudge 的 /login 时，本工具会在请求头注入 X-DOMjudge-Login / X-DOMjudge-Pass，自动完成登录。',
+        note: '队伍在 GET /dj/verify 页面输入「队伍码」登录：本工具校验队伍码（大小写不敏感），并检查当前是否在「设置 → 登录时段」允许的时段内；通过后签发 cxtool-token Cookie，队伍浏览器直接进入 /dj/ 反代访问 DOMjudge，无需再输入 DOMjudge 账号密码。队伍访问 DOMjudge 的 /login 时，本工具会在请求头注入 X-DOMjudge-Login（用户名）/ X-DOMjudge-Pass（base64 密码），自动完成登录。前提：DOMjudge 配置项 auth_methods 必须包含 xheaders，否则注入的头会被忽略，考生看到的是普通登录页。',
         lines: [{ code: 'GET /dj/verify?code=<队伍码>' }],
       },
       {

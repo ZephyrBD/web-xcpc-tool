@@ -76,6 +76,11 @@ bun run server
 
 > 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍/客户端访问本服务是通过 `http://<host>:<port>/wxt`（OMS 客户端进站地址），两条链路不要混淆。
 
+### DOMjudge 免密登录（X-Headers）前置条件
+
+本工具会在队伍访问 DOMjudge 的 `/login` 时自动注入 `X-DOMjudge-Login`（用户名）与 `X-DOMjudge-Pass`（base64 密码）请求头实现免密登录。前提：DOMjudge 配置项 `auth_methods` 必须包含 `xheaders`（`etc/domserver-config.php` 或 `dbpasswords.secret` 所在配置，改后重启 domserver），否则注入的头会被忽略，考生看到的是普通登录页。该注入匹配 `/login` 的最终路径段，因此 `domjudge.baseUrl` 带路径前缀（如 `https://demo.example.com/demoweb`，登录页为 `/demoweb/login`）时同样生效。
+
+
 ### 生成管理端 passwordHash
 
 `admin.passwordHash` 是 bcrypt 哈希。任选一种方式生成：

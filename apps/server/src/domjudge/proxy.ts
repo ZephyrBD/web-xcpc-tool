@@ -80,9 +80,10 @@ async function forwardToDj(
   }
   for (const h of HOP_BY_HOP) headers[h] = undefined;
   headers["cookie"] = forwardCookie(req.headers.get("cookie"));
-  // DOMjudge processes X-Headers only at /login: inject the team credential
-  // there so the team is logged in without typing a DOMjudge password.
-  if (rest === "/login" || rest.startsWith("/login/")) {
+  // DOMjudge processes X-Headers at its /login URL whatever base-url prefix
+  // precedes it: match the final path segment so /demoweb/login also gets
+  // the team credential injected for passwordless login.
+  if (/(^|\/)login(\/|$)/.test(rest)) {
     const password = teamStore?.getPassword(payload.sub) ?? null;
     // The team key is not the DOMjudge login name; only the username resolved
     // at provision time may be injected. Without it there is nothing to log in.

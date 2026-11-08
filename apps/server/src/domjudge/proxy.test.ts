@@ -237,6 +237,27 @@ describe("DOMjudge reverse proxy", () => {
     expect(lastReq?.headers["x-domjudge-login"]).toBe("team2025001");
   });
 
+  test("login paths under a base-url prefix also get X-Headers injected", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "s3cret pw", "team1095218");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await app.request("/dj/demoweb/login", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.path).toBe("/demoweb/login");
+    expect(lastReq?.headers["x-domjudge-login"]).toBe("team1095218");
+    expect(lastReq?.headers["x-domjudge-pass"]).toBe(Buffer.from("s3cret pw", "utf8").toString("base64"));
+  });
+
+  test("paths merely containing 'login' as a substring do NOT get X-Headers injected", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "s3cret pw", "team1095218");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await app.request("/dj/loginx", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.headers["x-domjudge-login"]).toBeUndefined();
+    expect(lastReq?.headers["x-domjudge-pass"]).toBeUndefined();
+  });
+
   test("a password without a provisioned djUsername is never injected", async () => {
     const store = testStore();
     store.setPassword("2025001", "legacy-pw");
