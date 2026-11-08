@@ -106,7 +106,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       const hint = rawExamNum !== undefined ? "考号不能为空" : undefined;
       return verifyFormPage(cfg.contextPath, hint);
     }
-    const examNum = rawExamNum;
+    const examNum = rawExamNum.trim();
     const result = await verifyClient(
       fp,
       examNum,
@@ -282,6 +282,11 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const parsed = settingsPatchSchema.safeParse(body ?? {});
     if (!parsed.success) {
       return c.json({ error: "配置格式不正确，请检查各字段后重试" }, 400);
+    }
+    const newPassword = parsed.data.admin?.password;
+    // Empty string means "leave unchanged"; only a non-empty blank value is invalid.
+    if (newPassword !== undefined && newPassword !== "" && newPassword.trim() === "") {
+      return c.json({ error: "密码不能是空白字符，请输入至少 6 个非空白字符" }, 400);
     }
     let updated;
     try {

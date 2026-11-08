@@ -151,6 +151,22 @@ describe("settings routes", () => {
     expect(saved.admin.passwordHash.startsWith("$2b$10$")).toBe(true);
   });
 
+  test("PUT with whitespace-only admin.password is rejected with 400 and no hash written", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ admin: { password: "   " } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error?: string };
+    expect(body.error).toContain("密码不能是空白字符");
+    // A rejected PUT must not create settings.json at all.
+    expect(existsSync(join(dataDir, "settings.json"))).toBe(false);
+  });
+
   test("PUT with empty admin.password leaves the existing hash untouched", async () => {
     const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });

@@ -178,6 +178,22 @@ describe('SettingsPage', () => {
     expect(wrapper.text()).toContain('两次输入的新密码不一致')
   })
 
+  test('whitespace-only new password shows inline error and skips the PUT', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const pwInputs = wrapper.findAll('input[type="password"]')
+    await pwInputs[2]!.setValue('   ')
+    await pwInputs[3]!.setValue('   ')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(0)
+    expect(wrapper.text()).toContain('密码不能是空白字符')
+  })
+
   test('matching new password is included in the PUT body', async () => {
     const wrapper = mountPage()
     await flush()

@@ -49,6 +49,11 @@ async function save(): Promise<void> {
     adminPasswordError.value = '两次输入的新密码不一致，请检查后重新输入'
     return
   }
+  // 留空表示不修改；只有输入了非空白但纯空格的内容才拦截。
+  if (form.adminPassword !== '' && form.adminPassword.trim() === '') {
+    adminPasswordError.value = '密码不能是空白字符，建议至少 6 个字符'
+    return
+  }
   adminPasswordError.value = ''
   saving.value = true
   try {

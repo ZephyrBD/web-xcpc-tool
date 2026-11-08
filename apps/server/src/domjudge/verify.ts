@@ -37,7 +37,12 @@ export async function verifyClient(
   if (mine.length === 0) {
     // The examinee typed the examNum; bind it onto this client's "unknown"
     // placeholder task, then re-evaluate with the bound state.
-    const unknown = tasks.find((t) => t.examNum === "unknown" && t.clientId === clientId);
+    // Binding is only for clients that present the OMS client-id header: a
+    // recognized client without one has clientId null, which would match any
+    // orphan "unknown" task and let the typed examNum impersonate it.
+    const unknown =
+      clientId !== null &&
+      tasks.find((t) => t.examNum === "unknown" && t.clientId === clientId);
     if (unknown && bind) {
       bind(unknown, examNum);
       return verifyClient(

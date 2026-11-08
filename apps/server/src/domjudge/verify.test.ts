@@ -309,6 +309,35 @@ describe("GET /dj/verify route", () => {
     expect(bound?.examNum).toBe("E300");
   });
 
+  test("recognized client without client-id header must NOT bind an unknown task with null clientId", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const task = queue.enqueue({ examNum: "unknown", clientId: null, strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E600", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("未识别到考位信息");
+    const stored = queue.list().find((t) => t.id === task.id);
+    expect(stored?.examNum).toBe("unknown");
+  });
+
+  test("typed examNum is trimmed before matching and binding", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "E700", clientId: "client-a", strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=%20%20E700%20", {
+      headers: {
+        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
+        "x-oms-client-id": "client-a",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("等待监考批准");
+  });
+
   test("unrecognized client with typed examNum → miss page, store untouched", async () => {
     const cfg = testCfg();
     const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
