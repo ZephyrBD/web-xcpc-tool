@@ -139,3 +139,7 @@ powershell -File script/deploy/start.ps1   # Windows
 2. 浏览器打开 `http://<host>:8080/cxtool/`，用 `admin.username` + 明文密码登录成功。
 3. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/cxtool`（代理路径为 `/cxtool/dj/...`）。
 4. 用一台队伍机器走一次进站认证 + 打印，确认 OMS 客户端识别生效（如需新增客户端规则，配置 `oms.strategies` / `oms.uaRegexes`）。
+
+## 安全说明
+
+管理端登录 Cookie 未设置 `Secure` 标志：现场部署走的是受信任局域网内的纯 HTTP，浏览器若要求 Secure Cookie 将无法在 HTTP 下送达。若需要把服务暴露到局域网之外，请在前面加一层带 TLS 的反向代理（如 nginx + 证书）。

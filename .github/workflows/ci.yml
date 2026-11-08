@@ -53,6 +53,10 @@ jobs:
         working-directory: apps/admin
         run: bun run build
 
+      - name: typecheck
+        working-directory: apps/admin
+        run: bunx vue-tsc --noEmit
+
       - name: upload static artifact
         uses: actions/upload-artifact@v4
         with:

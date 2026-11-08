@@ -200,6 +200,8 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].status).toBe("pending");
     expect(tasks[0].teamName).toBe("Team X");
     expect(tasks[0].location).toBe("A-101");
+    // server-local pdfPath must not leak to the admin API
+    expect(tasks[0].pdfPath).toBeUndefined();
   });
 
   test("verify → proxy chain works through a /cxtool mount", async () => {

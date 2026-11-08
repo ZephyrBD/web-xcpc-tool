@@ -126,7 +126,10 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   app.get("/admin/api/print-tasks", (c) => {
     const status = c.req.query("status");
     const valid = ["pending", "printed", "failed"] as const;
-    return c.json(printQueue.list(valid.includes(status as never) ? (status as never) : undefined));
+    // pdfPath is server-local; never expose it to the admin UI.
+    return c.json(
+      printQueue.list(valid.includes(status as never) ? (status as never) : undefined).map(({ pdfPath: _p, ...t }) => t),
+    );
   });
 
   app.post("/admin/api/print-tasks/:id/ack", async (c) => {
@@ -134,7 +137,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const status = body?.status === "failed" ? "failed" : "printed";
     const t = printQueue.ack(c.req.param("id"), status);
     if (!t) return c.json({ error: "task not found" }, 404);
-    return c.json(t);
+    const { pdfPath: _p, ...safe } = t;
+    return c.json(safe);
   });
 
   app.get("/admin/api/auth-tasks", (c) => {

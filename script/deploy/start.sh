@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CUIT XCPC TOOL (TS) quick start: install deps, build admin if missing, run server.
 set -euo pipefail
-cd "$(dirname "$0")/../../.."
+cd "$(dirname "$0")/../.."
 
 if ! command -v bun >/dev/null 2>&1; then
   echo "Bun is not installed. See script/deploy/deploy.md" >&2

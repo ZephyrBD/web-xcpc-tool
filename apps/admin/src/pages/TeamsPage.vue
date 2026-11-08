@@ -170,19 +170,19 @@ onMounted(() => void refresh())
 .teams {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: 24px;
 }
 
 .teams-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
+  gap: 16px;
   align-items: stretch;
 }
 
 .toolbar-left {
   display: flex;
-  gap: var(--space-3);
+  gap: 8px;
   align-items: center;
 }
 
@@ -193,9 +193,9 @@ onMounted(() => void refresh())
 .upload-zone {
   flex: 1;
   min-width: 260px;
-  padding: var(--space-3) var(--space-4);
+  padding: 12px 16px;
   border: 1px dashed color-mix(in srgb, var(--brand-blue) 45%, transparent);
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--brand-blue) 6%, transparent);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
@@ -212,22 +212,22 @@ onMounted(() => void refresh())
 
 .upload-title {
   margin: 0;
-  font-size: var(--text-14);
+  font-size: var(--text-15);
   color: var(--brand-blue);
 }
 
 .upload-hint {
   margin: 4px 0 0;
   font-size: var(--text-13);
-  color: var(--text-secondary, #667);
+  color: var(--text-muted);
 }
 
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-8) 0;
+  gap: 8px;
+  padding: 64px 0;
 }
 
 .empty-art {
@@ -237,7 +237,7 @@ onMounted(() => void refresh())
 
 .empty-copy {
   margin: 0;
-  color: var(--text-secondary, #667);
-  font-size: var(--text-14);
+  color: var(--text-muted);
+  font-size: var(--text-15);
 }
 </style>

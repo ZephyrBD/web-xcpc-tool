@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { useSessionStore } from '@/stores/session'
 
 const route = useRoute()
+const router = useRouter()
+const session = useSessionStore()
+
+const authenticated = computed(() => session.token !== null)
+
+function logout(): void {
+  session.logout()
+  void router.push('/login')
+}
 
 const navItems = [
   { path: '/', label: '总览', accent: 'var(--brand-purple)' },
@@ -39,7 +49,8 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
             {{ item.label }}
           </RouterLink>
         </nav>
-        <RouterLink to="/login" class="login-link">登录</RouterLink>
+        <RouterLink v-if="!authenticated" to="/login" class="login-link">登录</RouterLink>
+        <button v-else type="button" class="logout-btn" @click="logout">退出</button>
       </div>
     </header>
     <main class="layout-main">
@@ -126,6 +137,22 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
   color: var(--brand-purple);
   padding: 6px 16px;
   border-radius: var(--radius-pill);
+}
+
+.logout-btn {
+  font-size: var(--text-15);
+  font-weight: 500;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  border-color: var(--brand-red);
+  color: var(--brand-red);
 }
 
 .layout-main {
