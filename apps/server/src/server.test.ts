@@ -409,8 +409,10 @@ describe("static hosting", () => {
 
   test("SPA fallback does not swallow /dj 404s", async () => {
     const res = await makeApp().request("/cxtool/dj/no-such-route");
+    // Team paths answer humans with the exam-number login page.
     expect(res.status).toBe(401);
-    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("输入考号开始认证");
   });
 
   test("non-GET miss does not fall back to index.html", async () => {

@@ -58,7 +58,7 @@ const groups: ApiGroup[] = [
 </script>
 
 <template>
-  <div class="api-list">
+  <div class="api-list page-fill">
     <section v-for="group in groups" :key="group.title" class="api-group">
       <h2 class="group-title" :style="{ color: group.accent }">{{ group.title }}</h2>
       <p v-if="group.note" class="group-note">{{ group.note }}</p>

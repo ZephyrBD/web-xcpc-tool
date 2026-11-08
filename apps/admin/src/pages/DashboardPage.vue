@@ -90,7 +90,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="dash">
+  <div class="dash page-fill">
     <p v-if="allClear" class="dash-clear">现在一切正常，没有待办事项 🎉</p>
     <div class="dash-grid">
       <RouterLink
@@ -147,12 +147,14 @@ onUnmounted(() => {
   margin: 0 0 20px;
   font-size: var(--text-15);
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .dash-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
+  flex-shrink: 0;
 }
 
 .stat-card {
@@ -198,6 +200,8 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   margin-top: 20px;
+  flex: 1;
+  min-height: 0;
 }
 
 .dash-panel {
@@ -205,6 +209,8 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--bg);
+  overflow: auto;
+  min-height: 0;
 }
 
 .panel-head {

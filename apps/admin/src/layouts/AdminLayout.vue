@@ -184,10 +184,13 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .page-header {
   margin-bottom: 24px;
+  flex-shrink: 0;
 }
 
 .page-title {

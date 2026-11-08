@@ -91,8 +91,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="auth-tasks">
-    <el-table v-if="tasks.length" :data="pagedTasks" class="task-table">
+  <div class="auth-tasks page-fill">
+    <div v-if="tasks.length" class="table-fill-wrap">
+      <el-table :data="pagedTasks" class="task-table" height="100%">
       <el-table-column prop="examNum" label="学号" min-width="120" />
       <el-table-column label="客户端" min-width="140">
         <template #default="{ row }">{{ row.clientId ?? '—' }}</template>
@@ -116,7 +117,6 @@ onUnmounted(() => {
       </el-table-column>
     </el-table>
     <el-pagination
-      v-if="tasks.length"
       class="table-pagination"
       v-model:current-page="page"
       v-model:page-size="pageSize"
@@ -124,6 +124,7 @@ onUnmounted(() => {
       :page-sizes="[20, 50, 100]"
       layout="total, sizes, prev, pager, next"
     />
+    </div>
     <el-empty v-else description="当前没有认证任务，一切正常 🙂" />
   </div>
 </template>

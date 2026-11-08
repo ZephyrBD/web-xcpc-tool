@@ -101,7 +101,7 @@ onMounted(() => void refresh())
 </script>
 
 <template>
-  <div class="settings">
+  <div class="settings page-fill">
     <div class="settings-grid">
       <section class="settings-card">
         <h2 class="card-title">DOMjudge 连接</h2>

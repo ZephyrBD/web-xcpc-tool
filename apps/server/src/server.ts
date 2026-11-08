@@ -21,6 +21,7 @@ import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
+import { teamLoginPage, verifyMissPage, verifyPendingPage, verifyRejectedPage } from "./pages/teamPages";
 
 export type Deps = {
   dataDir: string;
@@ -105,7 +106,12 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       cfg,
     );
     if (!result.ok) {
-      return c.json(result, 403);
+      // Team-facing paths always answer humans with HTML (Accept-agnostic);
+      // HTTP status codes keep their semantics (403 miss/rejected, 200 pending).
+      const examNum = c.req.query("examNum") ?? "";
+      if (result.reason === "pending") return verifyPendingPage(examNum);
+      if (result.reason === "rejected") return verifyRejectedPage(examNum);
+      return verifyMissPage(examNum);
     }
     c.header(
       "Set-Cookie",

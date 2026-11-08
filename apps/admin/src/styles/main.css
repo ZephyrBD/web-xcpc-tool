@@ -78,3 +78,28 @@ pre {
   --el-fill-color-blank: var(--bg);
   --el-box-shadow-light: var(--shadow-card);
 }
+
+/*
+ * Full-height pages: page roots opt in via .page-fill so they stretch to the
+ * bottom of .layout-scroll (no dead space below, no outer scrollbar when the
+ * content is short). Tables inside .table-fill-wrap grow to the leftover
+ * height and scroll internally when rows exceed it.
+ */
+.page-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-fill-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-fill-wrap > .el-table {
+  flex: 1;
+  min-height: 0;
+}

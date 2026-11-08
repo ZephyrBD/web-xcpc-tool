@@ -106,7 +106,7 @@ onMounted(() => void refresh())
 </script>
 
 <template>
-  <div class="teams">
+  <div class="teams page-fill">
     <div class="teams-toolbar">
       <div class="toolbar-left">
         <ElInput
@@ -136,7 +136,8 @@ onMounted(() => void refresh())
       </div>
     </div>
 
-    <el-table v-if="teams.length" :data="teams">
+    <div v-if="teams.length" class="table-fill-wrap">
+      <el-table :data="teams" height="100%">
       <el-table-column prop="icpc_id" label="ICPC ID" min-width="110">
         <template #default="{ row }">{{ row.icpc_id ?? '—' }}</template>
       </el-table-column>
@@ -150,6 +151,7 @@ onMounted(() => void refresh())
         <template #default="{ row }">{{ locationText(row as DjTeam) }}</template>
       </el-table-column>
     </el-table>
+    </div>
     <div v-else class="empty-state">
       <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
         <circle cx="80" cy="52" r="38" fill="var(--brand-blue)" opacity="0.15" />

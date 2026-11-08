@@ -3,9 +3,21 @@ import type { AuthTask } from "../queue/authQueue";
 import { signTeamToken } from "../auth/token";
 import { identifyClient, type ClientFingerprint } from "../oms/identify";
 
-export type VerifyResult = { ok: true; token: string } | { ok: false; reason: string };
+export type VerifyFailReason =
+  | "illegal client" // client matched no OMS strategy
+  | "not approved" // recognized, but no task for examNum+clientId
+  | "pending" // task exists, waiting for proctor approval
+  | "rejected"; // task was rejected by the proctor
 
-/** Pure verification: identify → find approved/auto-done task for examNum+clientId → sign team token. */
+export type VerifyResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: VerifyFailReason };
+
+/**
+ * Pure verification: identify → find approved/auto-done task for
+ * examNum+clientId → sign team token. Failing that, report the closest
+ * status (pending / rejected) so the route can render a helpful page.
+ */
 export async function verifyClient(
   fp: ClientFingerprint,
   examNum: string,
@@ -20,14 +32,12 @@ export async function verifyClient(
   )?.[1];
   const clientId = clientIdHeader ?? null;
 
-  const task = tasks.find(
-    (t) =>
-      (t.status === "approved" || t.status === "auto-done") &&
-      t.examNum === examNum &&
-      t.clientId === clientId,
-  );
-  if (!task) return { ok: false, reason: "not approved" };
-
-  const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, examNum);
-  return { ok: true, token };
+  const mine = tasks.filter((t) => t.examNum === examNum && t.clientId === clientId);
+  if (mine.some((t) => t.status === "approved" || t.status === "auto-done")) {
+    const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, examNum);
+    return { ok: true, token };
+  }
+  if (mine.some((t) => t.status === "pending")) return { ok: false, reason: "pending" };
+  if (mine.some((t) => t.status === "rejected")) return { ok: false, reason: "rejected" };
+  return { ok: false, reason: "not approved" };
 }

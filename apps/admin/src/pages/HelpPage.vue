@@ -82,7 +82,7 @@ const sections: HelpSection[] = [
 </script>
 
 <template>
-  <div class="help-page">
+  <div class="help-page page-fill">
     <section v-for="s in sections" :key="s.title" class="help-section">
       <h2 class="section-title" :style="{ color: s.accent }">{{ s.title }}</h2>
       <div v-for="(b, bi) in s.blocks" :key="bi" class="help-block">

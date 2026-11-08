@@ -159,13 +159,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="jobs">
+  <div class="jobs page-fill">
     <el-tabs v-model="activeTab" class="jobs-tabs">
       <el-tab-pane label="打印任务" name="print">
         <div class="print-toolbar">
           <el-switch v-model="autoPrint" active-text="收到新任务自动打印" />
         </div>
-        <el-table v-if="printTasks.length" :data="pagedPrintTasks">
+        <div v-if="printTasks.length" class="table-fill-wrap">
+        <el-table :data="pagedPrintTasks" height="100%">
           <el-table-column prop="location" label="位置" min-width="110" />
           <el-table-column prop="teamName" label="队伍" min-width="140" />
           <el-table-column prop="originalFilename" label="文件名" min-width="180" show-overflow-tooltip />
@@ -190,7 +191,6 @@ onUnmounted(() => {
           </el-table-column>
         </el-table>
         <el-pagination
-          v-if="printTasks.length"
           class="table-pagination"
           v-model:current-page="printPage"
           v-model:page-size="printPageSize"
@@ -198,6 +198,7 @@ onUnmounted(() => {
           :page-sizes="[20, 50, 100]"
           layout="total, sizes, prev, pager, next"
         />
+        </div>
         <div v-else class="empty-state">
           <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
             <circle cx="80" cy="52" r="38" fill="var(--brand-orange)" opacity="0.15" />
@@ -215,7 +216,8 @@ onUnmounted(() => {
         <div class="print-toolbar">
           <el-switch v-model="autoPrintBalloon" active-text="收到新气球自动打印" />
         </div>
-        <el-table v-if="balloonTasks.length" :data="pagedBalloonTasks">
+        <div v-if="balloonTasks.length" class="table-fill-wrap">
+        <el-table :data="pagedBalloonTasks" height="100%">
           <el-table-column prop="problemLabel" label="题目" min-width="90" />
           <el-table-column prop="teamName" label="队伍" min-width="150" />
           <el-table-column label="位置" min-width="110">
@@ -241,7 +243,6 @@ onUnmounted(() => {
           </el-table-column>
         </el-table>
         <el-pagination
-          v-if="balloonTasks.length"
           class="table-pagination"
           v-model:current-page="balloonPage"
           v-model:page-size="balloonPageSize"
@@ -249,6 +250,7 @@ onUnmounted(() => {
           :page-sizes="[20, 50, 100]"
           layout="total, sizes, prev, pager, next"
         />
+        </div>
         <div v-else class="empty-state">
           <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
             <circle cx="80" cy="44" r="26" fill="var(--brand-green)" opacity="0.2" />
@@ -265,6 +267,31 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.jobs-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.jobs-tabs :deep(.el-tabs__header) {
+  flex-shrink: 0;
+}
+
+.jobs-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.jobs-tabs :deep(.el-tab-pane) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .table-pagination {
   margin-top: 12px;
   justify-content: flex-end;
@@ -274,6 +301,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .pill {
@@ -307,8 +335,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   padding: 40px 0;
+  flex: 1;
+  min-height: 0;
 }
 
 .empty-art {

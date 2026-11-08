@@ -146,14 +146,57 @@ describe("GET /dj/verify route", () => {
     expect(payload?.examNum).toBe("E789");
   });
 
-  test("unapproved request returns 403 JSON", async () => {
+  test("unrecognized client returns 403 HTML miss page echoing the exam number", async () => {
     const cfg = testCfg();
     const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
     const app = createApp(cfg, { authQueue: queue });
     const res = await app.request("/dj/verify?examNum=E456", {
+      headers: { "user-agent": "curl/8.0" },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const text = await res.text();
+    expect(text).toContain("E456");
+    expect(text).toContain("未识别到考位信息");
+  });
+
+  test("pending task returns 200 HTML wait page", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "E777", clientId: null, strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E777", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("等待监考批准");
+  });
+
+  test("rejected task returns 403 HTML rejection page", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const task = queue.enqueue({ examNum: "E888", clientId: null, strategy: "ua-regex" });
+    queue.reject(task.id);
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E888", {
       headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
     });
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ ok: false, reason: "not approved" });
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("认证被拒绝");
+  });
+
+  test("pending page renders under a /cxtool mount", async () => {
+    const cfg = { ...testCfg(), contextPath: "/cxtool" };
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "E999", clientId: null, strategy: "ua-regex" });
+    const sub = createApp(cfg, { authQueue: queue });
+    const app = new Hono().route("/cxtool", sub);
+    const res = await app.request("/cxtool/dj/verify?examNum=E999", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
   });
 });
