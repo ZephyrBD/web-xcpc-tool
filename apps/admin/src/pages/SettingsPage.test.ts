@@ -106,10 +106,9 @@ describe('SettingsPage', () => {
     await flush()
     await flush()
 
-    // The print token is the last password-type input on the page.
-    const target = wrapper.findAll('input[type="password"]')[
-      wrapper.findAll('input[type="password"]').length - 1
-    ]!
+    // The print token is the second password-type input on the page
+    // (after the DOMjudge admin password, before the tool password fields).
+    const target = wrapper.findAll('input[type="password"]')[1]!
 
     const genBtn = wrapper.findAll('button').find((b) => b.text() === '生成')!
     expect(genBtn).toBeDefined()
@@ -149,9 +148,70 @@ describe('SettingsPage', () => {
     const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
     expect((body.print as { token: string }).token).toBe(generated)
   })
+
+  test('renders ownership labels for DOMjudge vs tool accounts', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const text = wrapper.text()
+    expect(text).toContain('DOMjudge 平台')
+    expect(text).toContain('DOMjudge 管理员用户名')
+    expect(text).toContain('DOMjudge 管理员密码')
+    expect(text).toContain('本工具自己的管理员账号')
+    expect(text).toContain('新密码')
+    expect(text).toContain('确认新密码')
+  })
+
+  test('mismatched password confirmation shows inline error and skips the PUT', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const pwInputs = wrapper.findAll('input[type="password"]')
+    await pwInputs[2]!.setValue('abc12345')
+    await pwInputs[3]!.setValue('different')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(0)
+    expect(wrapper.text()).toContain('两次输入的新密码不一致')
+  })
+
+  test('matching new password is included in the PUT body', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const pwInputs = wrapper.findAll('input[type="password"]')
+    await pwInputs[2]!.setValue('abc12345')
+    await pwInputs[3]!.setValue('abc12345')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(1)
+    const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    expect((body.admin as Record<string, unknown>).password).toBe('abc12345')
+    expect(JSON.stringify(body)).not.toContain('passwordHash')
+  })
+
+  test('blank password fields omit password from the PUT body', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(1)
+    const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    expect('password' in (body.admin as Record<string, unknown>)).toBe(false)
+  })
 })
 
 function formToken(wrapper: ReturnType<typeof mountPage>): string {
   const passwordInputs = wrapper.findAll('input[type="password"]')
-  return (passwordInputs[passwordInputs.length - 1]!.element as HTMLInputElement).value
+  return (passwordInputs[1]!.element as HTMLInputElement).value
 }

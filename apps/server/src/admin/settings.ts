@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { hashSync } from "bcryptjs";
 import { parseConfig, type Config } from "../config";
 
 /**
@@ -23,7 +24,7 @@ export const settingsPatchSchema = z.object({
     })
     .optional(),
   print: z.object({ token: z.string().optional() }).optional(),
-  admin: z.object({ username: z.string().optional() }).optional(),
+  admin: z.object({ username: z.string().optional(), password: z.string().optional() }).optional(),
 });
 
 export type SettingsPatch = z.infer<typeof settingsPatchSchema>;
@@ -82,7 +83,17 @@ export function applySettingsPatch(cfg: Config, patch: SettingsPatch, settingsPa
   if (patch.print) {
     base.print = { ...current.print, ...(patch.print.token ? { token: patch.print.token } : {}) };
   }
-  if (patch.admin) base.admin = { ...current.admin, ...patch.admin };
+  if (patch.admin) {
+    const { password, ...rest } = patch.admin;
+    // Only "password" comes from the UI; it is hashed here so the raw value
+    // never reaches settings.json. A direct "passwordHash" is stripped by the
+    // schema and can never be injected.
+    base.admin = {
+      ...current.admin,
+      ...rest,
+      ...(password ? { passwordHash: hashSync(password, 10) } : {}),
+    };
+  }
 
   const updated = parseConfig(base);
   const tmpPath = `${settingsPath}.tmp`;

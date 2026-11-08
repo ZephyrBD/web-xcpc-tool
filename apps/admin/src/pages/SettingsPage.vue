@@ -18,11 +18,14 @@ const form = reactive({
   balloonPollIntervalSeconds: 30,
   printToken: '',
   adminUsername: '',
+  adminPassword: '',
+  adminPasswordConfirm: '',
 })
 
 const loading = ref(false)
 const saving = ref(false)
 const printTokenMasked = ref('')
+const adminPasswordError = ref('')
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -42,6 +45,11 @@ async function refresh(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  if (form.adminPassword !== form.adminPasswordConfirm) {
+    adminPasswordError.value = '两次输入的新密码不一致，请检查后重新输入'
+    return
+  }
+  adminPasswordError.value = ''
   saving.value = true
   try {
     await apiFetch<{ note?: string }>('/admin/api/settings', {
@@ -58,13 +66,18 @@ async function save(): Promise<void> {
           pollIntervalSeconds: form.balloonPollIntervalSeconds,
         },
         ...(form.printToken ? { print: { token: form.printToken } } : {}),
-        admin: { username: form.adminUsername },
+        admin: {
+          username: form.adminUsername,
+          ...(form.adminPassword ? { password: form.adminPassword } : {}),
+        },
       }),
     })
     form.domjudgeAdminPassword = ''
     form.printToken = ''
+    form.adminPassword = ''
+    form.adminPasswordConfirm = ''
     await refresh()
-    ElMessage.success('已保存，重启服务后生效')
+    ElMessage.success('已保存，重启服务后生效（新登录密码也需重启后才会启用）')
   } catch {
     ElMessage.error('保存没成功，请检查填写内容后再试')
   } finally {
@@ -105,6 +118,10 @@ onMounted(() => void refresh())
     <div class="settings-grid">
       <section class="settings-card">
         <h2 class="card-title">DOMjudge 连接</h2>
+        <span class="field-help">
+          这里填写的是 <b>DOMjudge 平台</b>的管理员账号（用于本工具调用 DOMjudge 的 API，如同步队伍、拉取判题结果），
+          不是本工具自己的登录账号。
+        </span>
         <label class="field">
           <span class="field-label">Base URL</span>
           <ElInput v-model="form.domjudgeBaseUrl" placeholder="https://domjudge.example.com" />
@@ -117,11 +134,11 @@ onMounted(() => void refresh())
           </span>
         </label>
         <label class="field">
-          <span class="field-label">管理员用户名</span>
-          <ElInput v-model="form.domjudgeAdminUser" placeholder="DOMjudge 管理员账号" />
+          <span class="field-label">DOMjudge 管理员用户名</span>
+          <ElInput v-model="form.domjudgeAdminUser" placeholder="DOMjudge 平台的管理员账号" />
         </label>
         <label class="field">
-          <span class="field-label">管理员密码</span>
+          <span class="field-label">DOMjudge 管理员密码</span>
           <ElInput
             v-model="form.domjudgeAdminPassword"
             type="password"
@@ -161,9 +178,32 @@ onMounted(() => void refresh())
 
       <section class="settings-card">
         <h2 class="card-title">管理端账号</h2>
+        <span class="field-help">
+          这是<b>本工具自己的管理员账号</b>（登录本管理台用），与 DOMjudge 平台的账号无关。
+        </span>
         <label class="field">
           <span class="field-label">用户名</span>
-          <ElInput v-model="form.adminUsername" placeholder="管理端登录用户名" />
+          <ElInput v-model="form.adminUsername" placeholder="本工具管理台登录用户名" />
+        </label>
+        <label class="field">
+          <span class="field-label">新密码</span>
+          <ElInput
+            v-model="form.adminPassword"
+            type="password"
+            show-password
+            placeholder="留空则不修改"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">确认新密码</span>
+          <ElInput
+            v-model="form.adminPasswordConfirm"
+            type="password"
+            show-password
+            placeholder="再次输入新密码"
+          />
+          <span v-if="adminPasswordError" class="field-error">{{ adminPasswordError }}</span>
+          <span v-else class="field-help">修改登录密码保存后，重启服务才会生效。</span>
         </label>
       </section>
     </div>
@@ -213,6 +253,12 @@ onMounted(() => void refresh())
 .field-help {
   font-size: var(--text-13);
   color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.field-error {
+  font-size: var(--text-13);
+  color: var(--el-color-danger, #f56c6c);
   line-height: 1.6;
 }
 

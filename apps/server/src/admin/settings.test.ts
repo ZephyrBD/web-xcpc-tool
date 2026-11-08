@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { compare } from "bcryptjs";
 import { loadConfig } from "../config";
 import { createApp } from "../server";
 import { adminAuthHeaders } from "./auth";
@@ -125,6 +126,62 @@ describe("settings routes", () => {
     });
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
     expect(saved.print.token).toBe("keep-me");
+  });
+
+  test("PUT with admin.password stores a bcrypt hash and never leaks the raw password", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const settingsPath = join(dataDir, "settings.json");
+    const headers = await adminAuthHeaders(cfg);
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ admin: { password: "brand-new-pass" } }),
+    });
+    expect(res.status).toBe(200);
+    const resText = JSON.stringify(await res.json());
+    expect(resText).not.toContain("brand-new-pass");
+    expect(resText).not.toContain("passwordHash");
+
+    const savedRaw = readFileSync(settingsPath, "utf8");
+    expect(savedRaw).not.toContain("brand-new-pass");
+    const saved = JSON.parse(savedRaw) as { admin: { passwordHash: string } };
+    expect(await compare("brand-new-pass", saved.admin.passwordHash)).toBe(true);
+    // Hashed at the same cost as initial generation.
+    expect(saved.admin.passwordHash.startsWith("$2b$10$")).toBe(true);
+  });
+
+  test("PUT with empty admin.password leaves the existing hash untouched", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ admin: { password: "keep-me-pass" } }),
+    });
+    const before = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ admin: { password: "", username: "chief" } }),
+    });
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.passwordHash).toBe(before.admin.passwordHash);
+    expect(saved.admin.username).toBe("chief");
+    expect(await compare("keep-me-pass", saved.admin.passwordHash)).toBe(true);
+  });
+
+  test("PUT strips direct passwordHash attempts in the admin section", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ admin: { passwordHash: "$2b$10$evil" } as unknown as object }),
+    });
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.passwordHash).not.toBe("$2b$10$evil");
   });
 
   test("PUT rejects malformed payloads with 400", async () => {
