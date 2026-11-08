@@ -91,6 +91,14 @@ describe("verifyTeamCode", () => {
     expect(res).toEqual({ ok: false, reason: "bad-code" });
   });
 
+  test("wrong code while the window is closed reports outside-window, not bad-code", async () => {
+    const store = testStore();
+    store.setTeamCode("t1");
+    const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
+    const res = await verifyTeamCode("zzzzzzzzzzzz", store, cfg, new Date("2026-01-01T09:00:00Z"));
+    expect(res).toEqual({ ok: false, reason: "outside-window" });
+  });
+
   test("correct code outside the window reports outside-window", async () => {
     const store = testStore();
     store.setTeamCode("t1", "abcdefgh2345");

@@ -16,8 +16,10 @@ export function inLoginWindow(now: Date, window: Config["teamLogin"]): boolean {
 }
 
 /**
- * Pure verification: look up the typed team code, check the login window,
- * then sign a team token whose payload carries the team's icpcId.
+ * Pure verification: check the login window first (so a wrong code and a
+ * right code behave identically while the window is closed), then look up
+ * the typed team code, and sign a team token whose payload carries the
+ * team's icpcId.
  */
 export async function verifyTeamCode(
   code: string,
@@ -25,9 +27,9 @@ export async function verifyTeamCode(
   cfg: Config,
   now: Date = new Date(),
 ): Promise<VerifyResult> {
+  if (!inLoginWindow(now, cfg.teamLogin)) return { ok: false, reason: "outside-window" };
   const entry = teamStore.findByTeamCode(code);
   if (!entry) return { ok: false, reason: "bad-code" };
-  if (!inLoginWindow(now, cfg.teamLogin)) return { ok: false, reason: "outside-window" };
   const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, entry.icpcId);
   return { ok: true, token };
 }

@@ -164,6 +164,15 @@ describe("DOMjudge reverse proxy", () => {
     expect(lastReq?.headers["x-domjudge-pass"]).toBe(Buffer.from("s3cret pw", "utf8").toString("base64"));
   });
 
+  test("non-printable characters are stripped from the injected X-DOMjudge-Login value", async () => {
+    const store = testStore();
+    store.setPassword("2025 001\t", "pw");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025 001\t");
+    await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.headers["x-domjudge-login"]).toBe("2025001");
+  });
+
   test("non-/login paths do NOT get X-Headers injected", async () => {
     const store = testStore();
     store.setPassword("2025001", "s3cret pw");

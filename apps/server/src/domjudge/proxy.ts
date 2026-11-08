@@ -88,8 +88,12 @@ export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamSto
   if (rest === "/login" || rest.startsWith("/login/")) {
     const password = teamStore?.getPassword(payload.sub) ?? null;
     if (password !== null) {
-      headers["x-domjudge-login"] = payload.sub;
-      headers["x-domjudge-pass"] = Buffer.from(password, "utf8").toString("base64");
+      // Header values must not carry whitespace or control characters.
+      const login = payload.sub.replace(/[\s\x00-\x1f\x7f]/g, "");
+      if (login) {
+        headers["x-domjudge-login"] = login;
+        headers["x-domjudge-pass"] = Buffer.from(password, "utf8").toString("base64");
+      }
     }
   }
   try {
