@@ -9,10 +9,15 @@ export interface AuthTask {
   createdAt: string
 }
 
+export type PrintTaskStatus = 'pending' | 'printed' | 'failed'
+
 export interface PrintTask {
   id: string
-  examNum: string
-  status: 'pending' | 'printed' | 'failed'
+  location: string
+  teamName: string
+  teamId: string
+  originalFilename: string
+  status: PrintTaskStatus
   createdAt: string
 }
 
