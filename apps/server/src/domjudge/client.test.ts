@@ -5,7 +5,7 @@ import type { Config } from "../config";
 const djCfg: Config["domjudge"] = {
   baseUrl: "http://mock.local/domjudge",
   adminUser: "admin",
-  adminPassword: "hunter2",
+  adminPassword: "hunter2", timeoutSeconds: 10,
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

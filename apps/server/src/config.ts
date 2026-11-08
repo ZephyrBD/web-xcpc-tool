@@ -10,8 +10,9 @@ const configSchema = z.object({
       baseUrl: z.string().default(""),
       adminUser: z.string().default(""),
       adminPassword: z.string().default(""),
+      timeoutSeconds: z.number().int().min(1).default(10),
     })
-    .default({ baseUrl: "", adminUser: "", adminPassword: "" }),
+    .default({ baseUrl: "", adminUser: "", adminPassword: "", timeoutSeconds: 10 }),
   jwt: z
     .object({
       secret: z.string(),

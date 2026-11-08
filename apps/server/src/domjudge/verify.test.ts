@@ -19,7 +19,7 @@ function testCfg() {
     ...loadConfig("/nonexistent/settings.json"),
     contextPath: "",
     jwt: { secret: SECRET, ttlSeconds: 600 },
-    domjudge: { baseUrl: "http://test.local", adminUser: "", adminPassword: "" },
+    domjudge: { baseUrl: "http://test.local", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
     oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
   };
 }

@@ -150,6 +150,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       baseUrl: `http://127.0.0.1:${upstream.port}`,
       adminUser: "admin",
       adminPassword: "pw",
+      timeoutSeconds: 10,
     },
     oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
     print: { token: "print-tok" },

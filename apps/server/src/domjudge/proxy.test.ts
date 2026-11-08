@@ -39,7 +39,7 @@ describe("DOMjudge reverse proxy", () => {
     ...loadConfig("/nonexistent/settings.json"),
     contextPath,
     jwt: { secret: SECRET, ttlSeconds: 3600 },
-    domjudge: { baseUrl: `http://127.0.0.1:${upstreamPort}`, adminUser: "", adminPassword: "" },
+    domjudge: { baseUrl: `http://127.0.0.1:${upstreamPort}`, adminUser: "", adminPassword: "", timeoutSeconds: 10 },
   });
 
   test("valid token forwards to upstream and passes the response through", async () => {
@@ -84,7 +84,7 @@ describe("DOMjudge reverse proxy", () => {
   test("unreachable upstream returns 502 and does not crash", async () => {
     const cfg = {
       ...makeCfg(),
-      domjudge: { baseUrl: "http://127.0.0.1:1", adminUser: "", adminPassword: "" },
+      domjudge: { baseUrl: "http://127.0.0.1:1", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
     };
     const app = createApp(cfg);
     const token = await signTeamToken(SECRET, 3600, "2025001");

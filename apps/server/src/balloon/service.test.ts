@@ -68,7 +68,7 @@ function makeService(
   const cfg = {
     baseUrl: "https://dj.example.com",
     adminUser: "admin",
-    adminPassword: "pw",
+    adminPassword: "pw", timeoutSeconds: 10,
   };
   const client = new DjClient(cfg, fetchImpl);
   const store = new JsonStore<BalloonTask[]>("balloon-tasks.json", []);

@@ -28,7 +28,7 @@ setDataDir(DATA_DIR);
 const authQueue = new AuthQueue(join(DATA_DIR, "auth-tasks.json"));
 const bus = new SseBus();
 const printQueue = new PrintQueue(join(DATA_DIR, "print-tasks.json"));
-const djClient = new DjClient(cfg.domjudge);
+const djClient = new DjClient(cfg.domjudge, undefined, cfg.domjudge.timeoutSeconds * 1000);
 const teamsStore = new JsonStore<DjTeam[]>(join(DATA_DIR, "teams.json"), []);
 const teamStore = new TeamStore(
   join(DATA_DIR, "team-passwords.json"),

@@ -68,6 +68,7 @@ bun run server
 | `contextPath` | 上下文路径，默认 `/cxtool`，一般不改 |
 | `domjudge.baseUrl` | DOMjudge 站点地址，例如 `https://domjudge.example.com` |
 | `domjudge.adminUser` / `domjudge.adminPassword` | DOMjudge 管理员账号，供代理与 API 拉取使用 |
+| `domjudge.timeoutSeconds` | DOMjudge API 请求超时秒数，默认 `10`；官方 demo 等慢站点建议调大（如 `65`） |
 | `admin.username` | 本服务管理端用户名，默认 `admin` |
 | `admin.passwordHash` | 本服务管理端密码的 **bcrypt 哈希**（见下） |
 | `print.token` | DOMjudge 打印回调校验 token |

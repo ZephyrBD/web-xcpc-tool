@@ -20,6 +20,13 @@ describe("loadConfig", () => {
     expect(loadConfig(path).port).toBe(9999);
   });
 
+  test("parses provided domjudge.timeoutSeconds", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ domjudge: { timeoutSeconds: 65 } }));
+    expect(loadConfig(path).domjudge.timeoutSeconds).toBe(65);
+  });
+
   test("throws zod error on invalid field types", () => {
     const dir = mkdtempSync(join(tmpdir(), "config-test-"));
     const path = join(dir, "config.json");
@@ -36,7 +43,7 @@ describe("writeDefaultConfig", () => {
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
     expect(cfg.contextPath).toBe("/cxtool");
-    expect(cfg.domjudge).toEqual({ baseUrl: "", adminUser: "", adminPassword: "" });
+    expect(cfg.domjudge).toEqual({ baseUrl: "", adminUser: "", adminPassword: "", timeoutSeconds: 10 });
     expect(cfg.jwt.ttlSeconds).toBeGreaterThan(0);
     expect(Array.isArray(cfg.oms.strategies)).toBe(true);
     expect(cfg.oms.capture).toBe(false);
