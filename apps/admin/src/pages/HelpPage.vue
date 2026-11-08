@@ -41,12 +41,16 @@ const sections: HelpSection[] = [
     ],
   },
   {
-    title: '队伍认证（verify）',
+    title: '队伍码登录（verify）',
     accent: 'var(--brand-green)',
     blocks: [
       {
-        note: '考生在 OMS 客户端打开 GET /dj/verify，在页面输入考号后提交；本工具识别考位命中且对应认证任务被批准后，签发 cxtool-token Cookie，客户端即自动进入 /dj/ 反代直接访问 DOMjudge。识别命中但尚未有考号任务时，输入的考号会自动绑定到该考位的 unknown 占位任务（监考批准后进入）。URL 参数方式 GET /dj/verify?examNum=<准考证号> 仍兼容 OMS 客户端直接配置。详细的接口说明见「接口」页面。',
-        lines: [{ code: 'GET /dj/verify （页面输入考号）或 GET /dj/verify?examNum=...' }],
+        note: '队伍在 GET /dj/verify 页面输入「队伍码」登录：本工具校验队伍码（大小写不敏感），并检查当前是否在「设置 → 登录时段」允许的时段内；通过后签发 cxtool-token Cookie，队伍浏览器直接进入 /dj/ 反代访问 DOMjudge，无需再输入 DOMjudge 账号密码。队伍访问 DOMjudge 的 /login 时，本工具会在请求头注入 X-DOMjudge-Login / X-DOMjudge-Pass，自动完成登录。',
+        lines: [{ code: 'GET /dj/verify?code=<队伍码>' }],
+      },
+      {
+        note: '队伍码在管理台「队伍码」页面生成：可为单个队伍重新生成（旧码立即失效），也可一键为所有未分配的队伍批量生成；「一键配置密码」会通过 DOMjudge 管理员 API 重置对应队伍的 DOMjudge 密码并加密存回本工具，用于免密注入登录。导出 CSV 包含解密后的 DOMjudge 密码，请妥善保管。每次成功登录都会记录到「队伍码 → 登录历史」。OMS 检测与认证审批流程已移除，现在只需要队伍码即可登入。',
+        lines: [],
       },
     ],
   },
@@ -55,11 +59,11 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-blue)',
     blocks: [
       {
-        note: '在「设置」页填写 DOMjudge 的 Base URL：指向 DOMjudge 本身的地址，不带 /api 后缀。拼接规则：本工具按 baseUrl + /api/v4/contests/... 调 DOMjudge API；队伍浏览器访问的 DOMjudge 页面则通过本工具的 /cxtool/dj/... 反代到 baseUrl + /...。注意别和 OMS 客户端进站地址（http://<host>:<port>/cxtool）混淆。',
+        note: '在「设置」页填写 DOMjudge 的 Base URL：指向 DOMjudge 本身的地址，不带 /api 后缀。拼接规则：本工具按 baseUrl + /api/v4/contests/... 调 DOMjudge API；队伍浏览器访问的 DOMjudge 页面则通过本工具的 /cxtool/dj/... 反代到 baseUrl + /...。',
         lines: [],
       },
       {
-        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的 /cxtool 路径，这样队伍通过 OMS 客户端进站后，所有 DOMjudge 页面链接都会经过本工具反代。',
+        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的 /cxtool 路径，这样队伍从队伍码登录入口进站后，所有 DOMjudge 页面链接都会经过本工具反代。',
         lines: [],
       },
       {

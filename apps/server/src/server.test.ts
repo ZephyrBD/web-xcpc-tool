@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { loadConfig } from "./config";
 import { createApp } from "./server";
 import { adminAuthHeaders } from "./admin/auth";
+import { LoginHistoryStore } from "./admin/loginHistory";
 import { DjClient } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
@@ -168,6 +169,26 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(proxied.status).toBe(200);
     expect(await proxied.text()).toBe("upstream-ok");
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
+  });
+
+  test("every successful verify appends a login-history entry, newest first", async () => {
+    const teamStore = makeTeamStore(dataDir);
+    const code1 = teamStore.setTeamCode("icpc1");
+    const code2 = teamStore.setTeamCode("icpc2");
+    const history = new LoginHistoryStore(join(dataDir, "hist.json"));
+    const app = createApp(makeCfg(), { dataDir, teamStore, loginHistory: history });
+
+    await app.request(`/dj/verify?code=${code1}`, { redirect: "manual" });
+    await app.request(`/dj/verify?code=${code2}`, { redirect: "manual" });
+
+    const res = await app.request("/admin/api/login-history", {
+      headers: await adminAuthHeaders(makeCfg()),
+    });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()) as Array<{ icpcId: string; teamCode: string; at: string; ip: string | null }>;
+    expect(rows.map((r) => r.icpcId)).toEqual(["icpc2", "icpc1"]);
+    expect(rows[0].teamCode).toBe(code2);
+    expect(rows.every((r) => typeof r.at === "string" && !Number.isNaN(Date.parse(r.at)))).toBe(true);
   });
 
   test("wrong team code never issues a cookie", async () => {

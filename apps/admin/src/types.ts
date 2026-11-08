@@ -1,14 +1,3 @@
-export type AuthTaskStatus = 'pending' | 'approved' | 'rejected' | 'auto-done'
-
-export interface AuthTask {
-  id: string
-  examNum: string
-  clientId: string | null
-  strategy: string
-  status: AuthTaskStatus
-  createdAt: string
-}
-
 export type PrintTaskStatus = 'pending' | 'printed' | 'failed'
 
 export interface PrintTask {
@@ -34,4 +23,20 @@ export interface BalloonTask {
 export interface Team {
   id: string
   name?: string
+}
+
+/** Row of GET /admin/api/team-codes — passwords are never included. */
+export interface TeamCodeRow {
+  icpcId: string
+  name: string
+  teamCode: string | null
+  hasPassword: boolean
+}
+
+/** Entry of GET /admin/api/login-history (newest first). */
+export interface LoginHistoryEntry {
+  icpcId: string
+  teamCode: string
+  at: string
+  ip: string | null
 }

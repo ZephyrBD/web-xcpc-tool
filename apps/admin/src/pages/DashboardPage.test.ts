@@ -1,28 +1,30 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import DashboardPage from './DashboardPage.vue'
-import type { AuthTask } from '@/types'
+import type { LoginHistoryEntry, TeamCodeRow } from '@/types'
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-let pendingAuthTasks: AuthTask[] = []
+let teamCodeRows: TeamCodeRow[] = []
+let loginHistory: LoginHistoryEntry[] = []
 let pendingPrintTasks: unknown[] = []
 let pendingBalloonTasks: unknown[] = []
-let teams: unknown[] = []
+let originalFetch: typeof fetch | null = null
 const getPaths: string[] = []
 
 function mockFetch() {
+  originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
     const u = new URL(String(url))
     const path = u.pathname.replace(/^\/cxtool/, '')
     getPaths.push(path + u.search)
     const body = (() => {
-      if (path === '/admin/api/auth-tasks') return pendingAuthTasks
+      if (path === '/admin/api/team-codes') return teamCodeRows
+      if (path === '/admin/api/login-history') return loginHistory
       if (path === '/admin/api/print-tasks') return pendingPrintTasks
       if (path === '/admin/api/balloon-tasks') return pendingBalloonTasks
-      if (path === '/admin/api/teams') return teams
       return null
     })()
     return new Response(JSON.stringify(body), {
@@ -32,16 +34,8 @@ function mockFetch() {
   }) as unknown as typeof fetch
 }
 
-function makeTask(id: string, overrides: Partial<AuthTask> = {}): AuthTask {
-  return {
-    id,
-    examNum: `2026${id}`,
-    clientId: `client-${id}`,
-    strategy: 'cookie',
-    status: 'pending',
-    createdAt: '2026-11-07T10:00:00.000Z',
-    ...overrides,
-  }
+function makeCodeRow(icpcId: string, withCode: boolean): TeamCodeRow {
+  return { icpcId, name: `队伍 ${icpcId}`, teamCode: withCode ? `code-${icpcId}` : null, hasPassword: withCode }
 }
 
 async function mountPage() {
@@ -59,44 +53,48 @@ async function mountPage() {
 describe('DashboardPage', () => {
   beforeEach(() => {
     localStorage.clear()
-    pendingAuthTasks = []
+    teamCodeRows = []
+    loginHistory = []
     pendingPrintTasks = []
     pendingBalloonTasks = []
-    teams = []
     getPaths.length = 0
     mockFetch()
   })
 
+  afterEach(() => {
+    if (originalFetch) globalThis.fetch = originalFetch
+  })
+
   test('renders four stat cards with counts aggregated from the list APIs', async () => {
-    pendingAuthTasks = [makeTask('1'), makeTask('2')]
+    teamCodeRows = [makeCodeRow('t1', true), makeCodeRow('t2', true), makeCodeRow('t3', false)]
+    loginHistory = [{ icpcId: 't1', teamCode: 'c', at: '2026-11-07T10:00:00.000Z', ip: null }]
     pendingPrintTasks = [{ id: 'p1' }]
     pendingBalloonTasks = [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }]
-    teams = [{ id: 't1' }, { id: 't2' }, { id: 't3' }, { id: 't4' }, { id: 't5' }]
 
     const wrapper = await mountPage()
     await flush()
     await flush()
 
     const values = wrapper.findAll('.stat-value').map((n) => n.text())
-    expect(values).toEqual(['2', '1', '3', '5'])
+    expect(values).toEqual(['2/3', '1', '3', '1'])
 
     const labels = wrapper.findAll('.stat-label').map((n) => n.text())
-    expect(labels).toEqual(['待审认证', '待打任务', '待发气球', '队伍数'])
+    expect(labels).toEqual(['已发队伍码', '待打任务', '待发气球', '最近登录'])
 
     // Each card consumes one brand hue via CSS variables (no hardcoded hex).
     const accents = wrapper.findAll('.stat-card').map((n) => n.attributes('style'))
     expect(accents.join(' ')).toContain('--card-accent')
   })
 
-  test('queries each source with status=pending except teams', async () => {
+  test('queries team-codes, login-history (limit 5), and pending tasks', async () => {
     const wrapper = await mountPage()
     await flush()
     await flush()
 
-    expect(getPaths).toContain('/admin/api/auth-tasks?status=pending')
+    expect(getPaths).toContain('/admin/api/team-codes')
+    expect(getPaths).toContain('/admin/api/login-history?limit=5')
     expect(getPaths).toContain('/admin/api/print-tasks?status=pending')
     expect(getPaths).toContain('/admin/api/balloon-tasks?status=pending')
-    expect(getPaths).toContain('/admin/api/teams')
   })
 
   test('shows the friendly all-clear copy when nothing is pending', async () => {
@@ -107,14 +105,14 @@ describe('DashboardPage', () => {
     expect(wrapper.text()).toContain('现在一切正常，没有待办事项')
   })
 
-  test('renders the latest pending auth rows with a link to /auth-tasks', async () => {
-    pendingAuthTasks = [
-      makeTask('1', { examNum: '2026001', createdAt: '2026-11-07T09:00:00.000Z' }),
-      makeTask('2', { examNum: '2026002', createdAt: '2026-11-07T09:05:00.000Z' }),
-      makeTask('3', { examNum: '2026003' }),
-      makeTask('4', { examNum: '2026004' }),
-      makeTask('5', { examNum: '2026005' }),
-      makeTask('6', { examNum: '2026006' }),
+  test('renders the latest login rows with a link to /team-codes', async () => {
+    loginHistory = [
+      { icpcId: 't6', teamCode: 'c6', at: '2026-11-07T09:00:00.000Z', ip: null },
+      { icpcId: 't5', teamCode: 'c5', at: '2026-11-07T08:55:00.000Z', ip: null },
+      { icpcId: 't4', teamCode: 'c4', at: '2026-11-07T08:50:00.000Z', ip: null },
+      { icpcId: 't3', teamCode: 'c3', at: '2026-11-07T08:45:00.000Z', ip: null },
+      { icpcId: 't2', teamCode: 'c2', at: '2026-11-07T08:40:00.000Z', ip: null },
+      { icpcId: 't1', teamCode: 'c1', at: '2026-11-07T08:35:00.000Z', ip: null },
     ]
 
     const wrapper = await mountPage()
@@ -123,11 +121,11 @@ describe('DashboardPage', () => {
 
     const rows = wrapper.findAll('.dash-panel')[0].findAll('.panel-row')
     expect(rows.length).toBe(5)
-    expect(rows[0].text()).toContain('2026001')
-    expect(wrapper.text()).not.toContain('2026006')
+    expect(rows[0].text()).toContain('t6')
+    expect(wrapper.text()).not.toContain('t1')
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    expect(hrefs).toContain('/auth-tasks')
+    expect(hrefs).toContain('/team-codes')
   })
 
   test('renders merged print + balloon job rows sorted by createdAt desc', async () => {
@@ -159,17 +157,17 @@ describe('DashboardPage', () => {
     await flush()
     await flush()
 
-    expect(wrapper.text()).toContain('没有待审的认证申请')
+    expect(wrapper.text()).toContain('还没有队伍登录')
     expect(wrapper.text()).toContain('打印和气球队列都空着')
   })
 
-  test('stat cards link to their sections, 队伍数 goes to /teams', async () => {
-    teams = [{ id: 't1' }]
+  test('stat cards link to their sections, 已发队伍码 goes to /team-codes', async () => {
+    teamCodeRows = [makeCodeRow('t1', true)]
     const wrapper = await mountPage()
     await flush()
     await flush()
 
     const cards = wrapper.findAll('.stat-card').map((c) => c.attributes('href'))
-    expect(cards).toEqual(['/auth-tasks', '/jobs', '/jobs', '/teams'])
+    expect(cards).toEqual(['/team-codes', '/jobs', '/jobs', '/team-codes'])
   })
 })

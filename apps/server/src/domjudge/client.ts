@@ -103,6 +103,12 @@ export type DjProblem = {
   name: string;
 };
 
+export type DjUser = {
+  id: string;
+  username: string;
+  name?: string;
+};
+
 export class DjClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -134,8 +140,46 @@ export class DjClient {
     return (await res.json()) as T;
   }
 
+  private async patch(path: string, body: unknown): Promise<unknown> {
+    const url = this.baseUrl + path;
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: "PATCH",
+        headers: {
+          Authorization: this.authHeader,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      throw new DjApiError(url, 0, err);
+    }
+    if (!res.ok) {
+      throw new DjApiError(url, res.status);
+    }
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
   getContests(): Promise<DjContest[]> {
     return this.get<DjContest[]>("contests");
+  }
+
+  /** Look up a DOMjudge user by username; null when no user matches. */
+  async getUserByUsername(username: string): Promise<DjUser | null> {
+    const users = await this.get<DjUser[]>(`users?username=${encodeURIComponent(username)}`);
+    return users[0] ?? null;
+  }
+
+  /** Reset a DOMjudge user's password via the admin API (PATCH /users/{id}). */
+  patchUserPassword(userId: string, password: string): Promise<unknown> {
+    return this.patch(`users/${encodeURIComponent(userId)}`, { password });
   }
 
   getTeams(contestId: string): Promise<DjTeam[]> {

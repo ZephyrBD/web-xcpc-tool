@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config";
-import { signTeamToken } from "../auth/token";
+import { signAdminToken, signTeamToken } from "../auth/token";
 import { createApp } from "../server";
 import { SecretBox } from "../store/secretbox";
 import { setDataDir } from "../store/store";
@@ -76,6 +76,18 @@ describe("DOMjudge reverse proxy", () => {
     });
     expect(res2.status).toBe(200);
     expect(lastReq?.cookie).toBe("DOMjudgeSID=keep");
+  });
+
+  test("admin token cookie is rejected at the proxy (role separation)", async () => {
+    const app = createApp(makeCfg());
+    const token = await signAdminToken(SECRET, 3600, "admin");
+    const res = await app.request("/dj/api/contests", {
+      headers: { cookie: `cxtool-token=${token}` },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/dj/verify");
+    expect(hits).toBe(0);
   });
 
   test("missing cookie redirects to the verify form and upstream hit count stays 0", async () => {

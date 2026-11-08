@@ -28,7 +28,7 @@ Problem : ${task.problemLabel}
 Team    : ${task.teamName}
 Seat    : ${task.location ?? '—'}
 Time    : ${formatBalloonTime(task.createdAt)}
-== CUIT XCPC TOOL ==
+== Web XCPC Tool ==
 `
 }
 

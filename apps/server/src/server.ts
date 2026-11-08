@@ -15,7 +15,8 @@ import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
-import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
+import { LoginHistoryStore } from "./admin/loginHistory";
+import { randomInt } from "node:crypto";import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
 import { verifyFormPage, verifyMissPage, verifyWindowPage } from "./pages/teamPages";
 
@@ -29,6 +30,8 @@ export type Deps = {
   djClient?: DjClient;
   /** Bun's Server is structurally compatible with this shape (admin rate-limit IP lookup). */
   server?: { requestIP(req: Request): { address: string } | null };
+  /** Login history store. Defaults to <dataDir>/login-history.json with a 2000-entry cap. */
+  loginHistory?: LoginHistoryStore;
   /** Admin frontend build output directory. Defaults to apps/server/static. */
   staticDir?: string;
 };
@@ -49,6 +52,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     deps?.teamStore ??
     new TeamStore(join(dataDir, "team-passwords.json"), new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))));
 
+  const teamsStore = deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+  const loginHistory = deps?.loginHistory ?? new LoginHistoryStore(join(dataDir, "login-history.json"));
+
   app.get("/health", (c) => c.json({ ok: true }));
 
   const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
@@ -66,6 +72,14 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       // HTTP status codes keep their semantics (403 on both failures).
       return result.reason === "bad-code" ? verifyMissPage() : verifyWindowPage(cfg.teamLogin);
     }
+    // Successful team-code logins are recorded (only who/when/from-where).
+    const matched = teamStore.findByTeamCode(raw.trim());
+    loginHistory.append({
+      icpcId: matched?.icpcId ?? "",
+      teamCode: matched?.teamCode ?? raw.trim(),
+      at: new Date().toISOString(),
+      ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
+    });
     c.header(
       "Set-Cookie",
       `cxtool-token=${result.token}; Path=${djRoot}; HttpOnly; SameSite=Lax`,
@@ -140,8 +154,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   });
 
   app.get("/admin/api/teams", (c) => {
-    const teamsStore =
-      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     // Passwords live in a separate store; this response must never contain them.
     return c.json(teamsStore.load());
   });
@@ -154,8 +166,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     if (!contestId || typeof contestId !== "string") {
       return c.json({ error: "contestId required" }, 400);
     }
-    const teamsStore =
-      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     try {
       const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
       let problemsMapped = true;
@@ -182,8 +192,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   });
 
   app.post("/admin/api/teams/import-excel", async (c) => {
-    const teamsStore =
-      deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     const form = await c.req.formData().catch(() => null);
     const file = form?.get("file");
     if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
@@ -221,6 +229,130 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     }
     // Password fields are write-only and never echoed back.
     return c.json({ ...safeSettingsView(updated), note: "已保存，重启服务后生效" });
+  });
+
+  /** Teams joined with their login codes. Never includes passwords. */
+  app.get("/admin/api/team-codes", (c) => {
+    return c.json(
+      teamsStore.load().map((t) => {
+        const icpcId = (t.icpc_id ?? "").trim();
+        return {
+          icpcId,
+          name: t.display_name?.trim() || t.name,
+          teamCode: teamStore.getTeamCode(icpcId),
+          hasPassword: teamStore.hasPassword(icpcId),
+        };
+      }),
+    );
+  });
+
+  app.post("/admin/api/team-codes/generate", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const teams = teamsStore.load();
+    if (body?.all === true) {
+      let count = 0;
+      for (const t of teams) {
+        const icpcId = (t.icpc_id ?? "").trim();
+        if (!icpcId || teamStore.getTeamCode(icpcId)) continue;
+        teamStore.setTeamCode(icpcId);
+        count++;
+      }
+      return c.json({ count });
+    }
+    const icpcId = typeof body?.icpcId === "string" ? body.icpcId.trim() : "";
+    if (!icpcId) return c.json({ error: "icpcId required" }, 400);
+    if (!teams.some((t) => (t.icpc_id ?? "").trim() === icpcId)) {
+      return c.json({ error: "team not found" }, 404);
+    }
+    return c.json({ icpcId, teamCode: teamStore.setTeamCode(icpcId) });
+  });
+
+  /** CSV export (admin-gated): decrypted DOMjudge passwords, Excel-friendly BOM. */
+  app.get("/admin/api/team-codes/export", (c) => {
+    const cell = (v: string) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const rows = [["队伍名", "DOMjudge用户名", "队伍码", "DOMjudge密码"]];
+    for (const t of teamsStore.load()) {
+      const icpcId = (t.icpc_id ?? "").trim();
+      rows.push([
+        t.display_name?.trim() || t.name || "",
+        icpcId,
+        teamStore.getTeamCode(icpcId) ?? "",
+        teamStore.getPassword(icpcId) ?? "",
+      ]);
+    }
+    const csv = "\uFEFF" + rows.map((r) => r.map(cell).join(",")).join("\r\n");
+    const date = new Date().toISOString().slice(0, 10);
+    return new Response(csv, {
+      headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="team-codes-${date}.csv"`,
+      },
+    });
+  });
+
+  /** 16-char password from an unambiguous charset (no 0/O/1/l/I). */
+  const PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const randomPassword = (): string => {
+    let out = "";
+    for (let i = 0; i < 16; i++) out += PASSWORD_CHARS[randomInt(PASSWORD_CHARS.length)];
+    return out;
+  };
+
+  /**
+   * Provision team logins: assign a team code where missing and reset the
+   * DOMjudge account password via the admin API, storing it encrypted locally.
+   */
+  app.post("/admin/api/team-codes/provision", async (c) => {
+    const client = deps?.djClient;
+    if (!client) return c.json({ error: "domjudge client unavailable" }, 503);
+    const body = await c.req.json().catch(() => null);
+    const teams = teamsStore.load();
+    let targets: DjTeam[];
+    if (body?.all === true) {
+      targets = teams.filter((t) => {
+        const icpcId = (t.icpc_id ?? "").trim();
+        return icpcId !== "" && (!teamStore.getTeamCode(icpcId) || !teamStore.hasPassword(icpcId));
+      });
+    } else {
+      const icpcId = typeof body?.icpcId === "string" ? body.icpcId.trim() : "";
+      if (!icpcId) return c.json({ error: "icpcId required" }, 400);
+      const team = teams.find((t) => (t.icpc_id ?? "").trim() === icpcId);
+      if (!team) return c.json({ error: "team not found" }, 404);
+      targets = [team];
+    }
+
+    let provisioned = 0;
+    let skipped = 0;
+    const errors: Array<{ icpcId: string; reason: string }> = [];
+    for (const t of targets) {
+      const icpcId = (t.icpc_id ?? "").trim();
+      if (!teamStore.getTeamCode(icpcId)) teamStore.setTeamCode(icpcId);
+      const password = randomPassword();
+      try {
+        const user = await client.getUserByUsername(icpcId);
+        if (!user) {
+          skipped++;
+          errors.push({ icpcId, reason: "DOMjudge 中没有该用户名的账号" });
+          continue;
+        }
+        await client.patchUserPassword(user.id, password);
+      } catch (err) {
+        errors.push({ icpcId, reason: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+      teamStore.setPassword(icpcId, password);
+      provisioned++;
+    }
+    return c.json({ provisioned, skipped, errors });
+  });
+
+  app.get("/admin/api/login-history", (c) => {
+    const raw = c.req.query("limit");
+    const limit = raw === undefined ? 100 : Number(raw);
+    if (raw !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+      return c.json({ error: "limit must be a positive number" }, 400);
+    }
+    return c.json(loginHistory.list(Math.min(Math.trunc(limit), 500)));
   });
 
   app.get("/admin/api/events", (c) => {

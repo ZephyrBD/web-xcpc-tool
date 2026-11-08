@@ -17,7 +17,7 @@ const groups: ApiGroup[] = [
     title: '认证',
     accent: 'var(--brand-purple)',
     entries: [
-      { method: 'GET', path: '/dj/verify', desc: 'OMS 客户端认证入口，通过后发放 cxtool-token 并跳转 DOMjudge 反代' },
+      { method: 'GET', path: '/dj/verify', desc: '队伍码登录入口，校验队伍码与登录时段后签发 cxtool-token 并跳转 DOMjudge 反代' },
     ],
   },
   {
@@ -39,9 +39,10 @@ const groups: ApiGroup[] = [
     entries: [
       { method: 'POST', path: '/admin/api/login', desc: '管理端登录，签发 Bearer token' },
       { method: 'GET', path: '/admin/api/events', desc: 'SSE 事件流：认证 / 打印 / 气球任务实时推送' },
-      { method: 'GET', path: '/admin/api/auth-tasks', desc: '认证任务列表，可按 status 过滤' },
-      { method: 'POST', path: '/admin/api/auth-tasks/:id/approve', desc: '批准指定认证任务' },
-      { method: 'POST', path: '/admin/api/auth-tasks/:id/reject', desc: '拒绝指定认证任务' },
+      { method: 'GET', path: '/admin/api/team-codes', desc: '队伍与队伍码列表（不含密码）' },
+      { method: 'POST', path: '/admin/api/team-codes/generate', desc: '为指定队伍（icpcId）或所有未分配队伍（all:true）生成队伍码' },
+      { method: 'GET', path: '/admin/api/team-codes/export', desc: '导出队伍码 CSV（含 DOMjudge 密码，管理员专用）' },
+      { method: 'GET', path: '/admin/api/login-history', desc: '队伍码登录历史，最新在前，可 ?limit= 限制条数' },
       { method: 'GET', path: '/admin/api/print-tasks', desc: '打印任务列表，可按 status 过滤' },
       { method: 'POST', path: '/admin/api/print-tasks/:id/ack', desc: '标记打印任务为已打 / 失败' },
       { method: 'GET', path: '/admin/api/print-tasks/:id/pdf', desc: '下载待打印的 PDF（内联预览）' },

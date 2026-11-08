@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
@@ -13,12 +13,15 @@ const settingsView = {
   domjudge: { baseUrl: 'http://dj.old', adminUser: 'djadmin', timeoutSeconds: 10 },
   balloon: { contestId: 'c1', pollIntervalSeconds: 30 },
   print: { tokenMasked: 'abcd***' },
+  teamLogin: { start: '', end: '' },
   admin: { username: 'admin' },
 }
 
 let putCalls: Array<{ path: string; body: unknown }> = []
+let originalFetch: typeof fetch | null = null
 
 function mockFetch() {
+  originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
     const path = new URL(String(url)).pathname.replace(/^\/cxtool/, '')
     const method = init?.method ?? 'GET'
@@ -48,6 +51,10 @@ describe('SettingsPage', () => {
   beforeEach(() => {
     putCalls = []
     mockFetch()
+  })
+
+  afterEach(() => {
+    if (originalFetch) globalThis.fetch = originalFetch
   })
 
   test('renders prefilled from GET /admin/api/settings', async () => {
@@ -224,6 +231,42 @@ describe('SettingsPage', () => {
     expect(putCalls.length).toBe(1)
     const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
     expect('password' in (body.admin as Record<string, unknown>)).toBe(false)
+  })
+
+  test('登录时段 empty inputs PUT empty strings (不限制)', async () => {
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(wrapper.text()).toContain('登录时段')
+    expect(wrapper.text()).toContain('留空表示不限制')
+    const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    expect(body.teamLogin).toEqual({ start: '', end: '' })
+  })
+
+  test('datetime-local values are saved as ISO datetimes', async () => {
+    settingsView.teamLogin = { start: '2026-11-08T02:00:00.000Z', end: '2026-11-08T06:00:00.000Z' }
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+
+    const datetimes = wrapper.findAll('input[type="datetime-local"]')
+    expect(datetimes.length).toBe(2)
+    await datetimes[0]!.setValue('2026-11-08T10:00')
+    await datetimes[1]!.setValue('2026-11-08T12:00')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    const body = putCalls[0]!.body as Record<string, { start: string; end: string }>
+    expect(Date.parse(body.teamLogin.start)).toBe(Date.parse('2026-11-08T10:00'))
+    expect(Date.parse(body.teamLogin.end)).toBe(Date.parse('2026-11-08T12:00'))
+    settingsView.teamLogin = { start: '', end: '' }
   })
 })
 

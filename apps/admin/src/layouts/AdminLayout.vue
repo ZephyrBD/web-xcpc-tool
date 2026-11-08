@@ -16,7 +16,7 @@ function logout(): void {
 
 const navItems = [
   { path: '/', label: '总览', accent: 'var(--brand-purple)' },
-  { path: '/auth-tasks', label: '认证任务', accent: 'var(--brand-green)' },
+  { path: '/team-codes', label: '队伍码', accent: 'var(--brand-red)' },
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
   { path: '/api-list', label: '接口', accent: 'var(--text-muted)' },
@@ -26,7 +26,7 @@ const navItems = [
 
 const accents: Record<string, string> = {
   overview: 'var(--brand-purple)',
-  'auth-tasks': 'var(--brand-green)',
+  'team-codes': 'var(--brand-red)',
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
   'api-list': 'var(--text-muted)',

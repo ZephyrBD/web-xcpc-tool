@@ -7,6 +7,7 @@ interface SettingsView {
   domjudge: { baseUrl: string; adminUser: string; timeoutSeconds: number }
   balloon: { contestId: string; pollIntervalSeconds: number }
   print: { tokenMasked: string }
+  teamLogin?: { start: string; end: string }
   admin: { username: string }
 }
 
@@ -17,6 +18,8 @@ const form = reactive({
   balloonContestId: '',
   balloonPollIntervalSeconds: 30,
   printToken: '',
+  teamLoginStart: '',
+  teamLoginEnd: '',
   adminUsername: '',
   adminPassword: '',
   adminPasswordConfirm: '',
@@ -37,6 +40,8 @@ async function refresh(): Promise<void> {
     form.balloonPollIntervalSeconds = s.balloon.pollIntervalSeconds
     form.adminUsername = s.admin.username
     printTokenMasked.value = s.print.tokenMasked
+    form.teamLoginStart = isoToLocalInput(s.teamLogin?.start ?? '')
+    form.teamLoginEnd = isoToLocalInput(s.teamLogin?.end ?? '')
   } catch {
     ElMessage.error('设置加载失败，请刷新重试')
   } finally {
@@ -71,6 +76,10 @@ async function save(): Promise<void> {
           pollIntervalSeconds: form.balloonPollIntervalSeconds,
         },
         ...(form.printToken ? { print: { token: form.printToken } } : {}),
+        teamLogin: {
+          start: form.teamLoginStart ? localInputToIso(form.teamLoginStart) : '',
+          end: form.teamLoginEnd ? localInputToIso(form.teamLoginEnd) : '',
+        },
         admin: {
           username: form.adminUsername,
           ...(form.adminPassword ? { password: form.adminPassword } : {}),
@@ -90,8 +99,23 @@ async function save(): Promise<void> {
   }
 }
 
-function randomToken(): string {
-  const bytes = new Uint8Array(24);
+/** ISO datetime → value for <input type="datetime-local"> (local time); '' passes through. */
+function isoToLocalInput(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** datetime-local value → ISO string (UTC); '' passes through. */
+function localInputToIso(value: string): string {
+  if (!value) return ''
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? value : d.toISOString()
+}
+
+function randomToken(): string {  const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
   let bits = '';
   for (const b of bytes) bits += b.toString(2).padStart(8, '0');
@@ -134,8 +158,7 @@ onMounted(() => void refresh())
             指向 <b>DOMjudge 本身</b>的地址，不带 <code>/api</code> 后缀。拼接规则：本工具按
             <code>baseUrl + /api/v4/contests/...</code> 调 DOMjudge API；队伍浏览器访问的
             DOMjudge 页面则通过本工具的 <code>/cxtool/dj/...</code> 反代到
-            <code>baseUrl + /...</code>。注意别和 OMS 客户端进站地址
-            （<code>http://&lt;host&gt;:&lt;port&gt;/cxtool</code>）混淆。
+            <code>baseUrl + /...</code>。
           </span>
         </label>
         <label class="field">
@@ -178,6 +201,19 @@ onMounted(() => void refresh())
             当前：{{ printTokenMasked || '未设置' }}。生成一个随机令牌，保存后重启生效，需要同步填到
             DOMjudge 的打印配置里（header <code>org.domjudge.print-token</code>）。
           </span>
+        </label>
+      </section>
+
+      <section class="settings-card">
+        <h2 class="card-title">登录时段</h2>
+        <span class="field-help">留空表示不限制；登录时段外队伍码无法登入。</span>
+        <label class="field">
+          <span class="field-label">开始时间</span>
+          <input v-model="form.teamLoginStart" class="datetime-input" type="datetime-local" />
+        </label>
+        <label class="field">
+          <span class="field-label">结束时间</span>
+          <input v-model="form.teamLoginEnd" class="datetime-input" type="datetime-local" />
         </label>
       </section>
 
@@ -278,6 +314,16 @@ onMounted(() => void refresh())
 .token-actions {
   display: flex;
   gap: 8px;
+}
+
+.datetime-input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  padding: 6px 10px;
+  font-size: var(--text-15);
+  color: var(--text);
+  font-family: var(--font-body);
 }
 
 .settings-footer {

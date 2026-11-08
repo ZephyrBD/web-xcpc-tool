@@ -43,7 +43,7 @@ describe('App', () => {
     })
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    for (const route of ['/', '/login', '/auth-tasks', '/jobs', '/teams']) {
+    for (const route of ['/', '/login', '/team-codes', '/jobs', '/teams']) {
       expect(hrefs).toContain(route)
     }
   })

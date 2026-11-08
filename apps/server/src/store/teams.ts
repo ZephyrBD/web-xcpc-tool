@@ -78,4 +78,15 @@ export class TeamStore {
   list(): Array<{ icpcId: string }> {
     return Object.keys(this.entries()).map((icpcId) => ({ icpcId }));
   }
+
+  /** Assigned code for a team, or null. */
+  getTeamCode(icpcId: string): string | null {
+    return this.entries()[icpcId]?.teamCode ?? null;
+  }
+
+  /** True when the team has a stored (encrypted) password. */
+  hasPassword(icpcId: string): boolean {
+    const password = this.entries()[icpcId]?.password;
+    return typeof password === "string" && password !== "";
+  }
 }

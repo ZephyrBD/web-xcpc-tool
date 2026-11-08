@@ -2,26 +2,26 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
-import type { AuthTask, BalloonTask, PrintTask } from '@/types'
+import type { BalloonTask, LoginHistoryEntry, PrintTask, TeamCodeRow } from '@/types'
 
-const authTasks = ref<AuthTask[]>([])
+const teamCodeRows = ref<TeamCodeRow[]>([])
+const loginHistory = ref<LoginHistoryEntry[]>([])
 const printTasks = ref<PrintTask[]>([])
 const balloonTasks = ref<BalloonTask[]>([])
-const teamCount = ref<number | null>(null)
 const loaded = ref(false)
 
 async function refresh(): Promise<void> {
   // 气球服务可能未启用（503）等：单项失败显示 “—” 而不是拖垮整页。
-  const [auth, print, balloon, teams] = await Promise.allSettled([
-    apiFetch<AuthTask[]>('/admin/api/auth-tasks', { query: { status: 'pending' } }),
+  const [codes, history, print, balloon] = await Promise.allSettled([
+    apiFetch<TeamCodeRow[]>('/admin/api/team-codes'),
+    apiFetch<LoginHistoryEntry[]>('/admin/api/login-history', { query: { limit: 5 } }),
     apiFetch<PrintTask[]>('/admin/api/print-tasks', { query: { status: 'pending' } }),
     apiFetch<BalloonTask[]>('/admin/api/balloon-tasks', { query: { status: 'pending' } }),
-    apiFetch<unknown[]>('/admin/api/teams'),
   ])
-  authTasks.value = auth.status === 'fulfilled' && Array.isArray(auth.value) ? auth.value : []
+  teamCodeRows.value = codes.status === 'fulfilled' && Array.isArray(codes.value) ? codes.value : []
+  loginHistory.value = history.status === 'fulfilled' && Array.isArray(history.value) ? history.value : []
   printTasks.value = print.status === 'fulfilled' && Array.isArray(print.value) ? print.value : []
   balloonTasks.value = balloon.status === 'fulfilled' && Array.isArray(balloon.value) ? balloon.value : []
-  teamCount.value = teams.status === 'fulfilled' ? teams.value.length : null
   loaded.value = true
 }
 
@@ -38,13 +38,18 @@ function scheduleRefresh(): void {
 useSse(() => scheduleRefresh())
 
 const cards = computed(() => [
-  { label: '待审认证', value: authTasks.value.length, accent: 'var(--brand-purple)', to: '/auth-tasks' },
+  {
+    label: '已发队伍码',
+    value: teamCodeRows.value.length ? `${teamCodeRows.value.filter((r) => r.teamCode).length}/${teamCodeRows.value.length}` : null,
+    accent: 'var(--brand-purple)',
+    to: '/team-codes',
+  },
   { label: '待打任务', value: printTasks.value.length, accent: 'var(--brand-orange)', to: '/jobs' },
   { label: '待发气球', value: balloonTasks.value.length, accent: 'var(--brand-green)', to: '/jobs' },
-  { label: '队伍数', value: teamCount.value, accent: 'var(--brand-blue)', to: '/teams' },
+  { label: '最近登录', value: loginHistory.value.length || null, accent: 'var(--brand-blue)', to: '/team-codes' },
 ])
 
-const pendingAuth = computed(() => authTasks.value.slice(0, 5))
+const recentLogins = computed(() => loginHistory.value.slice(0, 5))
 
 interface JobRow {
   kind: 'print' | 'balloon'
@@ -74,7 +79,6 @@ const pendingJobs = computed<JobRow[]>(() => {
 const allClear = computed(
   () =>
     loaded.value &&
-    authTasks.value.length === 0 &&
     printTasks.value.length === 0 &&
     balloonTasks.value.length === 0,
 )
@@ -109,16 +113,16 @@ onUnmounted(() => {
     <div class="dash-panels">
       <section class="dash-panel">
         <div class="panel-head">
-          <h2 class="panel-title">最新待审认证</h2>
-          <RouterLink to="/auth-tasks" class="panel-link">查看全部 →</RouterLink>
+          <h2 class="panel-title">最近登录</h2>
+          <RouterLink to="/team-codes" class="panel-link">查看全部 →</RouterLink>
         </div>
-        <ul v-if="pendingAuth.length" class="panel-list">
-          <li v-for="task in pendingAuth" :key="task.id" class="panel-row">
-            <span class="row-main">{{ task.examNum }}</span>
-            <span class="row-sub">{{ formatTime(task.createdAt) }}</span>
+        <ul v-if="recentLogins.length" class="panel-list">
+          <li v-for="entry in recentLogins" :key="entry.at" class="panel-row">
+            <span class="row-main">{{ entry.icpcId }}</span>
+            <span class="row-sub">{{ formatTime(entry.at) }}</span>
           </li>
         </ul>
-        <p v-else class="panel-empty">没有待审的认证申请，很清净 🙂</p>
+        <p v-else class="panel-empty">还没有队伍登录，静悄悄的 🙂</p>
       </section>
 
       <section class="dash-panel">
