@@ -32,6 +32,25 @@ describe("DjClient", () => {
     expect(capturedAuth).toBe(`Basic ${Buffer.from("admin:hunter2").toString("base64")}`);
   });
 
+  test("findTeamUser prefers the team_id match and falls back to team<id> usernames", async () => {
+    const DJ_USERS = [
+      { id: "9", username: "juryuser", roles: ["jury"] },
+      { id: "7", username: "team1095218", team_id: "1095218", roles: ["team"] },
+      { id: "8", username: "team777", roles: ["team"] },
+    ];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/api/v4/users")) return jsonResponse(DJ_USERS);
+      return jsonResponse({ error: "nf" }, 404);
+    }) as unknown as typeof fetch;
+    const client = new DjClient(djCfg, fetchImpl);
+    // team_id match wins even when a team<id> username also exists
+    expect(await client.findTeamUser("1095218")).toMatchObject({ id: "7", username: "team1095218" });
+    // fallback: username `team<key>` when no team_id matches
+    expect(await client.findTeamUser("777")).toMatchObject({ id: "8", username: "team777" });
+    expect(await client.findTeamUser("999")).toBeNull();
+  });
+
   test("404 throws DjApiError with URL and status in message", async () => {
     const fetchImpl = (async () => jsonResponse({ error: "nf" }, 404)) as unknown as typeof fetch;
     const client = new DjClient(djCfg, fetchImpl);

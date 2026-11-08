@@ -104,6 +104,28 @@ describe("TeamStore", () => {
     expect(reopened.findByTeamCode(code)?.icpcId).toBe("t1");
   });
 
+  test("djUsername roundtrip: setPassword stores it, re-set preserves it", () => {
+    const { store } = makeStore();
+    store.setPassword("t1", "pw", "team1095218");
+    expect(store.getDjUsername("t1")).toBe("team1095218");
+    // re-set without a username keeps the previous one
+    store.setPassword("t1", "pw2");
+    expect(store.getDjUsername("t1")).toBe("team1095218");
+    store.setPassword("t1", "pw3", "team999");
+    expect(store.getDjUsername("t1")).toBe("team999");
+    // setTeamCode also preserves it
+    store.setTeamCode("t1");
+    expect(store.getDjUsername("t1")).toBe("team999");
+    expect(store.getPassword("t1")).toBe("pw3");
+  });
+
+  test("missing djUsername returns null", () => {
+    const { store } = makeStore();
+    store.setPassword("t1", "pw");
+    expect(store.getDjUsername("t1")).toBeNull();
+    expect(store.getDjUsername("nobody")).toBeNull();
+  });
+
   test("legacy string-valued entries migrate to the password field", () => {
     const { store, filePath } = makeStore();
     store.setPassword("legacy", "old-style");

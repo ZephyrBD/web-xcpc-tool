@@ -83,9 +83,12 @@ async function forwardToDj(
   // there so the team is logged in without typing a DOMjudge password.
   if (rest === "/login" || rest.startsWith("/login/")) {
     const password = teamStore?.getPassword(payload.sub) ?? null;
-    if (password !== null) {
+    // The team key is not the DOMjudge login name; only the username resolved
+    // at provision time may be injected. Without it there is nothing to log in.
+    const djUsername = teamStore?.getDjUsername(payload.sub) ?? null;
+    if (password !== null && djUsername !== null) {
       // Header values must not carry whitespace or control characters.
-      const login = payload.sub.replace(/[\s\x00-\x1f\x7f]/g, "");
+      const login = djUsername.replace(/[\s\x00-\x1f\x7f]/g, "");
       if (login) {
         headers["x-domjudge-login"] = login;
         headers["x-domjudge-pass"] = Buffer.from(password, "utf8").toString("base64");

@@ -15,8 +15,9 @@ export type DjTeam = {
 
 /**
  * Effective account key for a team: icpc_id when present, otherwise the
- * DOMjudge team id — which is also the DOMjudge login username for team
- * accounts, so X-DOMjudge-Login semantics stay correct.
+ * DOMjudge team id. Note: this key is NOT the DOMjudge login username —
+ * real deployments name team accounts `team<id>`; use findTeamUser to
+ * resolve the actual username for X-DOMjudge-Login.
  */
 export function teamAccountKey(t: Pick<DjTeam, "id" | "icpc_id">): string {
   return (t.icpc_id ?? "").trim() || t.id;
@@ -118,6 +119,8 @@ export type DjUser = {
   name?: string;
   /** CLICS User roles, e.g. ["team"] or ["admin"]. */
   roles?: string[];
+  /** CLICS User team_id, present on team accounts (matches the team key). */
+  team_id?: string;
 };
 
 export class DjClient {
@@ -182,12 +185,17 @@ export class DjClient {
     return this.get<DjContest[]>("contests");
   }
 
-  /** Look up a DOMjudge user by username; null when no user matches. */
-  async getUserByUsername(username: string): Promise<DjUser | null> {
-    const users = await this.get<DjUser[]>(`users?username=${encodeURIComponent(username)}`);
-    // Some deployments ignore the username query param and return the full
-    // user list; never hand back a user whose username does not match.
-    return users.find((u) => u.username === username) ?? null;
+  /**
+   * Resolve the DOMjudge user account behind a team key. Real deployments
+   * name team accounts `team<teamId>` (username ≠ team id), so match on the
+   * CLICS `team_id` first and fall back to the `team<key>` username shape.
+   * Null when no user matches.
+   */
+  async findTeamUser(teamKey: string): Promise<DjUser | null> {
+    const users = await this.get<DjUser[]>("users");
+    const byTeamId = users.find((u) => u.team_id === teamKey);
+    if (byTeamId) return byTeamId;
+    return users.find((u) => u.username === `team${teamKey}`) ?? null;
   }
 
   /** Reset a DOMjudge user's password via the admin API (PATCH /users/{id}). */

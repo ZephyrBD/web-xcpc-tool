@@ -9,7 +9,7 @@ import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import type { BalloonService } from "./balloon/service";
-import { DjClient, teamAccountKey, type DjTeam } from "./domjudge/client";
+import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
@@ -292,7 +292,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       const icpcId = teamAccountKey(t);
       rows.push([
         t.display_name?.trim() || t.name || "",
-        icpcId,
+        teamStore.getDjUsername(icpcId) ?? icpcId,
         teamStore.getTeamCode(icpcId) ?? "",
         teamStore.getPassword(icpcId) ?? "",
       ]);
@@ -344,19 +344,19 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     for (const t of targets) {
       const icpcId = teamAccountKey(t);
       const password = randomPassword();
+      let user: DjUser | null = null;
       try {
-        const user = await client.getUserByUsername(icpcId);
+        user = await client.findTeamUser(icpcId);
         if (!user) {
           skipped++;
-          errors.push({ icpcId, reason: "user not found in DOMjudge" });
+          errors.push({ icpcId, reason: "DOMjudge 队伍用户不存在（应为 team<id>）" });
           continue;
         }
         // Hard guard after the demo-API incident: only exact team accounts
         // may be PATCHed, no matter what the API returned.
         const roles = Array.isArray(user.roles) ? user.roles : [];
-        const usernameMatches = user.username === icpcId;
         const teamOnly = roles.length > 0 && roles.every((r) => r === "team");
-        if (!usernameMatches || !teamOnly) {
+        if (!teamOnly) {
           skipped++;
           errors.push({ icpcId, reason: "refusing non-team user" });
           continue;
@@ -368,7 +368,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         errors.push({ icpcId, reason: err instanceof Error ? err.message : String(err) });
         continue;
       }
-      teamStore.setPassword(icpcId, password);
+      teamStore.setPassword(icpcId, password, user.username);
       provisioned++;
     }
     return c.json({ provisioned, skipped, errors });

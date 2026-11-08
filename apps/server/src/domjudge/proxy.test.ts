@@ -151,7 +151,7 @@ describe("DOMjudge reverse proxy", () => {
 
   test("request to upstream /login injects X-DOMjudge-Login/Pass from the team store", async () => {
     const store = testStore();
-    store.setPassword("2025001", "s3cret pw");
+    store.setPassword("2025001", "s3cret pw", "team1095218");
     const app = createApp(makeCfg(), { teamStore: store });
     const token = await signTeamToken(SECRET, 3600, "2025001");
     const res = await app.request("/dj/login", {
@@ -161,17 +161,28 @@ describe("DOMjudge reverse proxy", () => {
     });
     expect(res.status).toBe(200);
     expect(lastReq?.path).toBe("/login");
-    expect(lastReq?.headers["x-domjudge-login"]).toBe("2025001");
+    // the injected login is the provisioned DOMjudge username, not the team key
+    expect(lastReq?.headers["x-domjudge-login"]).toBe("team1095218");
     expect(lastReq?.headers["x-domjudge-pass"]).toBe(Buffer.from("s3cret pw", "utf8").toString("base64"));
   });
 
   test("non-printable characters are stripped from the injected X-DOMjudge-Login value", async () => {
     const store = testStore();
-    store.setPassword("2025 001\t", "pw");
+    store.setPassword("2025001", "pw", "team 2025001\t");
     const app = createApp(makeCfg(), { teamStore: store });
-    const token = await signTeamToken(SECRET, 3600, "2025 001\t");
+    const token = await signTeamToken(SECRET, 3600, "2025001");
     await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
-    expect(lastReq?.headers["x-domjudge-login"]).toBe("2025001");
+    expect(lastReq?.headers["x-domjudge-login"]).toBe("team2025001");
+  });
+
+  test("a password without a provisioned djUsername is never injected", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "legacy-pw");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.headers["x-domjudge-login"]).toBeUndefined();
+    expect(lastReq?.headers["x-domjudge-pass"]).toBeUndefined();
   });
 
   describe("root DOMjudge proxy (outside contextPath)", () => {

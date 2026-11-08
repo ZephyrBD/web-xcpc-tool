@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import type { SecretBox } from "./secretbox";
 import { JsonStore } from "./store";
 
-type TeamEntry = { password?: string; teamCode?: string };
+type TeamEntry = { password?: string; teamCode?: string; djUsername?: string };
 
 /** Unambiguous charset for human-typed team codes: no 0/O/1/l/I. */
 const CODE_CHARSET = "23456789abcdefghjkmnpqrstuvwxyz";
@@ -27,12 +27,27 @@ export class TeamStore {
     return out;
   }
 
-  setPassword(icpcId: string, password: string): void {
+  /**
+   * Stores an encrypted password; `djUsername` records the DOMjudge login
+   * name resolved at provision time (plain text, not a secret). When omitted
+   * a previously stored username is preserved.
+   */
+  setPassword(icpcId: string, password: string, djUsername?: string): void {
     this.store.update((cur) => {
       const entry = cur[icpcId];
-      const teamCode = typeof entry === "string" ? undefined : entry?.teamCode;
-      return { ...cur, [icpcId]: { password: this.box.encrypt(password), teamCode } };
+      const prev = typeof entry === "string" ? {} : (entry ?? {});
+      const next: TeamEntry = {
+        ...prev,
+        password: this.box.encrypt(password),
+        ...(djUsername !== undefined ? { djUsername } : {}),
+      };
+      return { ...cur, [icpcId]: next };
     });
+  }
+
+  /** DOMjudge login username recorded at provision time, or null. */
+  getDjUsername(icpcId: string): string | null {
+    return this.entries()[icpcId]?.djUsername ?? null;
   }
 
   getPassword(icpcId: string): string | null {
@@ -50,9 +65,8 @@ export class TeamStore {
     const assigned = code ?? this.generateCode();
     this.store.update((cur) => {
       const entry = cur[icpcId];
-      const password = typeof entry === "string" ? entry : entry?.password;
-      const next: TeamEntry = { teamCode: assigned };
-      if (password !== undefined) next.password = password;
+      const prev = typeof entry === "string" ? { password: entry } : (entry ?? {});
+      const next: TeamEntry = { ...prev, teamCode: assigned };
       return { ...cur, [icpcId]: next };
     });
     return assigned;
