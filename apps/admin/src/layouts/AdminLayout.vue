@@ -19,20 +19,10 @@ const accents: Record<string, string> = {
 }
 
 const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purple)')
-
-const sectionTint = computed(() => {
-  const tints: Record<string, string> = {
-    overview: 'rgba(162, 89, 255, 0.1)',
-    'auth-tasks': 'rgba(10, 207, 131, 0.1)',
-    jobs: 'rgba(242, 78, 30, 0.1)',
-    teams: 'rgba(26, 188, 254, 0.1)',
-  }
-  return tints[route.name as string] ?? 'transparent'
-})
 </script>
 
 <template>
-  <div class="admin-layout" :style="{ '--accent': accent, '--section-tint': sectionTint }">
+  <div class="admin-layout" :style="{ '--accent': accent, '--section-tint': `color-mix(in srgb, ${accent} 10%, transparent)` }">
     <header class="layout-header">
       <div class="layout-header-inner">
         <span class="logo-dot" aria-hidden="true"></span>
@@ -132,7 +122,6 @@ const sectionTint = computed(() => {
   text-decoration: none;
   font-size: var(--text-15);
   font-weight: 500;
-  color: var(--text);
   border: 1.5px solid var(--brand-purple);
   color: var(--brand-purple);
   padding: 6px 16px;

@@ -49,6 +49,13 @@ pre {
  */
 :root {
   --el-color-primary: var(--accent);
+  /* match EP's tint/shade ladder so hover/disabled/variants follow the section accent */
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, white);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, black);
   --el-color-success: var(--brand-green);
   --el-color-warning: var(--brand-orange);
   --el-color-danger: var(--brand-red);
