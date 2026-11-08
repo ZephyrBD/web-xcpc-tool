@@ -4,7 +4,7 @@ import { ElButton, ElInput, ElMessage, ElPagination, ElTable, ElTableColumn } fr
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
 
-type DjTeam = {
+export type DjTeam = {
   id: string
   icpc_id?: string
   name: string

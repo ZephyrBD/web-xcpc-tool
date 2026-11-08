@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
-import type { DjTeam } from '../../../server/src/domjudge/client'
+import type { DjTeam } from '@/pages/TeamsPage.vue'
 
 const messageMock = {
   error: mock(() => ({})),

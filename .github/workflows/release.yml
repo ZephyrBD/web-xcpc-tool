@@ -35,7 +35,7 @@ jobs:
       - name: setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.10
 
       # The admin UI build output is served by the server binary from ./static
       # next to the process cwd (see resolveStaticDir in apps/server/src/server.ts).
