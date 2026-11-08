@@ -16,6 +16,8 @@ export interface ApiFetchOptions extends RequestInit {
   query?: Record<string, string | number | undefined>
   /** Skip the global 401 redirect — the caller handles the error inline (e.g. the login page). */
   skipAuthRedirect?: boolean
+  /** Return the response body as a Blob instead of parsed JSON (binary downloads, e.g. PDFs). */
+  blob?: boolean
 }
 
 export class ApiError extends Error {
@@ -30,7 +32,7 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
-  const { query, headers, skipAuthRedirect, ...rest } = opts
+  const { query, headers, skipAuthRedirect, blob, ...rest } = opts
   const url = new URL(`/cxtool${path}`, window.location.origin)
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -61,5 +63,6 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
     throw new ApiError(res.status, await res.json().catch(() => null))
   }
   if (res.status === 204) return undefined as T
+  if (blob) return (await res.blob()) as T
   return (await res.json()) as T
 }

@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
-import { ElButton, ElMessage, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElButton, ElMessage, ElSwitch, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
+import { printPdfTask } from '@/utils/printPdf'
 import type { BalloonTask, PrintTask } from '@/types'
 
 const activeTab = ref('print')
 const printTasks = ref<PrintTask[]>([])
 const balloonTasks = ref<BalloonTask[]>([])
 
+// 收到新任务自动打印：本地开关，默认关。iframe.print 不是弹窗，一般不会被
+// 拦截；若浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
+const AUTO_PRINT_KEY = 'cxtool_autoprint'
+const autoPrint = ref(localStorage.getItem(AUTO_PRINT_KEY) === '1')
+watch(autoPrint, (v) => localStorage.setItem(AUTO_PRINT_KEY, v ? '1' : '0'))
+
+// 已见过的任务 id：只有随 SSE 新出现的待打任务才自动打印，避免 refresh()
+// 重新拉列表时对老任务重复触发。浏览器要求打印通常有用户手势，SSE 触发的
+// 自动打印可能被静默忽略——属已知限制。
+const knownPrintIds = new Set<string>()
+
 async function refreshPrint(): Promise<void> {
   try {
     printTasks.value = await apiFetch<PrintTask[]>('/admin/api/print-tasks')
+    for (const t of printTasks.value) knownPrintIds.add(t.id)
   } catch {
     // 轮询失败不打断页面，下一条 SSE 事件会再触发刷新。
   }
@@ -48,7 +61,16 @@ function scheduleRefresh(event: 'print-task' | 'balloon-task'): void {
   else balloonTimer = t
 }
 
-useSse((event) => {
+useSse((event, data) => {
+  if (event === 'print-task') {
+    const t = data as PrintTask
+    if (t?.id && !knownPrintIds.has(t.id)) {
+      knownPrintIds.add(t.id)
+      if (autoPrint.value && t.status === 'pending') {
+        void printPdfTask(t.id, apiFetch).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
+      }
+    }
+  }
   if (event === 'print-task' || event === 'balloon-task') scheduleRefresh(event)
 })
 
@@ -65,6 +87,14 @@ const balloonStatusLabels: Record<string, string> = {
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString()
+}
+
+async function printRow(row: PrintTask): Promise<void> {
+  try {
+    await printPdfTask(row.id, apiFetch)
+  } catch {
+    ElMessage.error('打印没成功，请再试一次')
+  }
 }
 
 async function ackPrint(row: PrintTask, status: 'printed' | 'failed'): Promise<void> {
@@ -104,6 +134,9 @@ onUnmounted(() => {
   <div class="jobs">
     <el-tabs v-model="activeTab" class="jobs-tabs">
       <el-tab-pane label="打印任务" name="print">
+        <div class="print-toolbar">
+          <el-switch v-model="autoPrint" active-text="收到新任务自动打印" />
+        </div>
         <el-table v-if="printTasks.length" :data="printTasks">
           <el-table-column prop="location" label="位置" min-width="110" />
           <el-table-column prop="teamName" label="队伍" min-width="140" />
@@ -118,9 +151,10 @@ onUnmounted(() => {
           <el-table-column label="提交时间" min-width="170">
             <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="170">
+          <el-table-column label="操作" min-width="240">
             <template #default="{ row }">
               <template v-if="row.status === 'pending'">
+                <el-button size="small" @click="printRow(row as PrintTask)">打印</el-button>
                 <el-button size="small" type="primary" @click="ackPrint(row as PrintTask, 'printed')">标记已打</el-button>
                 <el-button size="small" type="danger" plain @click="ackPrint(row as PrintTask, 'failed')">标记失败</el-button>
               </template>
@@ -184,6 +218,12 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.print-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
 .pill {
   display: inline-block;
   padding: 2px 10px;

@@ -11,6 +11,9 @@ mock.module('element-plus', () => ({
   ElMessage: { ...elementPlus.ElMessage, error: messageErrorMock },
 }))
 
+const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve())
+mock.module('@/utils/printPdf', () => ({ printPdfTask: printPdfTaskMock }))
+
 const { default: JobsPage } = await import('./JobsPage.vue')
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -131,6 +134,7 @@ describe('JobsPage', () => {
   beforeEach(() => {
     localStorage.clear()
     messageErrorMock.mockClear()
+    printPdfTaskMock.mockClear()
     ackShouldFail = false
     FakeEventSource.instances.length = 0
     globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
@@ -249,6 +253,47 @@ describe('JobsPage', () => {
     const getsAfter = calls.filter((c) => c.method === 'GET').length
     expect(getsAfter).toBe(getsBefore + 1)
     expect(wrapper.text()).toContain('A-p3')
+  })
+
+  test('打印 button fetches the pdf via the print util with the task id', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '打印')!
+    expect(btn).toBeDefined()
+    await btn.trigger('click')
+    await flush()
+
+    expect(printPdfTaskMock).toHaveBeenCalledWith('p1', expect.any(Function))
+  })
+
+  test('auto-print ON: a new SSE print-task event triggers printPdfTask for the new id only', async () => {
+    localStorage.setItem('cxtool_autoprint', '1')
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const es = FakeEventSource.instances[0]
+
+    es.emit('print-task', makePrintTask('p9'))
+    await wait(400)
+
+    const ids = printPdfTaskMock.mock.calls.map((c) => c[0])
+    expect(ids).toContain('p9')
+    expect(ids).not.toContain('p1')
+    expect(ids).not.toContain('p2')
+  })
+
+  test('auto-print OFF: SSE print-task events do not trigger printPdfTask', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const es = FakeEventSource.instances[0]
+
+    es.emit('print-task', makePrintTask('p9'))
+    await wait(400)
+
+    expect(printPdfTaskMock).not.toHaveBeenCalled()
   })
 
   test('empty print list shows the friendly empty state with illustration', async () => {

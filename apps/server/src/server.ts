@@ -141,6 +141,28 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     return c.json(safe);
   });
 
+  // PDF for the admin browser to print (hidden-iframe flow, like the legacy
+  // Java version). pdfPath is server-internal, so it is re-validated here.
+  app.get("/admin/api/print-tasks/:id/pdf", (c) => {
+    const t = printQueue.list().find((x) => x.id === c.req.param("id"));
+    if (!t) return c.json({ error: "task not found" }, 404);
+    const pdfDir = resolve(join(dataDir, "pdf"));
+    const filePath = resolve(t.pdfPath);
+    if (filePath !== pdfDir && !filePath.startsWith(pdfDir + sep)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      return c.json({ error: "pdf not found" }, 404);
+    }
+    const filename = t.originalFilename.replace(/[^\w.\-]+/g, "_") || "print.pdf";
+    return new Response(readFileSync(filePath), {
+      headers: {
+        "content-type": "application/pdf",
+        "content-disposition": `inline; filename="${filename}"`,
+      },
+    });
+  });
+
   app.get("/admin/api/auth-tasks", (c) => {
     const status = c.req.query("status");
     const valid = ["pending", "approved", "rejected", "auto-done"] as const;
