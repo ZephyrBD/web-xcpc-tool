@@ -68,7 +68,6 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
       mql = window.matchMedia('print')
       const legacy = mql as unknown as { addListener?: (fn: () => void) => void }
       onMediaChange = () => {
-        console.debug(`[print] matchMedia('print') change → matches=${mql?.matches}`)
         if (mql?.matches) printPreviewOpen = true
         else if (printPreviewOpen) settle(true, 'print media close')
       }
@@ -83,7 +82,6 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
     const settle = (confirmed: boolean, why = '') => {
       if (settled) return
       settled = true
-      console.debug(`[print] settle(${confirmed})${why ? ' via ' + why : ''}`)
       window.clearTimeout(timer)
       for (const t of targets) t.removeEventListener('afterprint', onAfterprint)
       detachPrintMedia()
@@ -93,10 +91,7 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
     for (const t of targets) t.addEventListener('afterprint', onAfterprint)
     // happy-dom (test env) has no window.print; real browsers always do.
     if (typeof win.print === 'function') {
-      console.debug('[print] calling win.print(), targets:', targets.length, 'matchMedia:', !!mql)
       win.print()
-    } else {
-      console.debug('[print] win.print unavailable')
     }
     timer = window.setTimeout(() => settle(false, 'timeout'), timeoutMs)
   })
