@@ -30,15 +30,64 @@ const judgementTypes: DjJudgementType[] = [
   { id: "WA", name: "wrong answer", penalty: true, solved: false },
 ];
 
-const submissions: DjSubmission[] = [
-  { id: "s1", problem: "p1", language: "cpp", team: "t1", time: "2026-11-07T10:00:00+00:00" },
-  { id: "s2", problem: "p1", language: "cpp", team: "t2", time: "2026-11-07T10:05:00+00:00" },
-];
+// Mirrors the REAL DOMjudge external contest API shape (verified live against
+// https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/submissions and
+// /judgements): CLICS field names `problem_id`/`team_id`/`language_id` and
+// `submission_id` — the client normalizes them to `problem`/`team`/`language`
+// and `submission`.
+const submissions = [
+  {
+    language_id: "cpp",
+    time: "2026-11-07T10:00:00+00:00",
+    contest_time: "+00:05:00",
+    team_id: "t1",
+    account_id: "team-one",
+    problem_id: "p1",
+    files: [{ href: "https://dj.example.com/source", mime: "text/plain" }],
+    id: "s1",
+    entry_point: null,
+    import_error: null,
+  },
+  {
+    language_id: "cpp",
+    time: "2026-11-07T10:05:00+00:00",
+    contest_time: "+00:10:00",
+    team_id: "t2",
+    account_id: "team-two",
+    problem_id: "p1",
+    files: [{ href: "https://dj.example.com/source", mime: "text/plain" }],
+    id: "s2",
+    entry_point: null,
+    import_error: null,
+  },
+] as DjSubmission[];
 
-const judgings: DjJudging[] = [
-  { id: "j1", submission: "s1", judgement_type_id: "AC" },
-  { id: "j2", submission: "s2", judgement_type_id: "WA" },
-];
+const judgings = [
+  {
+    start_time: "2026-11-07T10:00:01+00:00",
+    end_time: "2026-11-07T10:00:04+00:00",
+    submission_id: "s1",
+    current: true,
+    max_run_time: 2.994,
+    id: "j1",
+    valid: true,
+    score: "0.000000000",
+    judgement_type_id: "AC",
+    simplified_judgement_type_id: "AC",
+  },
+  {
+    start_time: "2026-11-07T10:05:01+00:00",
+    end_time: "2026-11-07T10:05:03+00:00",
+    submission_id: "s2",
+    current: true,
+    max_run_time: 1.5,
+    id: "j2",
+    valid: true,
+    score: "0.000000000",
+    judgement_type_id: "WA",
+    simplified_judgement_type_id: "WA",
+  },
+] as DjJudging[];
 
 function makeFetch(overrides: {
   judgements?: DjJudging[];
