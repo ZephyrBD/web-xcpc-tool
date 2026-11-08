@@ -28,9 +28,14 @@ const MAX_BACKOFF_MULTIPLIER = 10;
 
 /**
  * Correct-verdict matching rule: a judging counts as solved when its
- * judgement_type_id matches the judgement type whose `sorting_key` is
- * "correct"; if no type carries that sorting key, fall back to the type
- * whose id is literally "correct". The set of types comes from
+ * judgement_type_id matches a judgement type where `solved` is true, or
+ * whose `sorting_key` is "correct", or whose id is literally "correct".
+ * The `solved` flag is the authoritative field on a real DOMjudge's
+ * external contest API (verified live against
+ * https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/judgement-types,
+ * which returns e.g. {"id":"AC","name":"accepted","penalty":false,"solved":true}
+ * with no sorting_key); the sorting_key and id checks are kept for
+ * compatibility with the internal API shape. The set of types comes from
  * DjClient.getJudgementTypes for the same contest.
  */
 export class BalloonService {
@@ -106,17 +111,22 @@ export class BalloonService {
       this.client.getSubmissions(this.contestId),
     ]);
 
-    const correctId =
-      judgementTypes.find((t) => t.sorting_key === "correct")?.id ??
-      judgementTypes.find((t) => t.id === "correct")?.id;
-    if (!correctId) return 0;
+    const correctTypeIds = new Set(
+      judgementTypes
+        .filter(
+          (t) =>
+            t.solved === true || t.sorting_key === "correct" || t.id === "correct",
+        )
+        .map((t) => t.id),
+    );
+    if (correctTypeIds.size === 0) return 0;
 
     const submissionsById = new Map(submissions.map((s) => [s.id, s]));
     const existingIds = new Set(this.store.load().map((t) => t.id));
     const created: BalloonTask[] = [];
 
     for (const j of judgings) {
-      if (j.judgement_type_id !== correctId) continue;
+      if (!correctTypeIds.has(j.judgement_type_id)) continue;
       const sub = submissionsById.get(j.submission);
       if (!sub || existingIds.has(sub.id)) continue;
       // One balloon per submission id: the task id is the submission id, so

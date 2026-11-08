@@ -21,9 +21,13 @@ beforeEach(() => {
   setDataDir(tmpDir);
 });
 
+// Mirrors the REAL DOMjudge external contest API shape (verified live against
+// https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/judgement-types):
+// ids are verdict codes like "AC"/"WA", no sorting_key, correctness via `solved`.
 const judgementTypes: DjJudgementType[] = [
-  { id: "AC", sorting_key: "correct" },
-  { id: "WA", sorting_key: "" },
+  { id: "CE", name: "compiler error", penalty: false, solved: false },
+  { id: "AC", name: "accepted", penalty: false, solved: true },
+  { id: "WA", name: "wrong answer", penalty: true, solved: false },
 ];
 
 const submissions: DjSubmission[] = [
@@ -104,6 +108,35 @@ describe("BalloonService", () => {
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe("balloon-task");
     expect(events[0].data).toMatchObject({ id: "s1" });
+  });
+
+  test("pollOnce uses the solved flag when no sorting_key is present", async () => {
+    // Explicit demo-shape guard: AC (solved: true) creates a balloon, WA does not.
+    const { svc } = makeService(makeFetch());
+    const created = await svc.pollOnce();
+    expect(created).toBe(1);
+    const tasks = svc.list();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("s1");
+  });
+
+  test("pollOnce still matches the internal-API 'correct' shape", async () => {
+    const internalTypes: DjJudgementType[] = [
+      { id: "AC", sorting_key: "correct" },
+      { id: "WA", sorting_key: "" },
+    ];
+    const fetchImpl = ((url: string | URL | Request): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(internalTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    const created = await svc.pollOnce();
+    expect(created).toBe(1);
+    expect(svc.list()[0].id).toBe("s1");
   });
 
   test("re-polling the same submission does not duplicate tasks", async () => {

@@ -48,6 +48,10 @@ export class DjApiError extends Error {
 
 export type DjJudgementType = {
   id: string;
+  name?: string;
+  penalty?: boolean;
+  /** True when this verdict counts as solved/correct (real DOMjudge external API). */
+  solved?: boolean;
   sorting_key?: string;
 };
 
