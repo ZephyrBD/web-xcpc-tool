@@ -78,7 +78,7 @@ describe('TeamCodesPage', () => {
   beforeEach(() => {
     localStorage.clear()
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: true },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: true, djUsername: 'team1095218' },
     ]
     unassignedCount = 1
     loginHistory = []
@@ -110,6 +110,8 @@ describe('TeamCodesPage', () => {
     expect(text).toContain('队伍一')
     expect(text).toContain('icpc1')
     expect(text).toContain('abcdefghjkmn')
+    expect(text).toContain('用户名')
+    expect(text).toContain('team1095218')
     // non-coded teams are not listed; the unassigned count is summarized instead
     expect(text).not.toContain('队伍二')
     expect(text).toContain('已发队伍码 1 / 2')
@@ -117,6 +119,15 @@ describe('TeamCodesPage', () => {
     expect(text).toContain('有密码')
     expect(wrapper.findAll('.code-text').length).toBeGreaterThanOrEqual(1)
     expect(text).toContain('导出内容包含 DOMjudge 密码，请妥善保管')
+  })
+
+  test('shows an em dash when the DOMjudge username is not provisioned', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: true, djUsername: null },
+    ]
+    const wrapper = await mountPage()
+    const row = wrapper.findAll('.el-table__row')[0]
+    expect(row.text()).toContain('—')
   })
 
   test('regenerate button confirms and POSTs generate with the row icpcId', async () => {
@@ -143,9 +154,9 @@ describe('TeamCodesPage', () => {
 
   test('一键配置密码 confirms then provisions each target team sequentially with its icpcId', async () => {
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
-      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: true },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false, djUsername: 'team1095218' },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: true, djUsername: 'team3' },
     ]
     unassignedCount = 0
     const wrapper = await startProvision()
@@ -164,9 +175,9 @@ describe('TeamCodesPage', () => {
 
   test('progress dialog shows the current team, live percentage and per-team results', async () => {
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
-      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false, djUsername: null },
     ]
     unassignedCount = 0
     provisionHandler = async (body) => {
@@ -198,9 +209,9 @@ describe('TeamCodesPage', () => {
 
   test('cancel stops the loop after the in-flight request finishes', async () => {
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
-      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false, djUsername: null },
     ]
     unassignedCount = 0
     provisionHandler = async (body) => {
@@ -224,9 +235,9 @@ describe('TeamCodesPage', () => {
 
   test('unmounting the page stops the loop after the in-flight request finishes', async () => {
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
-      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false, djUsername: null },
     ]
     unassignedCount = 0
     provisionHandler = async (body) => {
@@ -249,8 +260,8 @@ describe('TeamCodesPage', () => {
 
   test('when every failure has the same reason a DOMjudge-permission hint is shown', async () => {
     teamCodeRows = [
-      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false, djUsername: null },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false, djUsername: null },
     ]
     unassignedCount = 0
     provisionHandler = () =>

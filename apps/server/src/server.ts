@@ -257,6 +257,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         name: t.display_name?.trim() || t.name,
         teamCode: teamStore.getTeamCode(icpcId),
         hasPassword: teamStore.hasPassword(icpcId),
+        djUsername: teamStore.getDjUsername(icpcId),
       };
     });
     const rows = all.filter((r) => r.teamCode);

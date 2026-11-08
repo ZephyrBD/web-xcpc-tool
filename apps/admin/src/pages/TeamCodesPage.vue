@@ -264,6 +264,11 @@ onMounted(() => void refresh())
                 <el-button size="small" text type="primary" @click="onCopy((row as TeamCodeRow).teamCode!)">复制</el-button>
               </template>
             </el-table-column>
+            <el-table-column label="用户名" min-width="140">
+              <template #default="{ row }">
+                <code class="code-text">{{ (row as TeamCodeRow).djUsername ?? '—' }}</code>
+              </template>
+            </el-table-column>
             <el-table-column label="有密码" min-width="90">
               <template #default="{ row }">{{ (row as TeamCodeRow).hasPassword ? '是' : '否' }}</template>
             </el-table-column>

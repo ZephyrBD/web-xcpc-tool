@@ -35,7 +35,7 @@ function mockFetch() {
 }
 
 function makeCodeRow(icpcId: string, withCode: boolean): TeamCodeRow {
-  return { icpcId, name: `队伍 ${icpcId}`, teamCode: withCode ? `code-${icpcId}` : null, hasPassword: withCode }
+  return { icpcId, name: `队伍 ${icpcId}`, teamCode: withCode ? `code-${icpcId}` : null, hasPassword: withCode, djUsername: null }
 }
 
 async function mountPage() {

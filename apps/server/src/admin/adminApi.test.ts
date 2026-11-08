@@ -59,6 +59,7 @@ describe("admin team-code & login-history API", () => {
       name: "Team One",
       teamCode: teamStore.getTeamCode("icpc1"),
       hasPassword: true,
+      djUsername: "team1095218",
     });
     expect(body.unassigned).toBe(2);
     expect(JSON.stringify(body)).not.toContain("secret-pw-1");
@@ -186,10 +187,10 @@ describe("admin team-code API: teams without icpc_id fall back to the DOMjudge t
     const code = teamStore.setTeamCode("djteam9");
     const res = await app.request("/admin/api/team-codes", { headers });
     const body = (await res.json()) as {
-      rows: Array<{ icpcId: string; name: string; teamCode: string | null; hasPassword: boolean }>;
+      rows: Array<{ icpcId: string; name: string; teamCode: string | null; hasPassword: boolean; djUsername: string | null }>;
       unassigned: number;
     };
-    expect(body.rows[0]).toEqual({ icpcId: "djteam9", name: "Demo Team", teamCode: code, hasPassword: false });
+    expect(body.rows[0]).toEqual({ icpcId: "djteam9", name: "Demo Team", teamCode: code, hasPassword: false, djUsername: null });
     expect(body.unassigned).toBe(1);
   });
 

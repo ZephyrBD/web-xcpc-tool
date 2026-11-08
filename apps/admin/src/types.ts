@@ -31,6 +31,8 @@ export interface TeamCodeRow {
   name: string
   teamCode: string | null
   hasPassword: boolean
+  /** DOMjudge login name recorded at provision time; null when not provisioned. */
+  djUsername: string | null
 }
 
 /** Payload of GET /admin/api/team-codes: only coded teams are listed;
