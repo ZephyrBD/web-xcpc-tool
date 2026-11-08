@@ -4,6 +4,7 @@ import { ElButton, ElMessage, ElSwitch, ElTable, ElTableColumn, ElTabPane, ElTab
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
 import { printPdfTask } from '@/utils/printPdf'
+import { printBalloonTask } from '@/utils/printBalloon'
 import type { BalloonTask, PrintTask } from '@/types'
 
 const activeTab = ref('print')
@@ -21,6 +22,12 @@ watch(autoPrint, (v) => localStorage.setItem(AUTO_PRINT_KEY, v ? '1' : '0'))
 // 自动打印可能被静默忽略——属已知限制。
 const knownPrintIds = new Set<string>()
 
+// 收到新气球自动打印：与打印任务同样的机制，独立开关与去重集合。
+const AUTO_BALLOON_KEY = 'cxtool_autoprint_balloon'
+const autoPrintBalloon = ref(localStorage.getItem(AUTO_BALLOON_KEY) === '1')
+watch(autoPrintBalloon, (v) => localStorage.setItem(AUTO_BALLOON_KEY, v ? '1' : '0'))
+const knownBalloonIds = new Set<string>()
+
 async function refreshPrint(): Promise<void> {
   try {
     printTasks.value = await apiFetch<PrintTask[]>('/admin/api/print-tasks')
@@ -33,6 +40,7 @@ async function refreshPrint(): Promise<void> {
 async function refreshBalloon(): Promise<void> {
   try {
     balloonTasks.value = await apiFetch<BalloonTask[]>('/admin/api/balloon-tasks')
+    for (const t of balloonTasks.value) knownBalloonIds.add(t.id)
   } catch {
     // 同上：气球服务可能未启用（503），静默等待下次刷新。
   }
@@ -68,6 +76,15 @@ useSse((event, data) => {
       knownPrintIds.add(t.id)
       if (autoPrint.value && t.status === 'pending') {
         void printPdfTask(t.id, apiFetch).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
+      }
+    }
+  }
+  if (event === 'balloon-task') {
+    const t = data as BalloonTask
+    if (t?.id && !knownBalloonIds.has(t.id)) {
+      knownBalloonIds.add(t.id)
+      if (autoPrintBalloon.value && t.status === 'pending') {
+        void printBalloonTask(t, apiFetch).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
       }
     }
   }
@@ -107,6 +124,14 @@ async function ackPrint(row: PrintTask, status: 'printed' | 'failed'): Promise<v
     ElMessage.error('操作没成功，请再试一次')
   } finally {
     await refreshPrint()
+  }
+}
+
+async function printBalloonRow(row: BalloonTask): Promise<void> {
+  try {
+    await printBalloonTask(row, apiFetch)
+  } catch {
+    ElMessage.error('打印没成功，请再试一次')
   }
 }
 
@@ -175,6 +200,9 @@ onUnmounted(() => {
         </div>
       </el-tab-pane>
       <el-tab-pane label="气球任务" name="balloon">
+        <div class="print-toolbar">
+          <el-switch v-model="autoPrintBalloon" active-text="收到新气球自动打印" />
+        </div>
         <el-table v-if="balloonTasks.length" :data="balloonTasks">
           <el-table-column prop="problemLabel" label="题目" min-width="90" />
           <el-table-column prop="teamName" label="队伍" min-width="150" />
@@ -191,14 +219,12 @@ onUnmounted(() => {
           <el-table-column label="产生时间" min-width="170">
             <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="110">
+          <el-table-column label="操作" min-width="170">
             <template #default="{ row }">
-              <el-button
-                v-if="row.status === 'pending'"
-                size="small"
-                type="primary"
-                @click="ackBalloon(row as BalloonTask)"
-              >标记已送</el-button>
+              <template v-if="row.status === 'pending'">
+                <el-button size="small" @click="printBalloonRow(row as BalloonTask)">打印</el-button>
+                <el-button size="small" type="primary" @click="ackBalloon(row as BalloonTask)">标记已送</el-button>
+              </template>
             </template>
           </el-table-column>
         </el-table>

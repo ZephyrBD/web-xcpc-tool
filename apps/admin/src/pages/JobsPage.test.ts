@@ -14,6 +14,9 @@ mock.module('element-plus', () => ({
 const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve())
 mock.module('@/utils/printPdf', () => ({ printPdfTask: printPdfTaskMock }))
 
+const printBalloonTaskMock = mock((_task: unknown, _apiFetch: unknown) => Promise.resolve())
+mock.module('@/utils/printBalloon', () => ({ printBalloonTask: printBalloonTaskMock }))
+
 const { default: JobsPage } = await import('./JobsPage.vue')
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -135,6 +138,7 @@ describe('JobsPage', () => {
     localStorage.clear()
     messageErrorMock.mockClear()
     printPdfTaskMock.mockClear()
+    printBalloonTaskMock.mockClear()
     ackShouldFail = false
     FakeEventSource.instances.length = 0
     globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
@@ -294,6 +298,55 @@ describe('JobsPage', () => {
     await wait(400)
 
     expect(printPdfTaskMock).not.toHaveBeenCalled()
+  })
+
+  test('气球任务 打印 button calls printBalloonTask with the task', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]
+    const btn = balloonPane!.findAll('button').find((b) => b.text() === '打印')!
+    expect(btn).toBeDefined()
+    await btn.trigger('click')
+    await flush()
+
+    expect(printBalloonTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b1', problemLabel: 'A' }),
+      expect.any(Function),
+    )
+  })
+
+  test('auto balloon-print ON: a new SSE balloon-task event fires for the new id only', async () => {
+    localStorage.setItem('cxtool_autoprint_balloon', '1')
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const es = FakeEventSource.instances[0]
+
+    es.emit('balloon-task', makeBalloonTask('b9'))
+    await wait(400)
+
+    const ids = printBalloonTaskMock.mock.calls.map((c) => (c[0] as BalloonTask).id)
+    expect(ids).toContain('b9')
+    expect(ids).not.toContain('b1')
+  })
+
+  test('auto balloon-print OFF: SSE balloon-task events do not trigger printing', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const es = FakeEventSource.instances[0]
+
+    es.emit('balloon-task', makeBalloonTask('b9'))
+    await wait(400)
+
+    expect(printBalloonTaskMock).not.toHaveBeenCalled()
   })
 
   test('empty print list shows the friendly empty state with illustration', async () => {
