@@ -1,10 +1,9 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import { loadConfig } from "./config";
-import { AuthQueue } from "./queue/authQueue";
 import { createApp } from "./server";
 import { adminAuthHeaders } from "./admin/auth";
 import { DjClient } from "./domjudge/client";
@@ -14,12 +13,19 @@ import { JsonStore } from "./store/store";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
+import { verifyTeamToken } from "./auth/token";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
   jwt: { secret: "test-secret", ttlSeconds: 3600 },
 });
-const CAPTURE_FILE = "fingerprints.jsonl";
+
+function makeTeamStore(dataDir: string): TeamStore {
+  return new TeamStore(
+    join(dataDir, "team-passwords.json"),
+    new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))),
+  );
+}
 
 describe("createApp", () => {
   let dataDir: string;
@@ -38,67 +44,6 @@ describe("createApp", () => {
     const res = await app.request("/health");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-  });
-
-  test("capture=true records a fingerprint line per request", async () => {
-    const cfg = { ...loadConfigWithSecret(), oms: { strategies: [], uaRegexes: [], capture: true } };
-    const app = createApp(cfg, { dataDir });
-    await app.request("/health");
-    const capturePath = join(dataDir, CAPTURE_FILE);
-    expect(existsSync(capturePath)).toBe(true);
-    const lines = readFileSync(capturePath, "utf8").trim().split("\n");
-    expect(lines.length).toBe(1);
-    const fp = JSON.parse(lines[0]);
-    expect(fp.method).toBe("GET");
-    expect(fp.path).toBe("/health");
-  });
-
-  test("capture=false writes no capture file", async () => {
-    const cfg = loadConfigWithSecret();
-    const app = createApp(cfg, { dataDir });
-    await app.request("/health");
-    expect(existsSync(join(dataDir, CAPTURE_FILE))).toBe(false);
-  });
-
-  test("identified request is enqueued and auto-done when autoAccept is on", async () => {
-    const cfg = {
-      ...loadConfigWithSecret(),
-      oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
-    };
-    const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
-    queue.autoAccept = true;
-    const app = createApp(cfg, { dataDir, authQueue: queue });
-    const res = await app.request("/health", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7" },
-    });
-    expect(res.status).toBe(200);
-    const tasks = await (await app.request("/admin/api/auth-tasks?status=auto-done", { headers: await adminAuthHeaders(cfg) })).json();
-    expect(tasks.length).toBe(1);
-    expect(tasks[0].examNum).toBe("unknown");
-    expect(tasks[0].strategy).toBe("ua-regex");
-    expect(tasks[0].clientId).toBeNull();
-  });
-
-  test("unidentified request does not enqueue", async () => {
-    const cfg = {
-      ...loadConfigWithSecret(),
-      oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
-    };
-    const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
-    const app = createApp(cfg, { dataDir, authQueue: queue });
-    await app.request("/health", { headers: { "user-agent": "curl/8.0" } });
-    expect(queue.list().length).toBe(0);
-  });
-
-  test("uses deps.server.requestIP for the client ip in captured fingerprints", async () => {
-    const cfg = { ...loadConfigWithSecret(), oms: { strategies: [], uaRegexes: [], capture: true } };
-    const app = createApp(cfg, {
-      dataDir,
-      server: { requestIP: () => ({ address: "1.2.3.4" }) },
-    });
-    await app.request("/health");
-    const fp = JSON.parse(readFileSync(join(dataDir, CAPTURE_FILE), "utf8"));
-    expect(fp.ip).toBe("1.2.3.4");
   });
 });
 
@@ -152,25 +97,24 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       adminPassword: "pw",
       timeoutSeconds: 10,
     },
-    oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
+    teamLogin: { start: "", end: "" },
     print: { token: "print-tok" },
   });
 
   test("verify → cookie → proxy hit → print → admin list share one app instance", async () => {
-    const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E1", clientId: "client-1", strategy: "ua-regex" });
+    const teamStore = makeTeamStore(dataDir);
+    teamStore.setPassword("icpc1", "team-pw");
+    const teamCode = teamStore.setTeamCode("icpc1");
     const printQueue = new PrintQueue(join(dataDir, "print-tasks.json"));
-    const app = createApp(makeCfg(), { dataDir, authQueue: queue, printQueue });
+    const app = createApp(makeCfg(), { dataDir, teamStore, printQueue });
 
-    // 1. verify issues the team-token cookie
-    const verifyRes = await app.request("/dj/verify?examNum=E1", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7", "x-oms-client-id": "client-1" },
-    });
+    // 1. verify issues the team-token cookie carrying the icpcId
+    const verifyRes = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
     expect(verifyRes.status).toBe(302);
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cxtool-token=");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    expect((await verifyTeamToken("dod-test-secret", token))?.sub).toBe("icpc1");
 
     // 2. the cookie lets /dj/* reach the mock upstream
     const proxied = await app.request("/dj/anything", {
@@ -206,16 +150,12 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
   });
 
   test("verify → proxy chain works through a /cxtool mount", async () => {
-    const queue = new AuthQueue(join(dataDir, "auth-tasks-mount.json"));
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E2", clientId: "client-2", strategy: "ua-regex" });
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc2");
     const cfg = { ...makeCfg(), contextPath: "/cxtool" };
-    const app = new Hono().route("/cxtool", createApp(cfg, { dataDir, authQueue: queue }));
+    const app = new Hono().route("/cxtool", createApp(cfg, { dataDir, teamStore }));
 
-    const verifyRes = await app.request("/cxtool/dj/verify?examNum=E2", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7", "x-oms-client-id": "client-2" },
-      redirect: "manual",
-    });
+    const verifyRes = await app.request(`/cxtool/dj/verify?code=${teamCode}`, { redirect: "manual" });
     expect(verifyRes.status).toBe(302);
     expect(verifyRes.headers.get("location")).toBe("/cxtool/dj/");
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
@@ -230,11 +170,16 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
   });
 
+  test("wrong team code never issues a cookie", async () => {
+    const teamStore = makeTeamStore(dataDir);
+    const app = createApp(makeCfg(), { dataDir, teamStore });
+    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
   test("import-excel with an invalid file returns 400 invalid excel file", async () => {
-    const teamStore = new TeamStore(
-      join(dataDir, "team-passwords.json"),
-      new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))),
-    );
+    const teamStore = makeTeamStore(dataDir);
     const app = createApp(makeCfg(), {
       dataDir,
       teamStore,
@@ -380,7 +325,7 @@ describe("static hosting", () => {
   test("GET .svg asset returns image/svg+xml", async () => {
     const res = await makeApp().request("/cxtool/logo.svg");
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/svg+xml");
+    expect(res.headers.get("content-type")).toContain("image/svg+xml");
   });
 
   test.each([

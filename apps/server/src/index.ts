@@ -4,7 +4,6 @@ import { Hono } from "hono";
 import { setDataDir } from "./store/store";
 import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 import { createApp } from "./server";
-import { AuthQueue } from "./queue/authQueue";
 import { SseBus } from "./sse/bus";
 import { PrintQueue } from "./print/queue";
 import { BalloonService } from "./balloon/service";
@@ -25,7 +24,6 @@ cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 
 setDataDir(DATA_DIR);
 
-const authQueue = new AuthQueue(join(DATA_DIR, "auth-tasks.json"));
 const bus = new SseBus();
 const printQueue = new PrintQueue(join(DATA_DIR, "print-tasks.json"));
 const djClient = new DjClient(cfg.domjudge, undefined, cfg.domjudge.timeoutSeconds * 1000);
@@ -46,7 +44,6 @@ const balloonService = new BalloonService({
 
 let server: Bun.Server<never> | null = null;
 const app = createApp(cfg, {
-  authQueue,
   bus,
   printQueue,
   djClient,

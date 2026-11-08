@@ -1,14 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve, sep } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { Config } from "./config";
-import { AuthQueue, type AuthTask } from "./queue/authQueue";
-import { FingerprintCapture } from "./oms/capture";
-import type { ClientFingerprint } from "./oms/identify";
-import { identifyClient } from "./oms/identify";
 import { SseBus } from "./sse/bus";
-import { verifyClient } from "./domjudge/verify";
+import { verifyTeamCode } from "./domjudge/verify";
 import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
@@ -21,24 +17,22 @@ import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
-import { verifyFormPage, verifyMissPage, verifyPendingPage, verifyRejectedPage } from "./pages/teamPages";
+import { verifyFormPage, verifyMissPage, verifyWindowPage } from "./pages/teamPages";
 
 export type Deps = {
   dataDir: string;
-  authQueue: AuthQueue;
   printQueue: PrintQueue;
   bus: SseBus;
   balloonService?: BalloonService;
   teamStore?: TeamStore;
   teamsStore?: JsonStore<DjTeam[]>;
   djClient?: DjClient;
-  /** Bun's Server is structurally compatible with this shape. */
+  /** Bun's Server is structurally compatible with this shape (admin rate-limit IP lookup). */
   server?: { requestIP(req: Request): { address: string } | null };
   /** Admin frontend build output directory. Defaults to apps/server/static. */
   staticDir?: string;
 };
 
-const CAPTURE_FILE = "fingerprints.jsonl";
 const DEFAULT_STATIC_DIR = join(import.meta.dir, "..", "static");
 
 export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
@@ -46,80 +40,31 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   const staticDir = resolve(deps?.staticDir ?? DEFAULT_STATIC_DIR);
   const app = new Hono();
 
-  const queue = deps?.authQueue ?? new AuthQueue(join(dataDir, "auth-tasks.json"));
   const bus = deps?.bus ?? new SseBus();
-  queue.onChange((t: AuthTask) => bus.publish("admin", "auth-task", t));
 
   const printQueue = deps?.printQueue ?? new PrintQueue(join(dataDir, "print-tasks.json"));
   printQueue.onChange((t) => bus.publish("admin", "print-task", t));
 
-  let capture: FingerprintCapture | null = null;
-  if (cfg.oms.capture) {
-    mkdirSync(dataDir, { recursive: true });
-    capture = new FingerprintCapture(join(dataDir, CAPTURE_FILE));
-  }
-
-  app.use("*", async (c, next) => {
-    const headers: Record<string, string> = {};
-    for (const [k, v] of c.req.raw.headers.entries()) {
-      headers[k] = v;
-    }
-    const fp: ClientFingerprint = {
-      ip: deps?.server?.requestIP(c.req.raw)?.address ?? "unknown",
-      method: c.req.method,
-      path: new URL(c.req.url).pathname,
-      headers,
-    };
-    if (capture) {
-      capture.record(fp);
-    }
-    const result = identifyClient(fp, cfg.oms);
-    if (result && deps?.authQueue) {
-      // Plan 2 binds the real examNum; "unknown" is a placeholder until then.
-      deps.authQueue.enqueue({
-        examNum: "unknown",
-        clientId: c.req.raw.headers.get("x-oms-client-id"),
-        strategy: result.strategy,
-      });
-    }
-    await next();
-  });
+  const teamStore =
+    deps?.teamStore ??
+    new TeamStore(join(dataDir, "team-passwords.json"), new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))));
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
 
   app.get("/dj/verify", async (c) => {
-    const headers: Record<string, string> = {};
-    for (const [k, v] of c.req.raw.headers.entries()) {
-      headers[k] = v;
-    }
-    const fp: ClientFingerprint = {
-      ip: deps?.server?.requestIP(c.req.raw)?.address ?? "unknown",
-      method: c.req.method,
-      path: new URL(c.req.url).pathname,
-      headers,
-    };
-    const rawExamNum = c.req.query("examNum");
-    // No examNum in the URL → the examinee types it on the form page.
-    if (rawExamNum === undefined || rawExamNum.trim() === "") {
-      const hint = rawExamNum !== undefined ? "考号不能为空" : undefined;
+    const raw = c.req.query("code");
+    // No code in the URL → the team types it on the form page.
+    if (raw === undefined || raw.trim() === "") {
+      const hint = raw !== undefined ? "队伍码不能为空" : undefined;
       return verifyFormPage(cfg.contextPath, hint);
     }
-    const examNum = rawExamNum.trim();
-    const result = await verifyClient(
-      fp,
-      examNum,
-      queue.list(),
-      cfg,
-      (task, num) => queue.bindExamNum(task.id, num),
-    );
+    const result = await verifyTeamCode(raw.trim(), teamStore, cfg);
     if (!result.ok) {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
-      // HTTP status codes keep their semantics (403 miss/rejected, 200 pending).
-      if (result.reason === "pending") return verifyPendingPage(examNum);
-      if (result.reason === "rejected") return verifyRejectedPage(examNum);
-      return verifyMissPage(examNum);
+      // HTTP status codes keep their semantics (403 on both failures).
+      return result.reason === "bad-code" ? verifyMissPage() : verifyWindowPage(cfg.teamLogin);
     }
     c.header(
       "Set-Cookie",
@@ -132,7 +77,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   app.post("/dj/print", (c) => handlePrintCallback(c, cfg, printQueue, dataDir));
 
   // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
-  app.all("/dj/*", (c) => handleDjProxy(c, cfg));
+  app.all("/dj/*", (c) => handleDjProxy(c, cfg, teamStore));
 
   // Admin login is registered before the /admin/api/* middleware, which skips it explicitly.
   app.post("/admin/api/login", createAdminLoginHandler(cfg, deps));
@@ -176,24 +121,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         "content-disposition": `inline; filename="${filename}"`,
       },
     });
-  });
-
-  app.get("/admin/api/auth-tasks", (c) => {
-    const status = c.req.query("status");
-    const valid = ["pending", "approved", "rejected", "auto-done"] as const;
-    return c.json(queue.list(valid.includes(status as never) ? (status as never) : undefined));
-  });
-
-  app.post("/admin/api/auth-tasks/:id/approve", (c) => {
-    const t = queue.approve(c.req.param("id"));
-    if (!t) return c.json({ error: "task not found" }, 404);
-    return c.json(t);
-  });
-
-  app.post("/admin/api/auth-tasks/:id/reject", (c) => {
-    const t = queue.reject(c.req.param("id"));
-    if (!t) return c.json({ error: "task not found" }, 404);
-    return c.json(t);
   });
 
   app.get("/admin/api/balloon-tasks", (c) => {
@@ -255,9 +182,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   });
 
   app.post("/admin/api/teams/import-excel", async (c) => {
-    const teamStore =
-      deps?.teamStore ??
-      new TeamStore(join(dataDir, "team-passwords.json"), new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))));
     const teamsStore =
       deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     const form = await c.req.formData().catch(() => null);

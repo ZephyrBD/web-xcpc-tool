@@ -98,14 +98,11 @@ describe("admin auth", () => {
       djClient: { getTeams: async () => [], getProblems: async () => [] } as never,
     });
     const cases: Array<[string, RequestInit]> = [
-      ["/admin/api/auth-tasks", {}],
       ["/admin/api/print-tasks", {}],
       ["/admin/api/balloon-tasks", {}],
       ["/admin/api/teams", {}],
       ["/admin/api/teams/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }],
       ["/admin/api/teams/import-excel", { method: "POST" }],
-      ["/admin/api/auth-tasks/t1/approve", { method: "POST" }],
-      ["/admin/api/auth-tasks/t1/reject", { method: "POST" }],
       ["/admin/api/print-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/balloon-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/events", {}],
@@ -119,7 +116,7 @@ describe("admin auth", () => {
   test("Bearer token grants access to admin routes", async () => {
     const cfg = await makeCfg();
     const app = createApp(cfg, { dataDir });
-    const res = await app.request("/admin/api/auth-tasks", { headers: await adminAuthHeaders(cfg) });
+    const res = await app.request("/admin/api/print-tasks", { headers: await adminAuthHeaders(cfg) });
     expect(res.status).toBe(200);
   });
 
@@ -165,7 +162,7 @@ describe("admin auth", () => {
   test("401 applies through a /cxtool mount too", async () => {
     const cfg = { ...(await makeCfg()), contextPath: "/cxtool" };
     const mounted = new Hono().route("/cxtool", createApp(cfg, { dataDir }));
-    const res = await mounted.request("/cxtool/admin/api/auth-tasks");
+    const res = await mounted.request("/cxtool/admin/api/settings");
     expect(res.status).toBe(401);
     const loginRes = await mounted.request("/cxtool/admin/api/login", {
       method: "POST",

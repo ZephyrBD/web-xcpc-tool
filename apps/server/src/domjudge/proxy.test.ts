@@ -1,14 +1,26 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../config";
 import { signTeamToken } from "../auth/token";
 import { createApp } from "../server";
+import { SecretBox } from "../store/secretbox";
+import { setDataDir } from "../store/store";
+import { TeamStore } from "../store/teams";
 
 const SECRET = "proxy-test-secret";
+const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+function testStore(): TeamStore {
+  setDataDir(mkdtempSync(join(tmpdir(), "proxy-teams-")));
+  return new TeamStore("teams.json", new SecretBox(KEY));
+}
 
 let hits = 0;
-let lastReq: { method: string; path: string; body: string; cookie: string | null } | null = null;
+let lastReq: { method: string; path: string; body: string; cookie: string | null; headers: Record<string, string> } | null = null;
 let upstreamPort = 0;
 
 const upstream = Bun.serve({
@@ -20,6 +32,7 @@ const upstream = Bun.serve({
       path: new URL(req.url).pathname,
       body: await req.text(),
       cookie: req.headers.get("cookie"),
+      headers: Object.fromEntries(req.headers.entries()),
     };
     return new Response(JSON.stringify({ echo: "upstream-ok" }), {
       status: 200,
@@ -121,6 +134,51 @@ describe("DOMjudge reverse proxy", () => {
     expect(lastReq?.method).toBe("POST");
     expect(lastReq?.body).toBe('{"problem":"A","language":"cpp"}');
     expect(lastReq?.path).toBe("/api/submissions");
+  });
+
+  test("request to upstream /login injects X-DOMjudge-Login/Pass from the team store", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "s3cret pw");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/login", {
+      method: "POST",
+      headers: { cookie: `cxtool-token=${token}`, "content-type": "application/x-www-form-urlencoded" },
+      body: "username=ignored&password=ignored",
+    });
+    expect(res.status).toBe(200);
+    expect(lastReq?.path).toBe("/login");
+    expect(lastReq?.headers["x-domjudge-login"]).toBe("2025001");
+    expect(lastReq?.headers["x-domjudge-pass"]).toBe(Buffer.from("s3cret pw", "utf8").toString("base64"));
+  });
+
+  test("non-/login paths do NOT get X-Headers injected", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "s3cret pw");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await app.request("/dj/api/contests", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.headers["x-domjudge-login"]).toBeUndefined();
+    expect(lastReq?.headers["x-domjudge-pass"]).toBeUndefined();
+  });
+
+  test("a team without a stored credential falls back to no injection on /login", async () => {
+    const store = testStore(); // no password for "nobody"
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "nobody");
+    const res = await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.status).toBe(200);
+    expect(lastReq?.headers["x-domjudge-login"]).toBeUndefined();
+    expect(lastReq?.headers["x-domjudge-pass"]).toBeUndefined();
+  });
+
+  test("cxtool-token is stripped from the upstream request on /login too", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "pw");
+    const app = createApp(makeCfg(), { teamStore: store });
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` } });
+    expect(lastReq?.cookie).toBe("DOMjudgeSID=keep");
   });
 
   test("large binary body streams through intact", async () => {

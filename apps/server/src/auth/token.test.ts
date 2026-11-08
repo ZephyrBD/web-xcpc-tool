@@ -6,7 +6,7 @@ const SECRET = "0123456789abcdef0123456789abcdef";
 describe("signTeamToken/verifyTeamToken", () => {
   test("roundtrip", async () => {
     const token = await signTeamToken(SECRET, 60, "t1");
-    expect(await verifyTeamToken(SECRET, token)).toEqual({ examNum: "t1" });
+    expect(await verifyTeamToken(SECRET, token)).toEqual({ sub: "t1" });
   });
 
   test("expired token returns null", async () => {
@@ -18,7 +18,7 @@ describe("signTeamToken/verifyTeamToken", () => {
     const token = await signTeamToken(SECRET, 60, "t1");
     const [head, payload] = token.split(".");
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    decoded.examNum = "t2";
+    decoded.sub = "t2";
     const forged = `${head}.${Buffer.from(JSON.stringify(decoded)).toString("base64url")}.${token.split(".")[2]}`;
     expect(await verifyTeamToken(SECRET, forged)).toBeNull();
   });

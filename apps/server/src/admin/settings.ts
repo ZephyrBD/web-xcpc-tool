@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { hashSync } from "bcryptjs";
 import { parseConfig, type Config } from "../config";
+import { isoOrEmpty } from "../config";
 
 /**
  * Subset of settings.json editable from the admin UI. Secret fields are
@@ -24,6 +25,9 @@ export const settingsPatchSchema = z.object({
     })
     .optional(),
   print: z.object({ token: z.string().optional() }).optional(),
+  teamLogin: z
+    .object({ start: isoOrEmpty.optional(), end: isoOrEmpty.optional() })
+    .optional(),
   admin: z.object({ username: z.string().optional(), password: z.string().optional() }).optional(),
 });
 
@@ -49,6 +53,7 @@ export function safeSettingsView(cfg: Config) {
       pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
     },
     print: { tokenMasked: maskToken(cfg.print.token) },
+    teamLogin: { start: cfg.teamLogin.start, end: cfg.teamLogin.end },
     admin: { username: cfg.admin.username },
   };
 }
@@ -83,6 +88,7 @@ export function applySettingsPatch(cfg: Config, patch: SettingsPatch, settingsPa
   if (patch.print) {
     base.print = { ...current.print, ...(patch.print.token ? { token: patch.print.token } : {}) };
   }
+  if (patch.teamLogin) base.teamLogin = { ...current.teamLogin, ...patch.teamLogin };
   if (patch.admin) {
     const { password, ...rest } = patch.admin;
     // Only "password" comes from the UI; it is hashed here so the raw value

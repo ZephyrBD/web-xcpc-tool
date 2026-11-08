@@ -1,15 +1,14 @@
 /**
- * Team-facing HTML pages rendered server-side for the OMS exam client
- * (QtWebEngine). No template engine, no external assets — everything inline
- * so the pages work offline. Palette mirrors the admin UI (Design-md).
+ * Team-facing HTML pages rendered server-side for the verify flow
+ * (the examinee types the team code shown on screen). No template engine,
+ * no external assets — everything inline so the pages work offline.
+ * Palette mirrors the admin UI (Design-md).
  */
 
 const PALETTE = {
   green: "#0acf83",
   orange: "#f24e1e",
-  purple: "#a259ff",
   red: "#ff7262",
-  blue: "#1abcfe",
 };
 
 function escapeHtml(value: string): string {
@@ -34,7 +33,6 @@ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:c
 .card{background:#fff;border-radius:16px;padding:40px 36px;max-width:420px;width:100%;box-shadow:0 8px 30px rgba(31,36,48,.08);border-top:3px solid ${accent};text-align:center}
 h1{margin:0 0 12px;font-size:22px}
 p{margin:8px 0;font-size:15px;color:#5b6472;line-height:1.6}
-.exam{display:inline-block;margin-top:16px;padding:6px 16px;border-radius:999px;background:${accent}1a;color:${accent};font-size:14px;font-weight:600;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 input{width:100%;margin-top:20px;padding:12px 14px;font-size:16px;border:1.5px solid #d9dee7;border-radius:10px;outline:none}
 input:focus{border-color:${accent}}
 button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:600;color:#fff;background:${accent};border:none;border-radius:10px;cursor:pointer}
@@ -52,55 +50,53 @@ ${body}
   });
 }
 
-/** Recognition missed (no strategy matched, or no task at all) — HTTP 403 kept for semantics. */
-export function verifyMissPage(examNum: string): Response {
-  const res = page(
-    "队伍认证",
-    PALETTE.orange,
-    `<h1>队伍认证</h1>
-<p>未识别到考位信息</p>
-<p>请联系监考人员检查认证配置</p>
-${examNum ? `<span class="exam">考号：${escapeHtml(examNum)}</span>` : ""}`,
-  );
-  return new Response(res.body, { status: 403, headers: res.headers });
-}
-
-/** Task recognized but still waiting for proctor approval — HTTP 200, page self-explains. */
-export function verifyPendingPage(examNum: string): Response {
-  return page(
-    "队伍认证",
-    PALETTE.blue,
-    `<h1>队伍认证</h1>
-<meta http-equiv="refresh" content="5">
-<p>认证申请已提交，等待监考批准…</p>
-<p>批准后本页面会每 5 秒自动刷新，进入比赛系统，请稍候。</p>
-${examNum ? `<span class="exam">考号：${escapeHtml(examNum)}</span>` : ""}`,
-  );
-}
-
-/** Task was rejected by the proctor — HTTP 403. */
-export function verifyRejectedPage(examNum: string): Response {
-  const res = page(
-    "队伍认证",
-    PALETTE.red,
-    `<h1>队伍认证</h1>
-<p>认证被拒绝，请联系监考人员</p>
-${examNum ? `<span class="exam">考号：${escapeHtml(examNum)}</span>` : ""}`,
-  );
-  return new Response(res.body, { status: 403, headers: res.headers });
-}
-
-/** Verification entry: the examinee types their exam number here (HTTP 200). */
+/** Team code typed on the form page (HTTP 200). */
 export function verifyFormPage(contextPath: string, hint?: string): Response {
   return page(
-    "队伍认证",
+    "队伍登录",
     PALETTE.green,
-    `<h1>队伍认证</h1>
-<p>请输入你的考号开始认证</p>
+    `<h1>队伍登录</h1>
+<p>请输入屏幕上显示的队伍码开始登录</p>
 ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
 <form method="get" action="${escapeHtml(contextPath)}/dj/verify">
-<input name="examNum" placeholder="请输入考号">
-<button type="submit">开始认证</button>
+<input name="code" placeholder="请输入队伍码">
+<button type="submit">开始登录</button>
 </form>`,
   );
+}
+
+/** The typed code does not match any team — HTTP 403 kept for semantics. */
+export function verifyMissPage(): Response {
+  const res = page(
+    "队伍登录",
+    PALETTE.orange,
+    `<h1>队伍登录</h1>
+<p>队伍码不正确</p>
+<p>请核对屏幕上显示的队伍码后重新输入</p>`,
+  );
+  return new Response(res.body, { status: 403, headers: res.headers });
+}
+
+function friendlyTime(iso: string): string {
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+/** The code matched but the current time is outside the allowed login window — HTTP 403. */
+export function verifyWindowPage(window: { start: string; end: string }): Response {
+  let span: string;
+  if (window.start && window.end) {
+    span = `${friendlyTime(window.start)} ~ ${friendlyTime(window.end)}`;
+  } else if (window.start) {
+    span = `${friendlyTime(window.start)} 之后`;
+  } else {
+    span = `${friendlyTime(window.end)} 之前`;
+  }
+  const res = page(
+    "队伍登录",
+    PALETTE.red,
+    `<h1>队伍登录</h1>
+<p>当前不在允许登录的时段内</p>
+<p>允许登录时段：${escapeHtml(span)}</p>`,
+  );
+  return new Response(res.body, { status: 403, headers: res.headers });
 }

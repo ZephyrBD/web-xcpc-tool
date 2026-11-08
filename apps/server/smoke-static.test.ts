@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import { loadConfig } from "./src/config";
 import { createApp } from "./src/server";
-import { AuthQueue } from "./src/queue/authQueue";
 
 // End-to-end smoke: serve the real production build output under /cxtool.
 describe("production static smoke", () => {
@@ -16,7 +15,7 @@ describe("production static smoke", () => {
     const cfg = { ...loadConfig("/nonexistent/settings.json"), jwt: { secret: "s", ttlSeconds: 60 }, contextPath: "/cxtool" };
     const app = new Hono().route(
       "/cxtool",
-      createApp(cfg, { dataDir, authQueue: new AuthQueue(join(dataDir, "auth-tasks.json")), staticDir }),
+      createApp(cfg, { dataDir, staticDir }),
     );
 
   afterAll(() => rmSync(dataDir, { recursive: true, force: true }));

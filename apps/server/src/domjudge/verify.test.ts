@@ -1,119 +1,120 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { loadConfig } from "../config";
-import { AuthQueue } from "../queue/authQueue";
 import { verifyTeamToken } from "../auth/token";
-import { verifyClient } from "./verify";
+import { inLoginWindow, verifyTeamCode } from "./verify";
 import { createApp } from "../server";
+import { SecretBox } from "../store/secretbox";
+import { setDataDir } from "../store/store";
+import { TeamStore } from "../store/teams";
 
 const SECRET = "test-secret";
+const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-function testQueue(): AuthQueue {
-  return new AuthQueue(join(tmpdir(), `verify-test-${crypto.randomUUID()}.json`));
-}
-
-function testCfg() {
+function testCfg(teamLogin: { start: string; end: string } = { start: "", end: "" }) {
   return {
     ...loadConfig("/nonexistent/settings.json"),
     contextPath: "",
     jwt: { secret: SECRET, ttlSeconds: 600 },
     domjudge: { baseUrl: "http://test.local", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
-    oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
+    teamLogin,
   };
 }
 
-describe("verifyClient", () => {
-  test("approved/auto-done task with matching examNum+clientId yields a verifiable token", async () => {
-    const cfg = testCfg();
-    const queue = testQueue();
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E123", clientId: null, strategy: "ua-regex" });
-    const res = await verifyClient(
-      {
-        ip: "1.2.3.4",
-        method: "GET",
-        path: "/dj/verify",
-        headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-      },
-      "E123",
-      queue.list(),
-      cfg,
-    );
+function testStore(): TeamStore {
+  const dir = join(tmpdir(), `verify-store-${crypto.randomUUID()}`);
+  setDataDir(dir);
+  const store = new TeamStore("teams.json", new SecretBox(KEY));
+  return store;
+}
+
+describe("inLoginWindow", () => {
+  const base = new Date("2026-01-01T10:00:00Z");
+
+  test("both empty = always allowed", () => {
+    const w = { start: "", end: "" };
+    expect(inLoginWindow(new Date("2000-01-01T00:00:00Z"), w)).toBe(true);
+    expect(inLoginWindow(base, w)).toBe(true);
+  });
+
+  test("inside the window is allowed", () => {
+    const w = { start: "2026-01-01T09:00:00Z", end: "2026-01-01T11:00:00Z" };
+    expect(inLoginWindow(base, w)).toBe(true);
+  });
+
+  test("before start is rejected", () => {
+    const w = { start: "2026-01-01T10:00:01Z", end: "" };
+    expect(inLoginWindow(base, w)).toBe(false);
+  });
+
+  test("after end is rejected", () => {
+    const w = { start: "", end: "2026-01-01T09:59:59Z" };
+    expect(inLoginWindow(base, w)).toBe(false);
+  });
+
+  test("boundary instants are inclusive", () => {
+    expect(inLoginWindow(base, { start: "2026-01-01T10:00:00Z", end: "" })).toBe(true);
+    expect(inLoginWindow(base, { start: "", end: "2026-01-01T10:00:00Z" })).toBe(true);
+  });
+
+  test("only-end set = allowed from the beginning until end", () => {
+    const w = { start: "", end: "2026-01-01T12:00:00Z" };
+    expect(inLoginWindow(new Date("2020-01-01T00:00:00Z"), w)).toBe(true);
+    expect(inLoginWindow(new Date("2027-01-01T00:00:00Z"), w)).toBe(false);
+  });
+
+  test("only-start set = allowed from start until forever", () => {
+    const w = { start: "2026-01-01T12:00:00Z", end: "" };
+    expect(inLoginWindow(new Date("2020-01-01T00:00:00Z"), w)).toBe(false);
+    expect(inLoginWindow(new Date("2027-01-01T00:00:00Z"), w)).toBe(true);
+  });
+});
+
+describe("verifyTeamCode", () => {
+  test("correct code inside the window yields a token with sub=icpcId", async () => {
+    const store = testStore();
+    store.setPassword("2025001", "pw");
+    const code = store.setTeamCode("2025001");
+    const res = await verifyTeamCode(code, store, testCfg(), new Date("2026-01-01T10:00:00Z"));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const payload = await verifyTeamToken(SECRET, res.token);
-    expect(payload?.examNum).toBe("E123");
+    expect(payload?.sub).toBe("2025001");
   });
 
-  test("no approved task → 403 reason not approved", async () => {
-    const cfg = testCfg();
-    const queue = testQueue();
-    const res = await verifyClient(
-      {
-        ip: "1.2.3.4",
-        method: "GET",
-        path: "/dj/verify",
-        headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-      },
-      "E123",
-      queue.list(),
-      cfg,
-    );
-    expect(res).toEqual({ ok: false, reason: "not approved" });
+  test("wrong code reports bad-code", async () => {
+    const store = testStore();
+    store.setTeamCode("t1");
+    const res = await verifyTeamCode("zzzzzzzzzzzz", store, testCfg(), new Date());
+    expect(res).toEqual({ ok: false, reason: "bad-code" });
   });
 
-  test("UA matches no strategy → 403 reason illegal client", async () => {
-    const cfg = testCfg();
-    const queue = testQueue();
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E123", clientId: null, strategy: "ua-regex" });
-    const res = await verifyClient(
-      {
-        ip: "1.2.3.4",
-        method: "GET",
-        path: "/dj/verify",
-        headers: { "user-agent": "curl/8.0" },
-      },
-      "E123",
-      queue.list(),
-      cfg,
-    );
-    expect(res).toEqual({ ok: false, reason: "illegal client" });
+  test("correct code outside the window reports outside-window", async () => {
+    const store = testStore();
+    store.setTeamCode("t1", "abcdefgh2345");
+    const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
+    const res = await verifyTeamCode("abcdefgh2345", store, cfg, new Date("2026-01-01T09:00:00Z"));
+    expect(res).toEqual({ ok: false, reason: "outside-window" });
   });
 
-  test("clientId header must match the task's clientId", async () => {
-    const cfg = testCfg();
-    const queue = testQueue();
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E123", clientId: "client-a", strategy: "client-id" });
-    const res = await verifyClient(
-      {
-        ip: "1.2.3.4",
-        method: "GET",
-        path: "/dj/verify",
-        headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3", "x-oms-client-id": "client-b" },
-      },
-      "E123",
-      queue.list(),
-      cfg,
-    );
-    expect(res).toEqual({ ok: false, reason: "not approved" });
+  test("code matching is case-insensitive and trimmed", async () => {
+    const store = testStore();
+    store.setTeamCode("t1", "abcdefgh2345");
+    const res = await verifyTeamCode("  ABCDEFGH2345 ", store, testCfg(), new Date());
+    expect(res.ok).toBe(true);
   });
 });
 
 describe("GET /dj/verify route", () => {
-  test("success redirects to this server's dj path with cxtool-token cookie", async () => {
+  test("correct code redirects to /dj/ with a cxtool-token cookie carrying sub", async () => {
     const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E456", clientId: null, strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E456", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-      redirect: "manual",
-    });
+    const store = testStore();
+    store.setPassword("2025001", "pw");
+    const code = store.setTeamCode("2025001");
+    const app = createApp(cfg, { teamStore: store });
+    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/dj/");
     const cookie = res.headers.get("set-cookie") ?? "";
@@ -123,276 +124,101 @@ describe("GET /dj/verify route", () => {
     expect(cookie).toContain("SameSite=Lax");
     const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
     const payload = await verifyTeamToken(SECRET, token);
-    expect(payload?.examNum).toBe("E456");
+    expect(payload?.sub).toBe("2025001");
   });
 
   test("under /cxtool mount, redirect and cookie path carry the contextPath", async () => {
     const cfg = { ...testCfg(), contextPath: "/cxtool" };
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "E789", clientId: null, strategy: "ua-regex" });
-    const sub = createApp(cfg, { authQueue: queue });
+    const store = testStore();
+    const code = store.setTeamCode("2025001");
+    const sub = createApp(cfg, { teamStore: store });
     const app = new Hono().route("/cxtool", sub);
-    const res = await app.request("/cxtool/dj/verify?examNum=E789", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-      redirect: "manual",
-    });
+    const res = await app.request(`/cxtool/dj/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/cxtool/dj/");
-    const cookie = res.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("Path=/cxtool/dj");
-    const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
-    const payload = await verifyTeamToken(SECRET, token);
-    expect(payload?.examNum).toBe("E789");
+    expect(res.headers.get("set-cookie")).toContain("Path=/cxtool/dj");
+    const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    expect((await verifyTeamToken(SECRET, token))?.sub).toBe("2025001");
   });
 
-  test("unrecognized client returns 403 HTML miss page echoing the exam number", async () => {
+  test("wrong code returns 403 HTML page with the generic message", async () => {
     const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E456", {
-      headers: { "user-agent": "curl/8.0" },
-    });
+    const store = testStore();
+    const app = createApp(cfg, { teamStore: store });
+    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
     expect(res.status).toBe(403);
     expect(res.headers.get("content-type")).toContain("text/html");
     const text = await res.text();
-    expect(text).toContain("E456");
-    expect(text).toContain("未识别到考位信息");
+    expect(text).toContain("队伍码不正确");
   });
 
-  test("pending task returns 200 HTML wait page", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "E777", clientId: null, strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E777", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("等待监考批准");
-  });
-
-  test("rejected task returns 403 HTML rejection page", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const task = queue.enqueue({ examNum: "E888", clientId: null, strategy: "ua-regex" });
-    queue.reject(task.id);
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E888", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
+  test("valid code outside the window returns 403 with the configured window", async () => {
+    const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
+    const store = testStore();
+    const code = store.setTeamCode("t1");
+    const app = createApp(cfg, { teamStore: store });
+    const res = await app.request(`/dj/verify?code=${code}`);
     expect(res.status).toBe(403);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("认证被拒绝");
-  });
-
-  test("pending page auto-refreshes so approval takes effect without manual reload", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "E777", clientId: null, strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E777", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(await res.text()).toContain('http-equiv="refresh"');
-  });
-
-  test("examNum is escaped in the miss page (XSS regression)", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=<script>alert(1)</script>", {
-      headers: { "user-agent": "curl/8.0" },
-    });
     const text = await res.text();
-    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(text).not.toContain("<script>alert(1)</script>");
+    expect(text).toContain("当前不在允许登录的时段内");
+    expect(text).toContain("允许登录时段");
   });
 
-  test("GET /dj/verify without examNum renders the type-in form page", async () => {
+  test("no restriction when the window is empty (default config)", async () => {
     const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const text = await res.text();
-    expect(text).toContain("请输入你的考号开始认证");
-    expect(text).toContain('action="/dj/verify"');
-    expect(text).toContain('name="examNum"');
-  });
-
-  test("empty examNum re-renders the form with the empty hint", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(200);
-    const text = await res.text();
-    expect(text).toContain("考号不能为空");
-    expect(text).toContain('action="/dj/verify"');
-  });
-
-  test("whitespace-only examNum re-renders the form with the empty hint", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=%20%20", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("考号不能为空");
-  });
-
-  test("typed examNum binds the pending unknown task of the same clientId", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E100", {
-      headers: {
-        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
-        "x-oms-client-id": "client-a",
-      },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("等待监考批准");
-    const bound = queue.list().find((t) => t.clientId === "client-a");
-    expect(bound?.examNum).toBe("E100");
-    expect(bound?.status).toBe("pending");
-  });
-
-  test("typed examNum binds an approved unknown task and issues the token", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.autoAccept = true;
-    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E200", {
-      headers: {
-        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
-        "x-oms-client-id": "client-a",
-      },
-      redirect: "manual",
-    });
+    const store = testStore();
+    const code = store.setTeamCode("t1");
+    const app = createApp(cfg, { teamStore: store });
+    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/dj/");
-    const cookie = res.headers.get("set-cookie") ?? "";
-    const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
-    const payload = await verifyTeamToken(SECRET, token);
-    expect(payload?.examNum).toBe("E200");
-    const bound = queue.list().find((t) => t.clientId === "client-a");
-    expect(bound?.examNum).toBe("E200");
-    expect(bound?.status).toBe("auto-done");
   });
 
-  test("typed examNum binds a rejected unknown task to the rejection page", async () => {
+  test("GET /dj/verify without code renders the type-in form page", async () => {
     const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const task = queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
-    queue.reject(task.id);
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E300", {
-      headers: {
-        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
-        "x-oms-client-id": "client-a",
-      },
-    });
-    expect(res.status).toBe(403);
-    expect(await res.text()).toContain("认证被拒绝");
-    const bound = queue.list().find((t) => t.id === task.id);
-    expect(bound?.examNum).toBe("E300");
-  });
-
-  test("recognized client without client-id header must NOT bind an unknown task with null clientId", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const task = queue.enqueue({ examNum: "unknown", clientId: null, strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E600", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(403);
-    expect(await res.text()).toContain("未识别到考位信息");
-    const stored = queue.list().find((t) => t.id === task.id);
-    expect(stored?.examNum).toBe("unknown");
-  });
-
-  test("typed examNum is trimmed before matching and binding", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "E700", clientId: "client-a", strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=%20%20E700%20", {
-      headers: {
-        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
-        "x-oms-client-id": "client-a",
-      },
-    });
+    const app = createApp(cfg, { teamStore: testStore() });
+    const res = await app.request("/dj/verify");
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("等待监考批准");
-  });
-
-  test("unrecognized client with typed examNum → miss page, store untouched", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E400", {
-      headers: { "user-agent": "curl/8.0" },
-    });
-    expect(res.status).toBe(403);
-    expect(await res.text()).toContain("未识别到考位信息");
-    const stored = queue.list().find((t) => t.clientId === "client-a");
-    expect(stored?.examNum).toBe("unknown");
-  });
-
-  test("typed examNum matching an existing task leaves the store unchanged", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "E500", clientId: "client-a", strategy: "ua-regex" });
-    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=E500", {
-      headers: {
-        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
-        "x-oms-client-id": "client-a",
-      },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("等待监考批准");
-    const tasks = queue.list().filter((t) => t.clientId === "client-a");
-    expect(tasks.find((t) => t.examNum === "E500")?.status).toBe("pending");
-    expect(tasks.find((t) => t.examNum === "unknown")).toBeDefined();
-  });
-
-  test("malicious examNum typed in the form flow is escaped (XSS regression)", async () => {
-    const cfg = testCfg();
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    const app = createApp(cfg, { authQueue: queue });
-    const res = await app.request("/dj/verify?examNum=<script>alert(1)</script>", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
+    expect(res.headers.get("content-type")).toContain("text/html");
     const text = await res.text();
-    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text).toContain("请输入屏幕上显示的队伍码开始登录");
+    expect(text).toContain('action="/dj/verify"');
+    expect(text).toContain('name="code"');
+  });
+
+  test("blank code re-renders the form with the empty hint", async () => {
+    const cfg = testCfg();
+    const app = createApp(cfg, { teamStore: testStore() });
+    const res = await app.request("/dj/verify?code=");
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("队伍码不能为空");
+    expect(text).toContain('action="/dj/verify"');
+  });
+
+  test("whitespace-only code re-renders the form with the empty hint", async () => {
+    const cfg = testCfg();
+    const app = createApp(cfg, { teamStore: testStore() });
+    const res = await app.request("/dj/verify?code=%20%20");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("队伍码不能为空");
+  });
+
+  test("code is escaped on the miss page (XSS regression)", async () => {
+    const cfg = testCfg();
+    const app = createApp(cfg, { teamStore: testStore() });
+    const res = await app.request("/dj/verify?code=<script>alert(1)</script>");
+    const text = await res.text();
     expect(text).not.toContain("<script>alert(1)</script>");
   });
 
-  test("pending page renders under a /cxtool mount", async () => {
-    const cfg = { ...testCfg(), contextPath: "/cxtool" };
-    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
-    queue.enqueue({ examNum: "E999", clientId: null, strategy: "ua-regex" });
-    const sub = createApp(cfg, { authQueue: queue });
-    const app = new Hono().route("/cxtool", sub);
-    const res = await app.request("/cxtool/dj/verify?examNum=E999", {
-      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
-    });
-    expect(res.status).toBe(200);
+  test("window page renders under a /cxtool mount", async () => {
+    const cfg = { ...testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" }), contextPath: "/cxtool" };
+    const store = testStore();
+    const code = store.setTeamCode("t1");
+    const app = new Hono().route("/cxtool", createApp(cfg, { teamStore: store }));
+    const res = await app.request(`/cxtool/dj/verify?code=${code}`);
+    expect(res.status).toBe(403);
     expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("当前不在允许登录的时段内");
   });
 });

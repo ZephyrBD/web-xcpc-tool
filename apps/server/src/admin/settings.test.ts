@@ -200,6 +200,37 @@ describe("settings routes", () => {
     expect(saved.admin.passwordHash).not.toBe("$2b$10$evil");
   });
 
+  test("PUT accepts teamLogin window bounds and the view echoes them", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ teamLogin: { start: "2026-01-01T08:00:00Z", end: "2026-01-01T12:00:00Z" } }),
+    });
+    expect(res.status).toBe(200);
+    const view = (await res.json()) as Record<string, Record<string, unknown>>;
+    expect(view.teamLogin).toEqual({ start: "2026-01-01T08:00:00Z", end: "2026-01-01T12:00:00Z" });
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.teamLogin.start).toBe("2026-01-01T08:00:00Z");
+    expect(saved.teamLogin.end).toBe("2026-01-01T12:00:00Z");
+    // The saved file must re-parse through the full config schema.
+    expect(loadConfig(join(dataDir, "settings.json")).teamLogin.end).toBe("2026-01-01T12:00:00Z");
+  });
+
+  test("PUT rejects a non-ISO teamLogin bound with 400", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ teamLogin: { start: "next-tuesday" } }),
+    });
+    expect(res.status).toBe(400);
+    expect(existsSync(join(dataDir, "settings.json"))).toBe(false);
+  });
+
   test("PUT rejects malformed payloads with 400", async () => {
     const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });

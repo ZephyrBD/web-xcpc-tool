@@ -2,6 +2,23 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
+/** Empty string means "no restriction"; otherwise an ISO datetime. */
+export const isoOrEmpty = z
+  .string()
+  .refine((s) => s === "" || !Number.isNaN(Date.parse(s)), {
+    message: "must be an ISO datetime string or empty",
+  });
+
+const teamLoginSchema = z
+  .object({
+    start: isoOrEmpty.default(""),
+    end: isoOrEmpty.default(""),
+  })
+  .default({ start: "", end: "" })
+  .refine((v) => !v.start || !v.end || v.start < v.end, {
+    message: "teamLogin.start must be before teamLogin.end",
+  });
+
 const configSchema = z.object({
   port: z.number().int().default(8080),
   contextPath: z.string().default("/cxtool"),
@@ -19,16 +36,7 @@ const configSchema = z.object({
       ttlSeconds: z.number().int().positive(),
     })
     .default({ secret: "", ttlSeconds: 3600 }),
-  oms: z
-    .object({
-      strategies: z.array(z.string()).default([]),
-      uaRegexes: z.array(z.string()).default([]),
-      customHeader: z
-        .object({ name: z.string(), value: z.string() })
-        .optional(),
-      capture: z.boolean().default(false),
-    })
-    .default({ strategies: [], uaRegexes: [], capture: false }),
+  teamLogin: teamLoginSchema,
   print: z
     .object({ token: z.string().default("") })
     .default({ token: "" }),

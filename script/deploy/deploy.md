@@ -139,7 +139,7 @@ powershell -File script/deploy/start.ps1   # Windows
 1. `curl http://localhost:8080/cxtool/health` 返回 `{"ok":true}`。
 2. 浏览器打开 `http://<host>:8080/cxtool/`，用 `admin.username` + 明文密码登录成功。
 3. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/cxtool`（代理路径为 `/cxtool/dj/...`）。
-4. 用一台队伍机器走一次进站认证 + 打印，确认 OMS 客户端识别生效（如需新增客户端规则，配置 `oms.strategies` / `oms.uaRegexes`）。
+4. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/cxtool/dj/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
 
 ## 安全说明
 

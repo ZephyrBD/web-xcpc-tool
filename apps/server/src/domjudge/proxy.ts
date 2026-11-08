@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { proxy } from "hono/proxy";
 import type { Config } from "../config";
 import { verifyTeamToken } from "../auth/token";
+import type { TeamStore } from "../store/teams";
 
 const HOP_BY_HOP = new Set([
   "host",
@@ -63,11 +64,12 @@ export function forwardCookie(header: string | null | undefined): string | undef
   return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
-export async function handleDjProxy(c: Context, cfg: Config): Promise<Response> {
+export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamStore): Promise<Response> {
   const token = getCookie(c.req.header("cookie"), "cxtool-token");
-  if (!token || !(await verifyTeamToken(cfg.jwt.secret, token))) {
-    // Teams are humans in the OMS exam client: send them to the verify page,
-    // where they type their exam number to start authentication.
+  const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
+  if (!payload) {
+    // Teams are humans: send them to the verify page, where they type their
+    // team code (shown on screen) to start authentication.
     return c.redirect(`${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`, 302);
   }
   const rest = proxyFilter(c, cfg);
@@ -81,6 +83,15 @@ export async function handleDjProxy(c: Context, cfg: Config): Promise<Response> 
   }
   for (const h of HOP_BY_HOP) headers[h] = undefined;
   headers["cookie"] = forwardCookie(c.req.header("cookie"));
+  // DOMjudge processes X-Headers only at /login: inject the team credential
+  // there so the team is logged in without typing a DOMjudge password.
+  if (rest === "/login" || rest.startsWith("/login/")) {
+    const password = teamStore?.getPassword(payload.sub) ?? null;
+    if (password !== null) {
+      headers["x-domjudge-login"] = payload.sub;
+      headers["x-domjudge-pass"] = Buffer.from(password, "utf8").toString("base64");
+    }
+  }
   try {
     return await proxy(target, { raw: c.req.raw, headers });
   } catch (err) {
