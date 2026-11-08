@@ -1,0 +1,67 @@
+@import './tokens.css';
+
+/* base reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Element Plus theme bridge — routes brand hues into EP components.
+ * --accent is set per-route by AdminLayout, so el-primary follows the
+ * section rotation (总览 purple / 认证 green / 任务 orange / 队伍 blue).
+ * --brand-red stays reserved for danger states.
+ */
+:root {
+  --el-color-primary: var(--accent);
+  --el-color-success: var(--brand-green);
+  --el-color-warning: var(--brand-orange);
+  --el-color-danger: var(--brand-red);
+  --el-color-error: var(--brand-red);
+  --el-border-radius-base: 8px;
+  --el-font-family: var(--font-body);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-secondary: var(--text-muted);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-bg-color: var(--bg);
+  --el-fill-color-blank: var(--bg);
+  --el-box-shadow-light: var(--shadow-card);
+}

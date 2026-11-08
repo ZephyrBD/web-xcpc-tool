@@ -1,0 +1,46 @@
+/*
+ * Design tokens — source of truth: docs/superpowers/specs/DESIGN-md.md
+ * All components must consume these variables; no hardcoded brand colors.
+ */
+:root {
+  /* surfaces & text */
+  --bg: #ffffff;
+  --bg-alt: #fafafa;
+  --text: #0f0f14;
+  --text-muted: #6e6e78;
+  --border: #e5e5ea;
+
+  /* brand prism — all first-class, rotate one accent per section */
+  --brand-green: #0acf83;
+  --brand-orange: #f24e1e;
+  --brand-purple: #a259ff;
+  --brand-red: #ff7262;
+  --brand-blue: #1abcfe;
+
+  /* default accent; AdminLayout overrides --accent per route section */
+  --accent-default: var(--brand-purple);
+  --accent: var(--accent-default);
+
+  /* radii — generous, never below 8px */
+  --radius-card: 16px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+
+  /* elevation */
+  --shadow-card: 0 8px 24px rgba(15, 15, 20, .08);
+
+  /* type scale (13 / 15 / 17 / 20 / 24 / 32 / 44 / 64 / 88) */
+  --text-13: 13px;
+  --text-15: 15px;
+  --text-17: 17px;
+  --text-20: 20px;
+  --text-24: 24px;
+  --text-32: 32px;
+  --text-44: 44px;
+
+  /* font stacks — Whyte Inktrap (heading) / Söhne Mono would slot in here
+     when licensed; Inter + system CJK fallbacks stand in offline */
+  --font-heading: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "Söhne Mono", monospace;
+}
