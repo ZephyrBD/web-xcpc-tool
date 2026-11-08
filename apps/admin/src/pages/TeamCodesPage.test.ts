@@ -5,6 +5,7 @@ import * as elementPlus from 'element-plus'
 import type { LoginHistoryEntry, TeamCodeRow } from '@/types'
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 5))
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // happy-dom 会真的跟随 <a download> 点击触发的 blob: 导航，把 window.location
 // 拐跑（origin 变 null），后续所有 fetch 都会炸。让 <a>.click 变成空操作。
@@ -32,6 +33,7 @@ const { default: TeamCodesPage } = await import('./TeamCodesPage.vue')
 let teamCodeRows: TeamCodeRow[] = []
 let unassignedCount = 0
 let loginHistory: LoginHistoryEntry[] = []
+let provisionHandler: ((body: { icpcId?: string; all?: boolean }) => Response | Promise<Response>) | null = null
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
 
 function mockFetch() {
@@ -51,7 +53,9 @@ function mockFetch() {
       return new Response(JSON.stringify({ icpcId: body.icpcId, teamCode: 'newcode12345' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (path === '/admin/api/team-codes/provision' && method === 'POST') {
-      return new Response(JSON.stringify({ provisioned: 2, skipped: 1, errors: [{ icpcId: 'icpcX', reason: 'DOMjudge 中没有该用户名的账号' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      const body = JSON.parse(String(init?.body)) as { icpcId?: string; all?: boolean }
+      if (provisionHandler) return provisionHandler(body)
+      return new Response(JSON.stringify({ provisioned: 1, skipped: 0, errors: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (path === '/admin/api/team-codes/export' && method === 'GET') {
       return new Response('\uFEFF队伍名,队伍码\n队伍一,abcdefghjkmn', { status: 200, headers: { 'content-type': 'text/csv' } })
@@ -78,9 +82,27 @@ describe('TeamCodesPage', () => {
     ]
     unassignedCount = 1
     loginHistory = []
+    provisionHandler = null
     calls.length = 0
     mockFetch()
   })
+
+  /** ElDialog 默认不 teleport，对话框内容就在组件树里。 */
+  function dialogText(wrapper: Awaited<ReturnType<typeof mountPage>>): string {
+    return wrapper.text()
+  }
+
+  function dialogButton(wrapper: Awaited<ReturnType<typeof mountPage>>, label: string) {
+    return wrapper.findAll('button').find((b) => b.text() === label)
+  }
+
+  async function startProvision(): Promise<Awaited<ReturnType<typeof mountPage>>> {
+    const wrapper = await mountPage()
+    const btn = wrapper.findAll('button').find((b) => b.text() === '一键配置密码')!
+    await btn.trigger('click')
+    await waitFor(() => dialogText(wrapper).includes('正在配置') || dialogText(wrapper).includes('配置完成') || dialogText(wrapper).includes('已取消'))
+    return wrapper
+  }
 
   test('renders only coded teams with monospace codes and an unassigned summary', async () => {
     const wrapper = await mountPage()
@@ -119,15 +141,110 @@ describe('TeamCodesPage', () => {
     expect(JSON.parse(String(post!.body))).toEqual({ all: true })
   })
 
-  test('一键配置密码 confirms and POSTs provision with all:true', async () => {
+  test('一键配置密码 confirms then provisions each target team sequentially with its icpcId', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: true },
+    ]
+    unassignedCount = 0
+    const wrapper = await startProvision()
+    await waitFor(() => calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision').length >= 2)
+    await waitFor(() => dialogText(wrapper).includes('配置完成'))
+
+    const posts = calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision')
+    // one call per target (icpc3 already has a password), each with its own icpcId
+    expect(posts.map((p) => JSON.parse(String(p.body)))).toEqual([{ icpcId: 'icpc1' }, { icpcId: 'icpc2' }])
+    expect(dialogText(wrapper)).toContain('成功 2')
+    expect(dialogText(wrapper)).toContain('失败 0')
+    // the list refreshed after provisioning finished
+    expect(calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/team-codes').length).toBeGreaterThanOrEqual(2)
+    expect(dialogText(wrapper)).toContain('关闭')
+  })
+
+  test('progress dialog shows the current team, live percentage and per-team results', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+    ]
+    unassignedCount = 0
+    provisionHandler = async (body) => {
+      if (body.icpcId === 'icpc1') {
+        return new Response(JSON.stringify({ provisioned: 1, skipped: 0, errors: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (body.icpcId === 'icpc2') {
+        await delay(80)
+        return new Response(JSON.stringify({ provisioned: 0, skipped: 1, errors: [{ icpcId: 'icpc2', reason: 'refusing non-team user' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ provisioned: 1, skipped: 0, errors: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const wrapper = await startProvision()
+    await waitFor(() => calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision').length >= 2)
+    // while icpc2's request is in flight the dialog shows the live line
+    await waitFor(() => dialogText(wrapper).includes('队伍二（第 2 / 共 3 支）'))
+    expect(dialogText(wrapper)).toContain('正在配置')
+    await waitFor(() => dialogText(wrapper).includes('配置完成'))
+
+    const text = dialogText(wrapper)
+    expect(text).toContain('成功 2')
+    expect(text).toContain('跳过 1')
+    expect(text).toContain('该账号不是纯队伍账号')
+    // the progress bar reflects completion (its text node doesn't render under happy-dom)
+    const barInner = wrapper.find('.el-progress-bar__inner')
+    expect(barInner.exists()).toBe(true)
+    expect(barInner.attributes('style') ?? '').toContain('100%')
+  })
+
+  test('cancel stops the loop after the in-flight request finishes', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+    ]
+    unassignedCount = 0
+    provisionHandler = async (body) => {
+      if (body.icpcId === 'icpc2') await delay(200)
+      return new Response(JSON.stringify({ provisioned: 1, skipped: 0, errors: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const wrapper = await startProvision()
+    await waitFor(() => calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision').length >= 2)
+
+    const cancelBtn = dialogButton(wrapper, '取消')
+    expect(cancelBtn).toBeDefined()
+    await cancelBtn!.trigger('click')
+    await waitFor(() => dialogText(wrapper).includes('已取消'))
+
+    const posts = calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision')
+    expect(posts.length).toBe(2)
+    expect(dialogText(wrapper)).toContain('成功 2')
+    // 关闭 button replaces 取消 once the loop stops
+    expect(dialogButton(wrapper, '关闭')).toBeDefined()
+  })
+
+  test('when every failure has the same reason a DOMjudge-permission hint is shown', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+    ]
+    unassignedCount = 0
+    provisionHandler = () =>
+      new Response(JSON.stringify({ provisioned: 0, skipped: 0, errors: [{ icpcId: 'x', reason: 'DOMjudge API 401 Unauthorized' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const wrapper = await startProvision()
+    await waitFor(() => dialogText(wrapper).includes('配置完成'))
+
+    const text = dialogText(wrapper)
+    expect(text).toContain('失败 2')
+    expect(text).toContain('请检查 DOMjudge 账号是否具备用户管理(Admin)权限')
+  })
+
+  test('with no teams left to provision it shows an all-done message without calling the API', async () => {
     const wrapper = await mountPage()
     const btn = wrapper.findAll('button').find((b) => b.text() === '一键配置密码')!
     await btn.trigger('click')
-    await waitFor(() => calls.some((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision'))
-
-    const post = calls.find((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision')
-    expect(post).toBeDefined()
-    expect(JSON.parse(String(post!.body))).toEqual({ all: true })
+    await flush()
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision')).toBe(false)
+    expect(wrapper.text()).not.toContain('正在配置')
   })
 
   test('导出 CSV requests the export endpoint as a blob', async () => {

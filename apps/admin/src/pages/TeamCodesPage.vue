@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElButton, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElButton, ElDialog, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElProgress, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
 import type { LoginHistoryEntry, TeamCodeRow, TeamCodesResponse } from '@/types'
@@ -108,7 +108,59 @@ async function onExport(): Promise<void> {
   }
 }
 
-const provisioning = ref(false)
+interface ProvisionResult {
+  icpcId: string
+  name: string
+  status: 'ok' | 'skip' | 'fail'
+  reason?: string
+}
+
+const provDialog = ref(false)
+const provRunning = ref(false)
+const provCancelled = ref(false)
+const provTargets = ref<TeamCodeRow[]>([])
+const provResults = ref<ProvisionResult[]>([])
+
+const provProgress = computed(() =>
+  provTargets.value.length === 0 ? 0 : Math.round((provResults.value.length / provTargets.value.length) * 100),
+)
+const provOk = computed(() => provResults.value.filter((r) => r.status === 'ok').length)
+const provSkip = computed(() => provResults.value.filter((r) => r.status === 'skip').length)
+const provFail = computed(() => provResults.value.filter((r) => r.status === 'fail').length)
+const provCurrent = computed(() => provTargets.value[provResults.value.length] ?? null)
+const allFailSameReason = computed(() => {
+  const fails = provResults.value.filter((r) => r.status === 'fail')
+  return fails.length > 0 && fails.every((f) => f.reason === fails[0].reason)
+})
+
+function friendlyReason(reason: string): string {
+  if (reason.includes('not found')) return 'DOMjudge 中没有该用户名的账号'
+  if (reason.includes('refusing non-team')) return '该账号不是纯队伍账号，已跳过'
+  return reason
+}
+
+async function provisionOne(row: TeamCodeRow): Promise<ProvisionResult> {
+  try {
+    const { provisioned, skipped, errors } = await apiFetch<{
+      provisioned: number
+      skipped: number
+      errors: Array<{ icpcId: string; reason: string }>
+    }>('/admin/api/team-codes/provision', {
+      method: 'POST',
+      body: JSON.stringify({ icpcId: row.icpcId }),
+    })
+    const reason = errors[0]?.reason
+    if (provisioned > 0) return { icpcId: row.icpcId, name: row.name, status: 'ok' }
+    return {
+      icpcId: row.icpcId,
+      name: row.name,
+      status: skipped > 0 ? 'skip' : 'fail',
+      reason: reason ? friendlyReason(reason) : '未知原因',
+    }
+  } catch {
+    return { icpcId: row.icpcId, name: row.name, status: 'fail', reason: '请求失败，请检查 DOMjudge 是否可用' }
+  }
+}
 
 async function onProvision(): Promise<void> {
   try {
@@ -124,30 +176,31 @@ async function onProvision(): Promise<void> {
   } catch {
     return
   }
-  provisioning.value = true
-  try {
-    const { provisioned, skipped, errors } = await apiFetch<{
-      provisioned: number
-      skipped: number
-      errors: Array<{ icpcId: string; reason: string }>
-    }>('/admin/api/team-codes/provision', {
-      method: 'POST',
-      body: JSON.stringify({ all: true }),
-    })
-    const extra = skipped > 0 ? `，${skipped} 个跳过` : ''
-    if (errors.length > 0) {
-      ElMessage.warning(`已配置 ${provisioned} 个队伍${extra}，${errors.length} 个失败（${errors[0].icpcId} 等）`)
-    } else if (provisioned > 0) {
-      ElMessage.success(`已为 ${provisioned} 个队伍生成队伍码并重置密码${extra}`)
-    } else {
-      ElMessage.info('所有队伍都已配置好了')
-    }
-    await refresh()
-  } catch {
-    ElMessage.error('配置没成功，请检查 DOMjudge 是否可用后再试')
-  } finally {
-    provisioning.value = false
+  // targets come from a fresh list so we don't provision stale rows
+  await refresh()
+  const targets = rows.value.filter((t) => t.icpcId !== '' && (!t.teamCode || !t.hasPassword))
+  if (targets.length === 0) {
+    ElMessage.info('所有队伍都已配置好了')
+    return
   }
+  provTargets.value = targets
+  provResults.value = []
+  provCancelled.value = false
+  provRunning.value = true
+  provDialog.value = true
+  try {
+    for (const t of targets) {
+      if (provCancelled.value) break
+      provResults.value.push(await provisionOne(t))
+    }
+  } finally {
+    provRunning.value = false
+    await refresh()
+  }
+}
+
+function cancelProvision(): void {
+  provCancelled.value = true
 }
 
 async function onCopy(code: string): Promise<void> {
@@ -178,7 +231,7 @@ onMounted(() => void refresh())
           <span class="toolbar-summary">已发队伍码 {{ rows.length }} / {{ rows.length + unassigned }}</span>
           <div class="toolbar-actions">
             <ElButton :loading="generatingAll" @click="onGenerateAll">为未分配队伍批量生成</ElButton>
-            <ElButton type="warning" :loading="provisioning" @click="onProvision">一键配置密码</ElButton>
+            <ElButton type="warning" :disabled="provRunning" @click="onProvision">一键配置密码</ElButton>
             <ElButton type="primary" :loading="exporting" @click="onExport">导出 CSV</ElButton>
           </div>
         </div>
@@ -238,6 +291,38 @@ onMounted(() => void refresh())
         <el-empty v-else description="还没有队伍登录记录，队伍通过队伍码登录后会出现在这里 🙂" />
       </ElTabPane>
     </ElTabs>
+
+    <ElDialog
+      v-model="provDialog"
+      title="一键配置密码"
+      width="560px"
+      :close-on-click-modal="!provRunning"
+      :close-on-press-escape="!provRunning"
+      :show-close="!provRunning"
+    >
+      <ElProgress :percentage="provProgress" :status="provRunning ? undefined : 'success'" />
+      <p class="prov-current">
+        <template v-if="provRunning && provCurrent">
+          正在配置：{{ provCurrent.icpcId }} / {{ provCurrent.name }}（第 {{ provResults.length + 1 }} / 共 {{ provTargets.length }} 支）
+        </template>
+        <template v-else-if="provCancelled">已取消，配置中止</template>
+        <template v-else>配置完成</template>
+      </p>
+      <p class="prov-counters">成功 {{ provOk }} · 跳过 {{ provSkip }} · 失败 {{ provFail }}</p>
+      <p v-if="!provRunning && provFail > 0 && allFailSameReason" class="prov-hint">
+        如全部失败，请检查 DOMjudge 账号是否具备用户管理(Admin)权限
+      </p>
+      <div v-if="provResults.length" class="prov-list">
+        <p v-for="r in provResults" :key="r.icpcId" class="prov-line" :class="'prov-' + r.status">
+          <span class="prov-mark">{{ r.status === 'ok' ? '✓' : r.status === 'skip' ? '⊘' : '✗' }}</span>
+          {{ r.icpcId }} {{ r.name }}<template v-if="r.reason"> — {{ r.reason }}</template>
+        </p>
+      </div>
+      <template #footer>
+        <ElButton v-if="provRunning" @click="cancelProvision">取消</ElButton>
+        <ElButton v-else type="primary" @click="provDialog = false">关闭</ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -300,5 +385,54 @@ onMounted(() => void refresh())
   margin-top: 12px;
   justify-content: flex-end;
   flex: none;
+}
+
+.prov-current {
+  margin: 12px 0 4px;
+  font-size: var(--text-15);
+}
+
+.prov-counters {
+  margin: 0 0 8px;
+  font-size: var(--text-13);
+  color: var(--text-muted);
+}
+
+.prov-hint {
+  margin: 0 0 8px;
+  font-size: var(--text-13);
+  color: var(--brand-orange);
+}
+
+.prov-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+  padding-top: 8px;
+}
+
+.prov-line {
+  margin: 0;
+  font-size: var(--text-13);
+  line-height: 1.8;
+  word-break: break-all;
+}
+
+.prov-mark {
+  display: inline-block;
+  width: 1.4em;
+  text-align: center;
+}
+
+.prov-ok {
+  color: var(--brand-green, #2e7d32);
+}
+
+.prov-skip {
+  color: var(--text-muted);
+}
+
+.prov-fail {
+  color: var(--brand-orange);
 }
 </style>
