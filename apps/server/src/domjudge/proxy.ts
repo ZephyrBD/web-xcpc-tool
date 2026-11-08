@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { proxy } from "hono/proxy";
 import type { Config } from "../config";
 import { verifyTeamToken } from "../auth/token";
+import { upstreamErrorPage } from "../pages/teamPages";
 import type { TeamStore } from "../store/teams";
 
 const HOP_BY_HOP = new Set([
@@ -99,6 +100,12 @@ async function forwardToDj(
     return await proxy(target, { raw: req, headers });
   } catch (err) {
     console.error(`dj proxy upstream error: ${target}`, err instanceof Error ? err.message : err);
+    // Browsers navigating here are humans: show a friendly retry page instead
+    // of raw JSON. API clients still get machine-readable JSON.
+    const accept = req.headers.get("accept") ?? "";
+    if (accept.includes("text/html")) {
+      return upstreamErrorPage();
+    }
     return new Response(JSON.stringify({ ok: false, reason: "upstream error" }), {
       status: 502,
       headers: { "content-type": "application/json" },

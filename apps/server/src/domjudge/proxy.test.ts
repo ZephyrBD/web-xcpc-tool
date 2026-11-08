@@ -134,6 +134,68 @@ describe("DOMjudge reverse proxy", () => {
     expect(await res.json()).toEqual({ ok: false, reason: "upstream error" });
   });
 
+  test("unreachable upstream with browser Accept header returns friendly HTML 502", async () => {
+    const cfg = {
+      ...makeCfg(),
+      domjudge: { baseUrl: "http://127.0.0.1:1", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
+    };
+    const app = createApp(cfg);
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/login", {
+      method: "POST",
+      headers: { cookie: `cxtool-token=${token}`, accept: "text/html,application/xhtml+xml" },
+    });
+    expect(res.status).toBe(502);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("比赛系统暂时没有响应");
+    expect(html).toContain("可能是网络波动，请刷新重试；若持续出现请联系监考人员");
+    expect(html).toContain("location.reload");
+  });
+
+  test("unreachable upstream with JSON Accept header keeps the JSON 502", async () => {
+    const cfg = {
+      ...makeCfg(),
+      domjudge: { baseUrl: "http://127.0.0.1:1", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
+    };
+    const app = createApp(cfg);
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/api/contests", {
+      headers: { cookie: `cxtool-token=${token}`, accept: "application/json" },
+    });
+    expect(res.status).toBe(502);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ ok: false, reason: "upstream error" });
+  });
+
+  test("root proxy unreachable upstream: browser gets HTML 502, API client gets JSON", async () => {
+    const cfg = {
+      ...makeCfg("/wxt"),
+      domjudge: { baseUrl: "http://127.0.0.1:1", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
+    };
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const cookie = { cookie: `cxtool-token=${token}` };
+    const html = await handleRootDjProxy(
+      new Request("http://s.test/login", {
+        method: "POST",
+        headers: { ...cookie, accept: "text/html,application/xhtml+xml" },
+      }),
+      cfg,
+    );
+    expect(html.status).toBe(502);
+    expect(html.headers.get("content-type")).toContain("text/html");
+    expect(await html.text()).toContain("比赛系统暂时没有响应");
+
+    const json = await handleRootDjProxy(
+      new Request("http://s.test/api/contests", {
+        headers: { ...cookie, accept: "application/json" },
+      }),
+      cfg,
+    );
+    expect(json.status).toBe(502);
+    expect(await json.json()).toEqual({ ok: false, reason: "upstream error" });
+  });
+
   test("POST body is forwarded to upstream", async () => {
     const app = createApp(makeCfg());
     const token = await signTeamToken(SECRET, 3600, "2025001");

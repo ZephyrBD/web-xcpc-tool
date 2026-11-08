@@ -78,6 +78,18 @@ export function verifyMissPage(): Response {
   return new Response(res.body, { status: 403, headers: res.headers });
 }
 
+/** Upstream (DOMjudge) is unreachable — HTTP 502 with a refresh link for teams. */
+export function upstreamErrorPage(): Response {
+  const res = page(
+    "比赛系统暂时没有响应",
+    PALETTE.red,
+    `<h1>比赛系统暂时没有响应</h1>
+<p>可能是网络波动，请刷新重试；若持续出现请联系监考人员</p>
+<button type="button" onclick="location.reload()">刷新重试</button>`,
+  );
+  return new Response(res.body, { status: 502, headers: res.headers });
+}
+
 function friendlyTime(iso: string): string {
   return new Date(iso).toLocaleString("zh-CN", { hour12: false });
 }
