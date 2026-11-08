@@ -408,11 +408,10 @@ describe("static hosting", () => {
   });
 
   test("SPA fallback does not swallow /dj 404s", async () => {
-    const res = await makeApp().request("/cxtool/dj/no-such-route");
-    // Team paths answer humans with the exam-number login page.
-    expect(res.status).toBe(401);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("输入考号开始认证");
+    const res = await makeApp().request("/cxtool/dj/no-such-route", { redirect: "manual" });
+    // Team paths redirect humans to the type-in verify form.
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/cxtool/dj/verify");
   });
 
   test("non-GET miss does not fall back to index.html", async () => {

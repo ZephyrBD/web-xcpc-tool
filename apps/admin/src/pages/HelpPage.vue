@@ -45,8 +45,8 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-green)',
     blocks: [
       {
-        note: 'OMS 客户端打开 GET /dj/verify?examNum=<准考证号>，本工具识别命中且对应认证任务被批准后，签发 cxtool-token Cookie，客户端即进入 /dj/ 反代直接访问 DOMjudge。详细的接口说明见「接口」页面。',
-        lines: [{ code: 'GET /dj/verify?examNum=...' }],
+        note: '考生在 OMS 客户端打开 GET /dj/verify，在页面输入考号后提交；本工具识别考位命中且对应认证任务被批准后，签发 cxtool-token Cookie，客户端即自动进入 /dj/ 反代直接访问 DOMjudge。识别命中但尚未有考号任务时，输入的考号会自动绑定到该考位的 unknown 占位任务（监考批准后进入）。URL 参数方式 GET /dj/verify?examNum=<准考证号> 仍兼容 OMS 客户端直接配置。详细的接口说明见「接口」页面。',
+        lines: [{ code: 'GET /dj/verify （页面输入考号）或 GET /dj/verify?examNum=...' }],
       },
     ],
   },

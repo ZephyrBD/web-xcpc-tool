@@ -2,7 +2,6 @@ import type { Context } from "hono";
 import { proxy } from "hono/proxy";
 import type { Config } from "../config";
 import { verifyTeamToken } from "../auth/token";
-import { teamLoginPage } from "../pages/teamPages";
 
 const HOP_BY_HOP = new Set([
   "host",
@@ -67,9 +66,9 @@ export function forwardCookie(header: string | null | undefined): string | undef
 export async function handleDjProxy(c: Context, cfg: Config): Promise<Response> {
   const token = getCookie(c.req.header("cookie"), "cxtool-token");
   if (!token || !(await verifyTeamToken(cfg.jwt.secret, token))) {
-    // Teams are humans in the OMS exam client: give them a login page that
-    // lets them self-start verification instead of a bare JSON 401.
-    return teamLoginPage(cfg.contextPath);
+    // Teams are humans in the OMS exam client: send them to the verify page,
+    // where they type their exam number to start authentication.
+    return c.redirect(`${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`, 302);
   }
   const rest = proxyFilter(c, cfg);
   if (rest === null) {

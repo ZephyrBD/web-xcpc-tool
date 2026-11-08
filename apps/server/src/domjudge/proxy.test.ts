@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import type { Context } from "hono";
+import { Hono } from "hono";
 import { loadConfig } from "../config";
 import { signTeamToken } from "../auth/token";
 import { createApp } from "../server";
@@ -64,20 +65,32 @@ describe("DOMjudge reverse proxy", () => {
     expect(lastReq?.cookie).toBe("DOMjudgeSID=keep");
   });
 
-  test("missing cookie returns 401 and upstream hit count stays 0", async () => {
+  test("missing cookie redirects to the verify form and upstream hit count stays 0", async () => {
     const app = createApp(makeCfg());
-    const res = await app.request("/dj/api/contests");
-    expect(res.status).toBe(401);
+    const res = await app.request("/dj/api/contests", { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/dj/verify");
     expect(hits).toBe(0);
   });
 
-  test("tampered token returns 401", async () => {
+  test("missing cookie under a contextPath mount redirects to /cxtool/dj/verify", async () => {
+    const sub = createApp(makeCfg("/cxtool"));
+    const app = new Hono().route("/cxtool", sub);
+    const res = await app.request("/cxtool/dj/api/contests", { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/cxtool/dj/verify");
+    expect(hits).toBe(0);
+  });
+
+  test("tampered token redirects to the verify form", async () => {
     const app = createApp(makeCfg());
     const token = await signTeamToken(SECRET, 3600, "2025001");
     const res = await app.request("/dj/api/contests", {
       headers: { cookie: `cxtool-token=${token.slice(0, -4)}AAAA` },
+      redirect: "manual",
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/dj/verify");
     expect(hits).toBe(0);
   });
 

@@ -21,7 +21,7 @@ import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
-import { teamLoginPage, verifyMissPage, verifyPendingPage, verifyRejectedPage } from "./pages/teamPages";
+import { verifyFormPage, verifyMissPage, verifyPendingPage, verifyRejectedPage } from "./pages/teamPages";
 
 export type Deps = {
   dataDir: string;
@@ -89,7 +89,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
 
-  app.get("/dj/verify", async (c) => {    const headers: Record<string, string> = {};
+  app.get("/dj/verify", async (c) => {
+    const headers: Record<string, string> = {};
     for (const [k, v] of c.req.raw.headers.entries()) {
       headers[k] = v;
     }
@@ -99,16 +100,23 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       path: new URL(c.req.url).pathname,
       headers,
     };
+    const rawExamNum = c.req.query("examNum");
+    // No examNum in the URL → the examinee types it on the form page.
+    if (rawExamNum === undefined || rawExamNum.trim() === "") {
+      const hint = rawExamNum !== undefined ? "考号不能为空" : undefined;
+      return verifyFormPage(cfg.contextPath, hint);
+    }
+    const examNum = rawExamNum;
     const result = await verifyClient(
       fp,
-      c.req.query("examNum") ?? "",
+      examNum,
       queue.list(),
       cfg,
+      (task, num) => queue.bindExamNum(task.id, num),
     );
     if (!result.ok) {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
       // HTTP status codes keep their semantics (403 miss/rejected, 200 pending).
-      const examNum = c.req.query("examNum") ?? "";
       if (result.reason === "pending") return verifyPendingPage(examNum);
       if (result.reason === "rejected") return verifyRejectedPage(examNum);
       return verifyMissPage(examNum);

@@ -23,6 +23,7 @@ export async function verifyClient(
   examNum: string,
   tasks: AuthTask[],
   cfg: Config,
+  bind?: (task: AuthTask, examNum: string) => AuthTask | null,
 ): Promise<VerifyResult> {
   const identified = identifyClient(fp, cfg.oms);
   if (!identified) return { ok: false, reason: "illegal client" };
@@ -33,6 +34,20 @@ export async function verifyClient(
   const clientId = clientIdHeader ?? null;
 
   const mine = tasks.filter((t) => t.examNum === examNum && t.clientId === clientId);
+  if (mine.length === 0) {
+    // The examinee typed the examNum; bind it onto this client's "unknown"
+    // placeholder task, then re-evaluate with the bound state.
+    const unknown = tasks.find((t) => t.examNum === "unknown" && t.clientId === clientId);
+    if (unknown && bind) {
+      bind(unknown, examNum);
+      return verifyClient(
+        fp,
+        examNum,
+        tasks.map((t) => (t.id === unknown.id ? { ...t, examNum } : t)),
+        cfg,
+      );
+    }
+  }
   if (mine.some((t) => t.status === "approved" || t.status === "auto-done")) {
     const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, examNum);
     return { ok: true, token };

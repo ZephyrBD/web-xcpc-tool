@@ -90,17 +90,17 @@ ${examNum ? `<span class="exam">考号：${escapeHtml(examNum)}</span>` : ""}`,
   return new Response(res.body, { status: 403, headers: res.headers });
 }
 
-/** Missing/invalid cxtool-token — lets the team self-start by entering their exam number (HTTP 401). */
-export function teamLoginPage(contextPath: string): Response {
-  const res = page(
-    "队伍登录",
+/** Verification entry: the examinee types their exam number here (HTTP 200). */
+export function verifyFormPage(contextPath: string, hint?: string): Response {
+  return page(
+    "队伍认证",
     PALETTE.green,
-    `<h1>队伍登录</h1>
-<p>输入考号开始认证</p>
+    `<h1>队伍认证</h1>
+<p>请输入你的考号开始认证</p>
+${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
 <form method="get" action="${escapeHtml(contextPath)}/dj/verify">
-<input name="examNum" placeholder="请输入考号" required>
+<input name="examNum" placeholder="请输入考号">
 <button type="submit">开始认证</button>
 </form>`,
   );
-  return new Response(res.body, { status: 401, headers: res.headers });
 }

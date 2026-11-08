@@ -210,6 +210,150 @@ describe("GET /dj/verify route", () => {
     expect(text).not.toContain("<script>alert(1)</script>");
   });
 
+  test("GET /dj/verify without examNum renders the type-in form page", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const text = await res.text();
+    expect(text).toContain("请输入你的考号开始认证");
+    expect(text).toContain('action="/dj/verify"');
+    expect(text).toContain('name="examNum"');
+  });
+
+  test("empty examNum re-renders the form with the empty hint", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("考号不能为空");
+    expect(text).toContain('action="/dj/verify"');
+  });
+
+  test("whitespace-only examNum re-renders the form with the empty hint", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=%20%20", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("考号不能为空");
+  });
+
+  test("typed examNum binds the pending unknown task of the same clientId", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E100", {
+      headers: {
+        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
+        "x-oms-client-id": "client-a",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("等待监考批准");
+    const bound = queue.list().find((t) => t.clientId === "client-a");
+    expect(bound?.examNum).toBe("E100");
+    expect(bound?.status).toBe("pending");
+  });
+
+  test("typed examNum binds an approved unknown task and issues the token", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.autoAccept = true;
+    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E200", {
+      headers: {
+        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
+        "x-oms-client-id": "client-a",
+      },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/dj/");
+    const cookie = res.headers.get("set-cookie") ?? "";
+    const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
+    const payload = await verifyTeamToken(SECRET, token);
+    expect(payload?.examNum).toBe("E200");
+    const bound = queue.list().find((t) => t.clientId === "client-a");
+    expect(bound?.examNum).toBe("E200");
+    expect(bound?.status).toBe("auto-done");
+  });
+
+  test("typed examNum binds a rejected unknown task to the rejection page", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const task = queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
+    queue.reject(task.id);
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E300", {
+      headers: {
+        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
+        "x-oms-client-id": "client-a",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("认证被拒绝");
+    const bound = queue.list().find((t) => t.id === task.id);
+    expect(bound?.examNum).toBe("E300");
+  });
+
+  test("unrecognized client with typed examNum → miss page, store untouched", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E400", {
+      headers: { "user-agent": "curl/8.0" },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("未识别到考位信息");
+    const stored = queue.list().find((t) => t.clientId === "client-a");
+    expect(stored?.examNum).toBe("unknown");
+  });
+
+  test("typed examNum matching an existing task leaves the store unchanged", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "E500", clientId: "client-a", strategy: "ua-regex" });
+    queue.enqueue({ examNum: "unknown", clientId: "client-a", strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E500", {
+      headers: {
+        "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3",
+        "x-oms-client-id": "client-a",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("等待监考批准");
+    const tasks = queue.list().filter((t) => t.clientId === "client-a");
+    expect(tasks.find((t) => t.examNum === "E500")?.status).toBe("pending");
+    expect(tasks.find((t) => t.examNum === "unknown")).toBeDefined();
+  });
+
+  test("malicious examNum typed in the form flow is escaped (XSS regression)", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=<script>alert(1)</script>", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    const text = await res.text();
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text).not.toContain("<script>alert(1)</script>");
+  });
+
   test("pending page renders under a /cxtool mount", async () => {
     const cfg = { ...testCfg(), contextPath: "/cxtool" };
     const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));

@@ -51,6 +51,21 @@ export class AuthQueue {
     return this.transition(id, "rejected");
   }
 
+  /** Replaces the "unknown" placeholder examNum with the examinee-typed value. */
+  bindExamNum(id: string, examNum: string): AuthTask | null {
+    let updated: AuthTask | null = null;
+    this.store.update((cur) =>
+      cur.map((t) => {
+        if (t.id !== id) return t;
+        updated = { ...t, examNum };
+        return updated;
+      }),
+    );
+    if (!updated) return null;
+    this.notify(updated);
+    return updated;
+  }
+
   list(status?: AuthTaskStatus): AuthTask[] {
     const all = this.store.load();
     return status ? all.filter((t) => t.status === status) : all;
