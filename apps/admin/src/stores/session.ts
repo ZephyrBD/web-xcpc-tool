@@ -6,9 +6,10 @@ export const useSessionStore = defineStore('session', () => {
   const token = ref<string | null>(getToken())
 
   async function login(username: string, password: string): Promise<void> {
-    const data = await apiFetch<{ token: string }>('/api/auth/login', {
+    const data = await apiFetch<{ token: string }>('/admin/api/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
+      skipAuthRedirect: true,
     })
     token.value = data.token
     setToken(data.token)

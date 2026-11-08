@@ -1,12 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import LoginView from '@/views/LoginView.vue'
+import LoginPage from '@/pages/LoginPage.vue'
 import OverviewView from '@/views/OverviewView.vue'
 import AuthTasksView from '@/views/AuthTasksView.vue'
 import JobsView from '@/views/JobsView.vue'
 import TeamsView from '@/views/TeamsView.vue'
 
 export const routes = [
-  { path: '/login', name: 'login', component: LoginView, meta: { title: '登录' } },
+  { path: '/login', name: 'login', component: LoginPage, meta: { title: '登录' } },
   { path: '/', name: 'overview', component: OverviewView, meta: { title: '总览' } },
   { path: '/auth-tasks', name: 'auth-tasks', component: AuthTasksView, meta: { title: '认证任务' } },
   { path: '/jobs', name: 'jobs', component: JobsView, meta: { title: '打印 / 气球' } },

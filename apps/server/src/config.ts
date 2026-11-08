@@ -38,8 +38,12 @@ const configSchema = z.object({
     })
     .default({ contestId: "", pollIntervalSeconds: 30 }),
   admin: z
-    .object({ username: z.string(), passwordHash: z.string() })
-    .default({ username: "admin", passwordHash: "" }),
+    .object({
+      username: z.string(),
+      passwordHash: z.string(),
+      sessionTtlSeconds: z.number().int().positive().default(28800),
+    })
+    .default({ username: "admin", passwordHash: "", sessionTtlSeconds: 28800 }),
 });
 
 export type Config = z.infer<typeof configSchema>;

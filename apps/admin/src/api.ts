@@ -14,6 +14,8 @@ export function clearToken(): void {
 
 export interface ApiFetchOptions extends RequestInit {
   query?: Record<string, string | number | undefined>
+  /** Skip the global 401 redirect — the caller handles the error inline (e.g. the login page). */
+  skipAuthRedirect?: boolean
 }
 
 export class ApiError extends Error {
@@ -28,7 +30,7 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
-  const { query, headers, ...rest } = opts
+  const { query, headers, skipAuthRedirect, ...rest } = opts
   const url = new URL(`/cxtool${path}`, window.location.origin)
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -47,9 +49,11 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
   })
 
   if (res.status === 401) {
-    clearToken()
-    window.location.assign('/cxtool/login')
-    throw new ApiError(401, null, '未登录或登录已过期')
+    if (!skipAuthRedirect) {
+      clearToken()
+      window.location.assign('/cxtool/login')
+    }
+    throw new ApiError(401, await res.json().catch(() => null), '未登录或登录已过期')
   }
   if (!res.ok) {
     throw new ApiError(res.status, await res.json().catch(() => null))

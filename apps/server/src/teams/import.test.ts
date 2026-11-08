@@ -9,8 +9,13 @@ import { SecretBox } from "../store/secretbox";
 import { JsonStore, setDataDir } from "../store/store";
 import { TeamStore } from "../store/teams";
 import { createApp } from "../server";
+import { adminAuthHeaders } from "../admin/auth";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./import";
 
+const loadConfigWithSecret = () => ({
+  ...loadConfig("/nonexistent/settings.json"),
+  jwt: { secret: "test-secret", ttlSeconds: 3600 },
+});
 const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 let dir: string;
@@ -108,7 +113,7 @@ describe("importTeamsFromExcel", () => {
 describe("syncTeamsFromDomjudge", () => {
   test("fetches teams and writes them to the store, returning the count", async () => {
     const { teamsStore } = makeStores();
-    const cfg = loadConfig("/nonexistent/settings.json");
+    const cfg = loadConfigWithSecret();
     const client = new DjClient(
       { ...cfg.domjudge, baseUrl: "http://dj.test" },
       (async () =>
@@ -127,7 +132,7 @@ describe("syncTeamsFromDomjudge", () => {
 describe("team routes", () => {
   function makeApp() {
     const { teamStore, teamsStore } = makeStores();
-    const cfg = loadConfig("/nonexistent/settings.json");
+    const cfg = loadConfigWithSecret();
     const client = new DjClient(
       { ...cfg.domjudge, baseUrl: "http://dj.test" },
       (async () =>
@@ -142,14 +147,14 @@ describe("team routes", () => {
       teamsStore,
       djClient: client,
     });
-    return { app, teamStore, teamsStore };
+    return { app, cfg, teamStore, teamsStore };
   }
 
   test("POST /admin/api/teams/import-excel imports passwords from multipart file", async () => {
-    const { app, teamStore } = makeApp();
+    const { app, cfg, teamStore } = makeApp();
     await app.request("/admin/api/teams/sync", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
       body: JSON.stringify({ contestId: "demo" }),
     });
     const buf = makeExcel([
@@ -160,6 +165,7 @@ describe("team routes", () => {
     form.append("file", new File([new Uint8Array(buf)], "pw.xlsx"));
     const res = await app.request("/admin/api/teams/import-excel", {
       method: "POST",
+      headers: await adminAuthHeaders(cfg),
       body: form,
     });
     expect(res.status).toBe(200);
@@ -168,10 +174,10 @@ describe("team routes", () => {
   });
 
   test("POST /admin/api/teams/sync returns the count", async () => {
-    const { app } = makeApp();
+    const { app, cfg } = makeApp();
     const res = await app.request("/admin/api/teams/sync", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
       body: JSON.stringify({ contestId: "demo" }),
     });
     expect(res.status).toBe(200);
@@ -179,10 +185,10 @@ describe("team routes", () => {
   });
 
   test("GET /admin/api/teams returns teams with no password anywhere in the response", async () => {
-    const { app, teamStore, teamsStore } = makeApp();
+    const { app, cfg, teamStore, teamsStore } = makeApp();
     teamsStore.save(TEAMS);
     teamStore.setPassword("t1", "plaintext-leak-pw");
-    const res = await app.request("/admin/api/teams");
+    const res = await app.request("/admin/api/teams", { headers: await adminAuthHeaders(cfg) });
     expect(res.status).toBe(200);
     const text = JSON.stringify(await res.json());
     expect(text).not.toContain("plaintext-leak-pw");

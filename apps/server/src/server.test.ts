@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { loadConfig } from "./config";
 import { AuthQueue } from "./queue/authQueue";
 import { createApp } from "./server";
+import { adminAuthHeaders } from "./admin/auth";
 import { DjClient } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
@@ -14,6 +15,10 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
 
+const loadConfigWithSecret = () => ({
+  ...loadConfig("/nonexistent/settings.json"),
+  jwt: { secret: "test-secret", ttlSeconds: 3600 },
+});
 const CAPTURE_FILE = "fingerprints.jsonl";
 
 describe("createApp", () => {
@@ -28,7 +33,7 @@ describe("createApp", () => {
   });
 
   test("GET /health returns 200 and {\"ok\":true}", async () => {
-    const cfg = loadConfig("/nonexistent/settings.json");
+    const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });
     const res = await app.request("/health");
     expect(res.status).toBe(200);
@@ -36,7 +41,7 @@ describe("createApp", () => {
   });
 
   test("capture=true records a fingerprint line per request", async () => {
-    const cfg = { ...loadConfig("/nonexistent/settings.json"), oms: { strategies: [], uaRegexes: [], capture: true } };
+    const cfg = { ...loadConfigWithSecret(), oms: { strategies: [], uaRegexes: [], capture: true } };
     const app = createApp(cfg, { dataDir });
     await app.request("/health");
     const capturePath = join(dataDir, CAPTURE_FILE);
@@ -49,7 +54,7 @@ describe("createApp", () => {
   });
 
   test("capture=false writes no capture file", async () => {
-    const cfg = loadConfig("/nonexistent/settings.json");
+    const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });
     await app.request("/health");
     expect(existsSync(join(dataDir, CAPTURE_FILE))).toBe(false);
@@ -57,7 +62,7 @@ describe("createApp", () => {
 
   test("identified request is enqueued and auto-done when autoAccept is on", async () => {
     const cfg = {
-      ...loadConfig("/nonexistent/settings.json"),
+      ...loadConfigWithSecret(),
       oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
     };
     const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
@@ -67,7 +72,7 @@ describe("createApp", () => {
       headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.7" },
     });
     expect(res.status).toBe(200);
-    const tasks = await (await app.request("/admin/api/auth-tasks?status=auto-done")).json();
+    const tasks = await (await app.request("/admin/api/auth-tasks?status=auto-done", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
     expect(tasks[0].examNum).toBe("unknown");
     expect(tasks[0].strategy).toBe("ua-regex");
@@ -76,7 +81,7 @@ describe("createApp", () => {
 
   test("unidentified request does not enqueue", async () => {
     const cfg = {
-      ...loadConfig("/nonexistent/settings.json"),
+      ...loadConfigWithSecret(),
       oms: { strategies: ["ua-regex"], uaRegexes: [], capture: false },
     };
     const queue = new AuthQueue(join(dataDir, "auth-tasks.json"));
@@ -86,7 +91,7 @@ describe("createApp", () => {
   });
 
   test("uses deps.server.requestIP for the client ip in captured fingerprints", async () => {
-    const cfg = { ...loadConfig("/nonexistent/settings.json"), oms: { strategies: [], uaRegexes: [], capture: true } };
+    const cfg = { ...loadConfigWithSecret(), oms: { strategies: [], uaRegexes: [], capture: true } };
     const app = createApp(cfg, {
       dataDir,
       server: { requestIP: () => ({ address: "1.2.3.4" }) },
@@ -138,7 +143,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
   });
 
   const makeCfg = () => ({
-    ...loadConfig("/nonexistent/settings.json"),
+    ...loadConfigWithSecret(),
     contextPath: "",
     jwt: { secret: "dod-test-secret", ttlSeconds: 3600 },
     domjudge: {
@@ -190,7 +195,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(readdirSync(pdfDir).length).toBe(1);
 
     // 4. admin API lists the pending print task
-    const tasks = await (await app.request("/admin/api/print-tasks")).json();
+    const tasks = await (await app.request("/admin/api/print-tasks", { headers: await adminAuthHeaders(makeCfg()) })).json();
     expect(tasks.length).toBe(1);
     expect(tasks[0].status).toBe("pending");
     expect(tasks[0].teamName).toBe("Team X");
@@ -234,7 +239,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     });
     const form = new FormData();
     form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])], "bad.xlsx"));
-    const res = await app.request("/admin/api/teams/import-excel", { method: "POST", body: form });
+    const res = await app.request("/admin/api/teams/import-excel", { method: "POST", headers: await adminAuthHeaders(makeCfg()), body: form });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false, reason: "invalid excel file" });
   });
@@ -260,7 +265,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
 
     const syncRes = await app.request("/admin/api/teams/sync", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
       body: JSON.stringify({ contestId: "C1" }),
     });
     expect(syncRes.status).toBe(200);
@@ -269,7 +274,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     // balloon service must resolve team/problem ids via refreshed lookups
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
-    const tasks = await (await app.request("/admin/api/balloon-tasks")).json();
+    const tasks = await (await app.request("/admin/api/balloon-tasks", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
     expect(tasks[0].teamName).toBe("Team X");
     expect(tasks[0].problemLabel).toBe("A");

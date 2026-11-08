@@ -18,6 +18,7 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
+import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 
 export type Deps = {
   dataDir: string;
@@ -113,6 +114,10 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
   app.all("/dj/*", (c) => handleDjProxy(c, cfg));
+
+  // Admin login is registered before the /admin/api/* middleware, which skips it explicitly.
+  app.post("/admin/api/login", createAdminLoginHandler(cfg, deps));
+  app.use("/admin/api/*", requireAdmin(cfg));
 
   app.get("/admin/api/print-tasks", (c) => {
     const status = c.req.query("status");
