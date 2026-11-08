@@ -59,12 +59,27 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
 
+  /**
+   * A `next` target is honored only as an absolute-path relative URL:
+   * a single leading slash, no protocol-relative "//" and no backslash
+   * (open-redirect guard).
+   */
+  const safeNext = (raw: string | undefined): string | null =>
+    raw !== undefined &&
+    raw.startsWith("/") &&
+    !raw.startsWith("//") &&
+    !raw.includes("\\") &&
+    !/[\r\n]/.test(raw)
+      ? raw
+      : null;
+
   app.get("/dj/verify", async (c) => {
     const raw = c.req.query("code");
+    const next = safeNext(c.req.query("next"));
     // No code in the URL → the team types it on the form page.
     if (raw === undefined || raw.trim() === "") {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
-      return verifyFormPage(cfg.contextPath, hint);
+      return verifyFormPage(cfg.contextPath, hint, next);
     }
     const result = await verifyTeamCode(raw.trim(), teamStore, cfg);
     if (!result.ok) {
@@ -80,11 +95,12 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       at: new Date().toISOString(),
       ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
     });
+    // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
     c.header(
       "Set-Cookie",
-      `cxtool-token=${result.token}; Path=${djRoot}; HttpOnly; SameSite=Lax`,
+      `cxtool-token=${result.token}; Path=/; HttpOnly; SameSite=Lax`,
     );
-    return c.redirect(`${djRoot}/`, 302);
+    return c.redirect(next ?? `${djRoot}/`, 302);
   });
 
   // Print callback must be registered BEFORE the /dj/* catch-all proxy.
@@ -231,19 +247,20 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     return c.json({ ...safeSettingsView(updated), note: "已保存，重启服务后生效" });
   });
 
-  /** Teams joined with their login codes. Never includes passwords. */
+  /** Teams joined with their login codes. Only teams holding a code are listed;
+   *  the rest are summarized so the UI can keep the 已发 X / Y counter meaningful. */
   app.get("/admin/api/team-codes", (c) => {
-    return c.json(
-      teamsStore.load().map((t) => {
-        const icpcId = teamAccountKey(t);
-        return {
-          icpcId,
-          name: t.display_name?.trim() || t.name,
-          teamCode: teamStore.getTeamCode(icpcId),
-          hasPassword: teamStore.hasPassword(icpcId),
-        };
-      }),
-    );
+    const all = teamsStore.load().map((t) => {
+      const icpcId = teamAccountKey(t);
+      return {
+        icpcId,
+        name: t.display_name?.trim() || t.name,
+        teamCode: teamStore.getTeamCode(icpcId),
+        hasPassword: teamStore.hasPassword(icpcId),
+      };
+    });
+    const rows = all.filter((r) => r.teamCode);
+    return c.json({ rows, unassigned: all.length - rows.length });
   });
 
   app.post("/admin/api/team-codes/generate", async (c) => {
@@ -326,7 +343,6 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const errors: Array<{ icpcId: string; reason: string }> = [];
     for (const t of targets) {
       const icpcId = teamAccountKey(t);
-      if (!teamStore.getTeamCode(icpcId)) teamStore.setTeamCode(icpcId);
       const password = randomPassword();
       try {
         const user = await client.getUserByUsername(icpcId);
@@ -345,6 +361,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
           errors.push({ icpcId, reason: "refusing non-team user" });
           continue;
         }
+        // Only team-role accounts ever get a code stored.
+        if (!teamStore.getTeamCode(icpcId)) teamStore.setTeamCode(icpcId);
         await client.patchUserPassword(user.id, password);
       } catch (err) {
         errors.push({ icpcId, reason: err instanceof Error ? err.message : String(err) });

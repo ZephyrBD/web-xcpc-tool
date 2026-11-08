@@ -33,6 +33,13 @@ export interface TeamCodeRow {
   hasPassword: boolean
 }
 
+/** Payload of GET /admin/api/team-codes: only coded teams are listed;
+ *  teams without a code are summarized so the 已发 X / Y counter stays meaningful. */
+export interface TeamCodesResponse {
+  rows: TeamCodeRow[]
+  unassigned: number
+}
+
 /** Entry of GET /admin/api/login-history (newest first). */
 export interface LoginHistoryEntry {
   icpcId: string

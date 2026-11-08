@@ -50,8 +50,8 @@ ${body}
   });
 }
 
-/** Team code typed on the form page (HTTP 200). */
-export function verifyFormPage(contextPath: string, hint?: string): Response {
+/** Team code typed on the form page (HTTP 200). `next` is preserved as a hidden field. */
+export function verifyFormPage(contextPath: string, hint?: string, next?: string | null): Response {
   return page(
     "队伍登录",
     PALETTE.green,
@@ -59,6 +59,7 @@ export function verifyFormPage(contextPath: string, hint?: string): Response {
 <p>请输入屏幕上显示的队伍码开始登录</p>
 ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
 <form method="get" action="${escapeHtml(contextPath)}/dj/verify">
+${next ? `<input type="hidden" name="next" value="${escapeHtml(next)}">` : ""}
 <input name="code" placeholder="请输入队伍码">
 <button type="submit">开始登录</button>
 </form>`,

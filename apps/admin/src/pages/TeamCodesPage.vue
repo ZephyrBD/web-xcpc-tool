@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElButton, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
-import type { LoginHistoryEntry, TeamCodeRow } from '@/types'
+import type { LoginHistoryEntry, TeamCodeRow, TeamCodesResponse } from '@/types'
 
 const activeTab = ref<'codes' | 'history'>('codes')
 
 const rows = ref<TeamCodeRow[]>([])
+const unassigned = ref(0)
 const history = ref<LoginHistoryEntry[]>([])
 const loading = ref(false)
 const historyLoading = ref(false)
@@ -17,7 +18,9 @@ const { page, pageSize, paged: pagedRows } = usePagination(rows)
 async function refresh(): Promise<void> {
   loading.value = true
   try {
-    rows.value = await apiFetch<TeamCodeRow[]>('/admin/api/team-codes')
+    const data = await apiFetch<TeamCodesResponse>('/admin/api/team-codes')
+    rows.value = data.rows
+    unassigned.value = data.unassigned
   } catch {
     ElMessage.error('队伍码列表加载失败，请刷新重试')
   } finally {
@@ -156,8 +159,6 @@ async function onCopy(code: string): Promise<void> {
   }
 }
 
-const codedCount = computed(() => rows.value.filter((r) => r.teamCode).length)
-
 function onTabChange(): void {
   if (activeTab.value === 'history' && history.value.length === 0) void refreshHistory()
 }
@@ -174,7 +175,7 @@ onMounted(() => void refresh())
     <ElTabs v-model="activeTab" class="code-tabs" @tab-change="onTabChange">
       <ElTabPane label="队伍码" name="codes">
         <div class="tab-toolbar">
-          <span class="toolbar-summary">已发队伍码 {{ codedCount }} / {{ rows.length }}</span>
+          <span class="toolbar-summary">已发队伍码 {{ rows.length }} / {{ rows.length + unassigned }}</span>
           <div class="toolbar-actions">
             <ElButton :loading="generatingAll" @click="onGenerateAll">为未分配队伍批量生成</ElButton>
             <ElButton type="warning" :loading="provisioning" @click="onProvision">一键配置密码</ElButton>
@@ -182,6 +183,7 @@ onMounted(() => void refresh())
           </div>
         </div>
         <p class="export-warn">导出内容包含 DOMjudge 密码，请妥善保管。</p>
+        <p v-if="unassigned > 0" class="export-warn">还有 {{ unassigned }} 个队伍未分配队伍码（不含非队伍账号），可用「为未分配队伍批量生成」补齐。</p>
 
         <div v-if="rows.length" class="table-fill-wrap">
           <el-table :data="pagedRows" height="100%">
@@ -191,11 +193,8 @@ onMounted(() => void refresh())
             <el-table-column prop="icpcId" label="ICPC_ID" min-width="110" />
             <el-table-column label="队伍码" min-width="200">
               <template #default="{ row }">
-                <template v-if="(row as TeamCodeRow).teamCode">
-                  <code class="code-text">{{ (row as TeamCodeRow).teamCode }}</code>
-                  <el-button size="small" text type="primary" @click="onCopy((row as TeamCodeRow).teamCode!)">复制</el-button>
-                </template>
-                <span v-else class="code-none">未分配</span>
+                <code class="code-text">{{ (row as TeamCodeRow).teamCode }}</code>
+                <el-button size="small" text type="primary" @click="onCopy((row as TeamCodeRow).teamCode!)">复制</el-button>
               </template>
             </el-table-column>
             <el-table-column label="有密码" min-width="90">
@@ -216,6 +215,7 @@ onMounted(() => void refresh())
             layout="total, sizes, prev, pager, next"
           />
         </div>
+        <el-empty v-else-if="unassigned > 0" description="所有队伍都还没有队伍码，用上方「为未分配队伍批量生成」一键分配" />
         <el-empty v-else description="还没有队伍，先在「队伍」页从 DOMjudge 同步或导入 Excel" />
       </ElTabPane>
 
@@ -294,10 +294,6 @@ onMounted(() => void refresh())
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border-radius: 4px;
   padding: 1px 6px;
-}
-
-.code-none {
-  color: var(--text-muted);
 }
 
 .table-pagination {

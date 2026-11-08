@@ -160,7 +160,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(verifyRes.status).toBe(302);
     expect(verifyRes.headers.get("location")).toBe("/wxt/dj/");
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
-    expect(setCookie).toContain("Path=/wxt/dj");
+    expect(setCookie).toContain("Path=/");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
 
     const proxied = await app.request("/wxt/dj/anything", {

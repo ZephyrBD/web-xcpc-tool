@@ -127,7 +127,7 @@ describe("GET /dj/verify route", () => {
     expect(res.headers.get("location")).toBe("/dj/");
     const cookie = res.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("cxtool-token=");
-    expect(cookie).toContain("Path=/dj");
+    expect(cookie).toContain("Path=/");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Lax");
     const token = /cxtool-token=([^;]+)/.exec(cookie)?.[1] ?? "";
@@ -144,9 +144,42 @@ describe("GET /dj/verify route", () => {
     const res = await app.request(`/wxt/dj/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/wxt/dj/");
-    expect(res.headers.get("set-cookie")).toContain("Path=/wxt/dj");
+    expect(res.headers.get("set-cookie")).toContain("Path=/");
     const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
     expect((await verifyTeamToken(SECRET, token))?.sub).toBe("2025001");
+  });
+
+  test("valid next query redirects there after verification", async () => {
+    const cfg = testCfg();
+    const store = testStore();
+    const code = store.setTeamCode("2025001");
+    const app = createApp(cfg, { teamStore: store });
+    const res = await app.request(`/dj/verify?code=${code}&next=%2Fscoreboard`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/scoreboard");
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("Path=/");
+  });
+
+  test("unsafe next values fall back to the default redirect", async () => {
+    const cfg = testCfg();
+    const store = testStore();
+    const code = store.setTeamCode("2025001");
+    const app = createApp(cfg, { teamStore: store });
+    for (const next of ["//evil.com", "http://evil.com", "%2F%2Fevil.com", "%2F..%5Cevil", "/x?y=1%0d%0aSet-Cookie: x"]) {
+      const res = await app.request(`/dj/verify?code=${code}&next=${next}`, { redirect: "manual" });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/dj/");
+    }
+  });
+
+  test("the form page preserves next as a hidden field", async () => {
+    const cfg = testCfg();
+    const app = createApp(cfg, { teamStore: testStore() });
+    const res = await app.request("/dj/verify?next=%2Fscoreboard");
+    const text = await res.text();
+    expect(text).toContain('name="next"');
+    expect(text).toContain('value="/scoreboard"');
   });
 
   test("wrong code returns 403 HTML page with the generic message", async () => {

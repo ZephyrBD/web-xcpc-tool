@@ -186,13 +186,15 @@ describe("DOMjudge reverse proxy", () => {
       expect(lastReq?.path).toBe("/some/dj/page");
     });
 
-    test("missing token redirects to the team verify page like /dj/*", async () => {
+    test("missing token redirects to the team verify page carrying next", async () => {
       const res = await handleRootDjProxy(
-        new Request(`http://127.0.0.1:${upstreamPort}/scoreboard`),
+        new Request(`http://127.0.0.1:${upstreamPort}/scoreboard?foo=1`),
         makeCfg("/wxt"),
       );
       expect(res.status).toBe(302);
-      expect(res.headers.get("location")?.endsWith("/wxt/dj/verify")).toBe(true);
+      const location = res.headers.get("location") ?? "";
+      expect(location).toContain("/wxt/dj/verify?next=");
+      expect(location).toContain(encodeURIComponent("/scoreboard?foo=1"));
       expect(hits).toBe(0);
     });
 

@@ -30,6 +30,7 @@ mock.module('element-plus', () => ({
 const { default: TeamCodesPage } = await import('./TeamCodesPage.vue')
 
 let teamCodeRows: TeamCodeRow[] = []
+let unassignedCount = 0
 let loginHistory: LoginHistoryEntry[] = []
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
 
@@ -42,7 +43,7 @@ function mockFetch() {
     if (init?.body) call.body = init.body
     calls.push(call)
     if (path === '/admin/api/team-codes' && method === 'GET') {
-      return new Response(JSON.stringify(teamCodeRows), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({ rows: teamCodeRows, unassigned: unassignedCount }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (path === '/admin/api/team-codes/generate' && method === 'POST') {
       const body = JSON.parse(String(init?.body)) as { icpcId?: string; all?: boolean }
@@ -74,20 +75,23 @@ describe('TeamCodesPage', () => {
     localStorage.clear()
     teamCodeRows = [
       { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: true },
-      { icpcId: 'icpc2', name: '队伍二', teamCode: null, hasPassword: false },
     ]
+    unassignedCount = 1
     loginHistory = []
     calls.length = 0
     mockFetch()
   })
 
-  test('renders team rows with monospace codes and 未分配 for missing codes', async () => {
+  test('renders only coded teams with monospace codes and an unassigned summary', async () => {
     const wrapper = await mountPage()
     const text = wrapper.text()
     expect(text).toContain('队伍一')
     expect(text).toContain('icpc1')
     expect(text).toContain('abcdefghjkmn')
-    expect(text).toContain('未分配')
+    // non-coded teams are not listed; the unassigned count is summarized instead
+    expect(text).not.toContain('队伍二')
+    expect(text).toContain('已发队伍码 1 / 2')
+    expect(text).toContain('还有 1 个队伍未分配队伍码')
     expect(text).toContain('有密码')
     expect(wrapper.findAll('.code-text').length).toBeGreaterThanOrEqual(1)
     expect(text).toContain('导出内容包含 DOMjudge 密码，请妥善保管')
@@ -137,8 +141,18 @@ describe('TeamCodesPage', () => {
 
   test('shows a friendly empty state when no teams exist', async () => {
     teamCodeRows = []
+    unassignedCount = 0
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('还没有队伍')
+  })
+
+  test('all-unassigned teams get a hint pointing at batch generation', async () => {
+    teamCodeRows = []
+    unassignedCount = 2
+    const wrapper = await mountPage()
+    const text = wrapper.text()
+    expect(text).toContain('已发队伍码 0 / 2')
+    expect(text).toContain('所有队伍都还没有队伍码')
   })
 
   test('history tab renders mocked login history newest first', async () => {

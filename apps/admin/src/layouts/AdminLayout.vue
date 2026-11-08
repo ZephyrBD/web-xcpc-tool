@@ -16,22 +16,22 @@ function logout(): void {
 
 const navItems = [
   { path: '/', label: '总览', accent: 'var(--brand-purple)' },
-  { path: '/team-codes', label: '队伍码', accent: 'var(--brand-red)' },
+  { path: '/team-codes', label: '队伍码', accent: 'var(--brand-green)' },
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
-  { path: '/api-list', label: '接口', accent: 'var(--text-muted)' },
-  { path: '/help', label: '帮助', accent: 'var(--text-muted)' },
-  { path: '/settings', label: '设置', accent: 'var(--text-muted)' },
+  { path: '/api-list', label: '接口', accent: 'var(--brand-red)' },
+  { path: '/help', label: '帮助', accent: 'var(--brand-purple)' },
+  { path: '/settings', label: '设置', accent: 'var(--brand-green)' },
 ]
 
 const accents: Record<string, string> = {
   overview: 'var(--brand-purple)',
-  'team-codes': 'var(--brand-red)',
+  'team-codes': 'var(--brand-green)',
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
-  'api-list': 'var(--text-muted)',
-  help: 'var(--text-muted)',
-  settings: 'var(--text-muted)',
+  'api-list': 'var(--brand-red)',
+  help: 'var(--brand-purple)',
+  settings: 'var(--brand-green)',
 }
 
 const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purple)')

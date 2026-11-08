@@ -127,7 +127,10 @@ export async function handleRootDjProxy(req: Request, cfg: Config, teamStore?: T
   const token = getCookie(req.headers.get("cookie"), "cxtool-token");
   const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
   if (!payload) {
-    const location = `${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`;
+    // Carry the original URL so verify can send the team back where they started.
+    const url = new URL(req.url);
+    const next = encodeURIComponent(`${url.pathname}${url.search}`);
+    const location = `${cfg.contextPath.replace(/\/+$/, "")}/dj/verify?next=${next}`;
     return Response.redirect(new URL(location, req.url).toString(), 302);
   }
   return forwardToDj(req, cfg, teamStore, payload, new URL(req.url).pathname);

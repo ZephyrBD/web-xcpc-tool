@@ -50,8 +50,9 @@ pre {
 /*
  * Element Plus theme bridge — routes brand hues into EP components.
  * --accent is set per-route by AdminLayout, so el-primary follows the
- * section rotation (总览 purple / 认证 green / 任务 orange / 队伍 blue).
- * --brand-red stays reserved for danger states.
+ * section rotation (总览 purple / 队伍码 green / 打印·气球 orange / 队伍 blue /
+ * 接口 red / 帮助 purple / 设置 green — adjacent sections never share a hue).
+ * --brand-red doubles as the 接口 accent and the danger state.
  */
 :root {
   --el-color-primary: var(--accent);

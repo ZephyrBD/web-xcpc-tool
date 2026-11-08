@@ -49,20 +49,32 @@ describe("admin team-code & login-history API", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  test("GET /admin/api/team-codes joins teams with codes, never passwords", async () => {
+  test("GET /admin/api/team-codes lists only coded teams and summarizes the rest", async () => {
     const res = await app.request("/admin/api/team-codes", { headers });
     expect(res.status).toBe(200);
-    const rows = (await res.json()) as Array<Record<string, unknown>>;
-    expect(rows.length).toBe(3);
-    expect(rows[0]).toEqual({
+    const body = (await res.json()) as { rows: Array<Record<string, unknown>>; unassigned: number };
+    expect(body.rows.length).toBe(1);
+    expect(body.rows[0]).toEqual({
       icpcId: "icpc1",
       name: "Team One",
       teamCode: teamStore.getTeamCode("icpc1"),
       hasPassword: true,
     });
-    expect(rows[1]).toEqual({ icpcId: "icpc2", name: "队伍二", teamCode: null, hasPassword: false });
-    expect(JSON.stringify(rows)).not.toContain("secret-pw-1");
-    expect(JSON.stringify(rows)).not.toContain("password");
+    expect(body.unassigned).toBe(2);
+    expect(JSON.stringify(body)).not.toContain("secret-pw-1");
+    expect(JSON.stringify(body)).not.toContain("password");
+  });
+
+  test("after generating all codes every team appears in the rows list", async () => {
+    await app.request("/admin/api/team-codes/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ all: true }),
+    });
+    const res = await app.request("/admin/api/team-codes", { headers });
+    const body = (await res.json()) as { rows: Array<{ icpcId: string }>; unassigned: number };
+    expect(body.rows.map((r) => r.icpcId).sort()).toEqual(["icpc1", "icpc2", "icpc3"]);
+    expect(body.unassigned).toBe(0);
   });
 
   test("POST generate for a single team returns the new code and replaces the old one", async () => {
@@ -171,8 +183,12 @@ describe("admin team-code API: teams without icpc_id fall back to the DOMjudge t
   test("team-codes list reports the team id as icpcId", async () => {
     const code = teamStore.setTeamCode("djteam9");
     const res = await app.request("/admin/api/team-codes", { headers });
-    const rows = (await res.json()) as Array<{ icpcId: string; name: string; teamCode: string | null; hasPassword: boolean }>;
-    expect(rows[1]).toEqual({ icpcId: "djteam9", name: "Demo Team", teamCode: code, hasPassword: false });
+    const body = (await res.json()) as {
+      rows: Array<{ icpcId: string; name: string; teamCode: string | null; hasPassword: boolean }>;
+      unassigned: number;
+    };
+    expect(body.rows[0]).toEqual({ icpcId: "djteam9", name: "Demo Team", teamCode: code, hasPassword: false });
+    expect(body.unassigned).toBe(1);
   });
 
   test("export lists the DOMjudge team id as the username", async () => {
@@ -344,7 +360,6 @@ describe("POST /admin/api/team-codes/provision", () => {
     ["icpc5", "user with missing roles"],
     ["icpc6", "team+admin hybrid user"],
   ])("refuses non-team user (%s)", async (icpcId) => {
-    teamStore.setTeamCode(icpcId);
     const res = await app.request("/admin/api/team-codes/provision", {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
@@ -356,6 +371,8 @@ describe("POST /admin/api/team-codes/provision", () => {
     expect(body.skipped).toBe(1);
     expect(body.errors[0].reason).toContain("refusing non-team user");
     expect(teamStore.hasPassword(icpcId)).toBe(false);
+    // refused users never get a team code stored either
+    expect(teamStore.getTeamCode(icpcId)).toBeNull();
     expect(djCalls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
