@@ -49,6 +49,11 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
+/** Validates an arbitrary raw object against the full config schema. */
+export function parseConfig(raw: unknown): Config {
+  return configSchema.parse(raw);
+}
+
 export function loadConfig(path: string): Config {
   if (!existsSync(path)) {
     return configSchema.parse({});

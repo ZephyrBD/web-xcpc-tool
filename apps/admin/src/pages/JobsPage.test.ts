@@ -359,4 +359,40 @@ describe('JobsPage', () => {
     expect(wrapper.text()).toContain('打印队列空空的')
     expect(wrapper.find('svg.empty-art').exists()).toBe(true)
   })
+
+  test('print table paginates: 25 rows show 20 on page 1, rest on page 2', async () => {
+    printTasks = Array.from({ length: 25 }, (_, i) => makePrintTask(`p${i + 1}`))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const printPane = wrapper.find('.el-tab-pane')
+    expect(printPane.findAll('.el-table__row').length).toBe(20)
+    const next = printPane.find('.el-pagination .btn-next')
+    expect(next.exists()).toBe(true)
+    await next.trigger('click')
+    await flush()
+    await flush()
+
+    expect(printPane.findAll('.el-table__row').length).toBe(5)
+    expect(wrapper.text()).toContain('A-p25')
+  })
+
+  test('balloon table paginates the same way', async () => {
+    balloonTasks = Array.from({ length: 25 }, (_, i) => makeBalloonTask(`b${i + 1}`))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]!
+    expect(balloonPane.findAll('.el-table__row').length).toBe(20)
+    await balloonPane.find('.el-pagination .btn-next').trigger('click')
+    await flush()
+    await flush()
+    expect(balloonPane.findAll('.el-table__row').length).toBe(5)
+  })
 })

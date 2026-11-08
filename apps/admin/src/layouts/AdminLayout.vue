@@ -19,6 +19,8 @@ const navItems = [
   { path: '/auth-tasks', label: '认证任务', accent: 'var(--brand-green)' },
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
+  { path: '/api-list', label: '接口', accent: 'var(--text-muted)' },
+  { path: '/settings', label: '设置', accent: 'var(--text-muted)' },
 ]
 
 const accents: Record<string, string> = {
@@ -26,6 +28,8 @@ const accents: Record<string, string> = {
   'auth-tasks': 'var(--brand-green)',
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
+  'api-list': 'var(--text-muted)',
+  settings: 'var(--text-muted)',
 }
 
 const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purple)')

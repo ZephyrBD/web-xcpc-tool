@@ -1,0 +1,208 @@
+<script setup lang="ts">
+import { onMounted, reactive, ref } from 'vue'
+import { ElButton, ElInput, ElMessage } from 'element-plus'
+import { apiFetch } from '@/api'
+
+interface SettingsView {
+  domjudge: { baseUrl: string; adminUser: string; timeoutSeconds: number }
+  balloon: { contestId: string; pollIntervalSeconds: number }
+  print: { tokenMasked: string }
+  admin: { username: string }
+}
+
+const form = reactive({
+  domjudgeBaseUrl: '',
+  domjudgeAdminUser: '',
+  domjudgeAdminPassword: '',
+  balloonContestId: '',
+  balloonPollIntervalSeconds: 30,
+  printToken: '',
+  adminUsername: '',
+})
+
+const loading = ref(false)
+const saving = ref(false)
+const printTokenMasked = ref('')
+
+async function refresh(): Promise<void> {
+  loading.value = true
+  try {
+    const s = await apiFetch<SettingsView>('/admin/api/settings')
+    form.domjudgeBaseUrl = s.domjudge.baseUrl
+    form.domjudgeAdminUser = s.domjudge.adminUser
+    form.balloonContestId = s.balloon.contestId
+    form.balloonPollIntervalSeconds = s.balloon.pollIntervalSeconds
+    form.adminUsername = s.admin.username
+    printTokenMasked.value = s.print.tokenMasked
+  } catch {
+    ElMessage.error('设置加载失败，请刷新重试')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function save(): Promise<void> {
+  saving.value = true
+  try {
+    await apiFetch<{ note?: string }>('/admin/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        domjudge: {
+          baseUrl: form.domjudgeBaseUrl,
+          adminUser: form.domjudgeAdminUser,
+          // 密码留空表示不修改，不把空串发给服务端。
+          ...(form.domjudgeAdminPassword ? { adminPassword: form.domjudgeAdminPassword } : {}),
+        },
+        balloon: {
+          contestId: form.balloonContestId,
+          pollIntervalSeconds: form.balloonPollIntervalSeconds,
+        },
+        ...(form.printToken ? { print: { token: form.printToken } } : {}),
+        admin: { username: form.adminUsername },
+      }),
+    })
+    form.domjudgeAdminPassword = ''
+    form.printToken = ''
+    await refresh()
+    ElMessage.success('已保存，重启服务后生效')
+  } catch {
+    ElMessage.error('保存没成功，请检查填写内容后再试')
+  } finally {
+    saving.value = false
+  }
+}
+
+onMounted(() => void refresh())
+</script>
+
+<template>
+  <div class="settings">
+    <div class="settings-grid">
+      <section class="settings-card">
+        <h2 class="card-title">DOMjudge 连接</h2>
+        <label class="field">
+          <span class="field-label">Base URL</span>
+          <ElInput v-model="form.domjudgeBaseUrl" placeholder="https://domjudge.example.com" />
+          <span class="field-help">
+            指向 <b>DOMjudge 本身</b>的地址，不带 <code>/api</code> 后缀。拼接规则：本工具按
+            <code>baseUrl + /api/v4/contests/...</code> 调 DOMjudge API；队伍浏览器访问的
+            DOMjudge 页面则通过本工具的 <code>/cxtool/dj/...</code> 反代到
+            <code>baseUrl + /...</code>。注意别和 OMS 客户端进站地址
+            （<code>http://&lt;host&gt;:&lt;port&gt;/cxtool</code>）混淆。
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">管理员用户名</span>
+          <ElInput v-model="form.domjudgeAdminUser" placeholder="DOMjudge 管理员账号" />
+        </label>
+        <label class="field">
+          <span class="field-label">管理员密码</span>
+          <ElInput
+            v-model="form.domjudgeAdminPassword"
+            type="password"
+            show-password
+            placeholder="留空则不修改"
+          />
+        </label>
+      </section>
+
+      <section class="settings-card">
+        <h2 class="card-title">气球服务</h2>
+        <label class="field">
+          <span class="field-label">比赛 ID（contestId）</span>
+          <ElInput v-model="form.balloonContestId" placeholder="DOMjudge 比赛 ID" />
+        </label>
+        <label class="field">
+          <span class="field-label">轮询间隔（秒）</span>
+          <ElInput v-model.number="form.balloonPollIntervalSeconds" type="number" :min="1" />
+        </label>
+      </section>
+
+      <section class="settings-card">
+        <h2 class="card-title">打印回调 Token</h2>
+        <label class="field">
+          <span class="field-label">Token</span>
+          <ElInput v-model="form.printToken" type="password" show-password placeholder="留空则不修改" />
+          <span class="field-help">
+            当前：{{ printTokenMasked || '未设置' }}。DOMjudge 调打印回调时携带它做校验。
+          </span>
+        </label>
+      </section>
+
+      <section class="settings-card">
+        <h2 class="card-title">管理端账号</h2>
+        <label class="field">
+          <span class="field-label">用户名</span>
+          <ElInput v-model="form.adminUsername" placeholder="管理端登录用户名" />
+        </label>
+      </section>
+    </div>
+
+    <div class="settings-footer">
+      <ElButton type="primary" :loading="saving" @click="save">保存设置</ElButton>
+      <span class="footer-note">保存后写入 settings.json，重启服务才生效。</span>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg-alt);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card-title {
+  margin: 0;
+  font-size: var(--text-15);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: var(--text-13);
+  color: var(--text-muted);
+}
+
+.field-help {
+  font-size: var(--text-13);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.field-help code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.settings-footer {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-note {
+  font-size: var(--text-13);
+  color: var(--text-muted);
+}
+</style>

@@ -19,6 +19,7 @@ import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
+import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
 
 export type Deps = {
@@ -256,6 +257,27 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       return c.json({ ok: false, reason: "invalid excel file" }, 400);
     }
     return c.json(result);
+  });
+
+  app.get("/admin/api/settings", (c) => {
+    return c.json(safeSettingsView(cfg));
+  });
+
+  app.put("/admin/api/settings", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = settingsPatchSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      return c.json({ error: "配置格式不正确，请检查各字段后重试" }, 400);
+    }
+    let updated;
+    try {
+      updated = applySettingsPatch(cfg, parsed.data, settingsPathFor(dataDir));
+    } catch (err) {
+      console.error("settings update failed:", err instanceof Error ? err.message : err);
+      return c.json({ error: "保存失败，请稍后重试" }, 500);
+    }
+    // Password fields are write-only and never echoed back.
+    return c.json({ ...safeSettingsView(updated), note: "已保存，重启服务后生效" });
   });
 
   app.get("/admin/api/events", (c) => {

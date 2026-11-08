@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElButton, ElMessage, ElSwitch, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElButton, ElMessage, ElPagination, ElSwitch, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
+import { usePagination } from '@/composables/usePagination'
 import { printPdfTask } from '@/utils/printPdf'
 import { printBalloonTask } from '@/utils/printBalloon'
 import type { BalloonTask, PrintTask } from '@/types'
@@ -10,6 +11,8 @@ import type { BalloonTask, PrintTask } from '@/types'
 const activeTab = ref('print')
 const printTasks = ref<PrintTask[]>([])
 const balloonTasks = ref<BalloonTask[]>([])
+const { page: printPage, pageSize: printPageSize, paged: pagedPrintTasks } = usePagination(printTasks)
+const { page: balloonPage, pageSize: balloonPageSize, paged: pagedBalloonTasks } = usePagination(balloonTasks)
 
 // 收到新任务自动打印：本地开关，默认关。iframe.print 不是弹窗，一般不会被
 // 拦截；若浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
@@ -162,7 +165,7 @@ onUnmounted(() => {
         <div class="print-toolbar">
           <el-switch v-model="autoPrint" active-text="收到新任务自动打印" />
         </div>
-        <el-table v-if="printTasks.length" :data="printTasks">
+        <el-table v-if="printTasks.length" :data="pagedPrintTasks">
           <el-table-column prop="location" label="位置" min-width="110" />
           <el-table-column prop="teamName" label="队伍" min-width="140" />
           <el-table-column prop="originalFilename" label="文件名" min-width="180" show-overflow-tooltip />
@@ -186,6 +189,15 @@ onUnmounted(() => {
             </template>
           </el-table-column>
         </el-table>
+        <el-pagination
+          v-if="printTasks.length"
+          class="table-pagination"
+          v-model:current-page="printPage"
+          v-model:page-size="printPageSize"
+          :total="printTasks.length"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+        />
         <div v-else class="empty-state">
           <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
             <circle cx="80" cy="52" r="38" fill="var(--brand-orange)" opacity="0.15" />
@@ -203,7 +215,7 @@ onUnmounted(() => {
         <div class="print-toolbar">
           <el-switch v-model="autoPrintBalloon" active-text="收到新气球自动打印" />
         </div>
-        <el-table v-if="balloonTasks.length" :data="balloonTasks">
+        <el-table v-if="balloonTasks.length" :data="pagedBalloonTasks">
           <el-table-column prop="problemLabel" label="题目" min-width="90" />
           <el-table-column prop="teamName" label="队伍" min-width="150" />
           <el-table-column label="位置" min-width="110">
@@ -228,6 +240,15 @@ onUnmounted(() => {
             </template>
           </el-table-column>
         </el-table>
+        <el-pagination
+          v-if="balloonTasks.length"
+          class="table-pagination"
+          v-model:current-page="balloonPage"
+          v-model:page-size="balloonPageSize"
+          :total="balloonTasks.length"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+        />
         <div v-else class="empty-state">
           <svg class="empty-art" viewBox="0 0 160 110" aria-hidden="true">
             <circle cx="80" cy="44" r="26" fill="var(--brand-green)" opacity="0.2" />
@@ -244,6 +265,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.table-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
 .print-toolbar {
   display: flex;
   justify-content: flex-end;

@@ -219,4 +219,23 @@ describe('AuthTasksPage', () => {
     expect(getsAfter).toBe(getsBefore + 1)
     expect(wrapper.text()).toContain('2026t3')
   })
+
+  test('paginates: 25 tasks show 20 on page 1, the rest on page 2', async () => {
+    tasks = Array.from({ length: 25 }, (_, i) => makeTask(`t${i + 1}`))
+    const pinia = createPinia()
+    const session = useSessionStore(pinia)
+    session.sseToken = 'sse-tok-9'
+    const wrapper = mount(AuthTasksPage, { global: { plugins: [pinia] } })
+    await flush()
+    await flush()
+
+    expect(wrapper.findAll('.el-table__row').length).toBe(20)
+    const next = wrapper.find('.el-pagination .btn-next')
+    expect(next.exists()).toBe(true)
+    await next.trigger('click')
+    await flush()
+    await flush()
+    expect(wrapper.findAll('.el-table__row').length).toBe(5)
+    expect(wrapper.text()).toContain('2026t25')
+  })
 })

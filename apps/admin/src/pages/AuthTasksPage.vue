@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { ElButton, ElEmpty, ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
+import { ElButton, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
+import { usePagination } from '@/composables/usePagination'
 import type { AuthTask, AuthTaskStatus } from '@/types'
 
 const tasks = ref<AuthTask[]>([])
+const { page, pageSize, paged: pagedTasks } = usePagination(tasks)
 const loading = ref(false)
 
 async function refresh(): Promise<void> {
@@ -90,7 +92,7 @@ onUnmounted(() => {
 
 <template>
   <div class="auth-tasks">
-    <el-table v-if="tasks.length" :data="tasks" class="task-table">
+    <el-table v-if="tasks.length" :data="pagedTasks" class="task-table">
       <el-table-column prop="examNum" label="学号" min-width="120" />
       <el-table-column label="客户端" min-width="140">
         <template #default="{ row }">{{ row.clientId ?? '—' }}</template>
@@ -113,11 +115,25 @@ onUnmounted(() => {
         </template>
       </el-table-column>
     </el-table>
+    <el-pagination
+      v-if="tasks.length"
+      class="table-pagination"
+      v-model:current-page="page"
+      v-model:page-size="pageSize"
+      :total="tasks.length"
+      :page-sizes="[20, 50, 100]"
+      layout="total, sizes, prev, pager, next"
+    />
     <el-empty v-else description="当前没有认证任务，一切正常 🙂" />
   </div>
 </template>
 
 <style scoped>
+.table-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
 .pill {
   display: inline-block;
   padding: 2px 10px;
