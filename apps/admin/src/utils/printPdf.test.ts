@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { confirmOnAfterprint } from '@/utils/printPdf'
+import { confirmOnAfterprint, printViaIframe } from '@/utils/printPdf'
 
 /** Minimal EventTarget-like window with a print() method. */
 function makeFakeWindow(): Window & { printCount: number; fire: (name: string) => void } {
@@ -12,8 +12,15 @@ function makeFakeWindow(): Window & { printCount: number; fire: (name: string) =
     addEventListener(name: string, fn: () => void) {
       ;(listeners[name] ??= []).push(fn)
     },
+    removeEventListener(name: string, fn: () => void) {
+      const a = listeners[name]
+      if (a) {
+        const i = a.indexOf(fn)
+        if (i >= 0) a.splice(i, 1)
+      }
+    },
     fire(name: string) {
-      for (const fn of listeners[name] ?? []) fn()
+      for (const fn of [...(listeners[name] ?? [])]) fn()
     },
   }
   return win
@@ -48,5 +55,33 @@ describe('confirmOnAfterprint', () => {
     expect(await p).toBe(false)
     win.fire('afterprint')
     expect(await p).toBe(false)
+  })
+
+  test('afterprint on the parent window confirms too (Chromium dispatches there for iframe print)', async () => {
+    const frameWin = makeFakeWindow()
+    const p = confirmOnAfterprint(frameWin, 50)
+    window.dispatchEvent(new Event('afterprint'))
+    expect(await p).toBe(true)
+  })
+
+  test('print() returning synchronously does not tear the frame down before afterprint fires', async () => {
+    // Real-browser race: Chromium's print() blocks until the dialog closes,
+    // then afterprint dispatches ASYNC. Any cleanup that runs right when
+    // print() returns would destroy the frame before the event arrives.
+    const iframe = document.createElement('iframe')
+    document.body.appendChild(iframe)
+    const frameWin: any = makeFakeWindow()
+    Object.defineProperty(iframe, 'contentWindow', { value: frameWin })
+    const p = printViaIframe(iframe)
+    // simulate the load event reaching printViaIframe's handler
+    iframe.dispatchEvent(new Event('load'))
+    // print() returned, dialog closed, but afterprint has not fired yet —
+    // the frame must still be alive so its afterprint can dispatch.
+    await Promise.resolve()
+    expect(iframe.isConnected).toBe(true)
+    frameWin.fire('afterprint')
+    expect(await p).toBe(true)
+    expect(iframe.isConnected).toBe(true)
+    iframe.remove()
   })
 })

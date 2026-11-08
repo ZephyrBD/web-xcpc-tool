@@ -27,7 +27,7 @@ function page(title: string, accent: string, body: string): Response {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)}</title>
+<title>Web XCPC Tool - ${escapeHtml(title)}</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f7fa;color:#1f2430;font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
@@ -39,10 +39,12 @@ input:focus{border-color:${accent}}
 button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:600;color:#fff;background:${accent};border:none;border-radius:10px;cursor:pointer}
 button:hover{opacity:.9}
 .hint{margin-top:14px;font-size:13px;color:#8a93a3}
+.brand{margin-bottom:18px;font-size:14px;font-weight:600;letter-spacing:1px;color:${accent};text-transform:uppercase}
 .footer{margin-top:24px;font-size:12px;color:#b0b7c3;text-align:center}
 </style>
 </head>
 <body>
+<div class="brand">Web XCPC Tool</div>
 <div class="card">
 ${body}
 </div>
@@ -62,9 +64,12 @@ function formatWindowBound(iso: string): string {
 }
 
 function loginWindowLine(teamLogin?: { start: string; end: string }): string {
+  // Explicit 不限 placeholders keep the <start>~<end> shape readable in every
+  // case; both-missing collapses to just 不限.
   const start = teamLogin?.start ? formatWindowBound(teamLogin.start) : "不限";
   const end = teamLogin?.end ? formatWindowBound(teamLogin.end) : "不限";
-  return `<p class="hint">登录时段：${escapeHtml(start)}~${escapeHtml(end)}</p>`;
+  const span = start === "不限" && end === "不限" ? "不限" : `${start}~${end}`;
+  return `<p class="hint">登录时段：${escapeHtml(span)}</p>`;
 }
 
 /** Team code typed on the form page (HTTP 200). `next` is preserved as a hidden field. */

@@ -51,23 +51,42 @@ export function printViaIframe(iframe: HTMLIFrameElement): Promise<boolean> {
 export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false
-    win.addEventListener('afterprint', () => {
-      if (!settled) {
-        settled = true
-        clearTimeout(timer)
-        resolve(true)
-      }
-    })
+    let timer: number | undefined
+    // Browsers differ on where `afterprint` dispatches for an iframe print():
+    // Chromium targets the frame's window, other engines the top window.
+    // Listen on BOTH, or the confirmation is silently lost and the task
+    // never acks. The listener is registered BEFORE print() because the
+    // event may dispatch while/just after the blocking print() call.
+    // happy-dom's contentWindow lacks event methods; real browsers always
+    // have them. Listen only where listening is possible.
+    const targets = [win, window].filter(
+      (t) => typeof t.addEventListener === 'function' && typeof t.removeEventListener === 'function',
+    )
+    const onAfterprint = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      for (const t of targets) t.removeEventListener('afterprint', onAfterprint)
+      resolve(true)
+    }
+    for (const t of targets) t.addEventListener('afterprint', onAfterprint)
     // happy-dom (test env) has no window.print; real browsers always do.
     if (typeof win.print === 'function') win.print()
-    const timer = window.setTimeout(() => {
+    timer = window.setTimeout(() => {
       if (!settled) {
         settled = true
+        for (const t of targets) t.removeEventListener('afterprint', onAfterprint)
         resolve(false)
       }
     }, timeoutMs)
   })
 }
+
+/** Grace period after the print promise settles before the frame is torn
+ * down: Chromium's print() returns when the dialog closes, but the frame's
+ * afterprint still dispatches asynchronously — an immediate removal would
+ * destroy the frame before the event can fire. */
+const AFTERPRINT_GRACE_MS = 1_000
 
 export async function printPdfTask(id: string, apiFetch: PdfApiFetch): Promise<boolean> {
   const blob = await apiFetch<Blob>(`/admin/api/print-tasks/${id}/pdf`, { blob: true })
@@ -82,6 +101,6 @@ export async function printPdfTask(id: string, apiFetch: PdfApiFetch): Promise<b
   try {
     return await printViaIframe(iframe)
   } finally {
-    cleanup()
+    window.setTimeout(cleanup, AFTERPRINT_GRACE_MS)
   }
 }

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { verifyFormPage, verifyMissPage } from "./teamPages";
-
 const text = (res: Response) => res.text();
 
 /** Build an ISO instant whose LOCAL rendering is the given wall-clock time (formatting is local by design). */
@@ -27,6 +26,36 @@ describe("verifyFormPage login window hint", () => {
   test("omitting the window entirely still renders the hint as 不限", async () => {
     const html = await text(verifyFormPage("/cx"));
     expect(html).toContain("登录时段：不限");
+  });
+
+  test("only start bound renders <start>~不限 (open-ended window)", async () => {
+    const html = await text(
+      verifyFormPage("/cx", undefined, null, { start: iso(2026, 11, 8, 9, 0, 0), end: "" }),
+    );
+    expect(html).toContain("登录时段：2026-11-08 09:00:00~不限");
+  });
+
+  test("only end bound renders 不限~<end> (window closing at end)", async () => {
+    const html = await text(
+      verifyFormPage("/cx", undefined, null, { start: "", end: iso(2026, 11, 8, 17, 0, 0) }),
+    );
+    expect(html).toContain("登录时段：不限~2026-11-08 17:00:00");
+  });
+});
+
+describe("team page branding", () => {
+  test("verify form page shows the Web XCPC Tool brand in title and above the card", async () => {
+    const html = await text(verifyFormPage("/cx"));
+    expect(html).toContain("<title>Web XCPC Tool");
+    expect(html).toContain("Web XCPC Tool");
+    expect(html.indexOf("Web XCPC Tool")).toBeLessThan(html.indexOf("class=\"card\""));
+  });
+
+  test("all team pages carry the brand consistently", async () => {
+    for (const html of await Promise.all([text(verifyFormPage("/cx")), text(verifyMissPage())])) {
+      expect(html).toContain("<title>Web XCPC Tool");
+      expect(html).toContain("Web XCPC Tool");
+    }
   });
 });
 
