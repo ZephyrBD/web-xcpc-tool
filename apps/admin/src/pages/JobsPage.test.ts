@@ -12,10 +12,14 @@ mock.module('element-plus', () => ({
 }))
 
 const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve(true))
-mock.module('@/utils/printPdf', () => ({ printPdfTask: printPdfTaskMock }))
+// Spread the real module so other importers (printBalloon → openPrintPopup /
+// printViaPopup) keep working while printPdfTask itself is mocked.
+import * as realPrintPdf from '@/utils/printPdf'
+mock.module('@/utils/printPdf', () => ({ ...realPrintPdf, printPdfTask: printPdfTaskMock }))
 
 const printBalloonTaskMock = mock((_task: unknown, _apiFetch: unknown) => Promise.resolve(true))
-mock.module('@/utils/printBalloon', () => ({ printBalloonTask: printBalloonTaskMock }))
+import * as realPrintBalloon from '@/utils/printBalloon'
+mock.module('@/utils/printBalloon', () => ({ ...realPrintBalloon, printBalloonTask: printBalloonTaskMock }))
 
 const { default: JobsPage } = await import('./JobsPage.vue')
 
@@ -321,6 +325,42 @@ describe('JobsPage', () => {
     const ackCall = calls.find((c) => c.method === 'POST' && c.path.endsWith('/b1/ack'))
     expect(ackCall).toBeDefined()
     expect(wrapper.findAll('.pill--delivered').length).toBe(1)
+  })
+
+  test('blocked popup: the friendly 弹窗 toast shows and nothing acks (print task)', async () => {
+    printPdfTaskMock.mockRejectedValueOnce(new Error('弹窗被拦截，请允许弹窗后重试'))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '打印')!
+    await btn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageErrorMock).toHaveBeenCalledWith('弹窗被拦截，请允许弹窗后重试')
+    expect(calls.find((c) => c.method === 'POST' && c.path.endsWith('/p1/ack'))).toBeUndefined()
+  })
+
+  test('blocked popup: the friendly 弹窗 toast shows and nothing acks (balloon task)', async () => {
+    printBalloonTaskMock.mockRejectedValueOnce(new Error('弹窗被拦截，请允许弹窗后重试'))
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]
+    const btn = balloonPane!.findAll('button').find((b) => b.text() === '打印')!
+    await btn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageErrorMock).toHaveBeenCalledWith('弹窗被拦截，请允许弹窗后重试')
+    expect(calls.find((c) => c.method === 'POST' && c.path.endsWith('/b1/ack'))).toBeUndefined()
   })
 
   test('auto-print ON: a new SSE print-task event triggers printPdfTask for the new id only', async () => {

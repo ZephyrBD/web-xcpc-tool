@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { confirmOnAfterprint, printViaIframe } from '@/utils/printPdf'
+import { confirmOnAfterprint, openPrintPopup, printBlobUrl, printViaPopup } from '@/utils/printPdf'
 
 /** Controllable MediaQueryList stub matching the real browser API surface. */
 function makeFakeMql() {
@@ -29,11 +29,23 @@ afterEach(() => {
   window.matchMedia = originalMatchMedia
 })
 
-/** Minimal EventTarget-like window with a print() method. */
-function makeFakeWindow(): Window & { printCount: number; fire: (name: string) => void } {
+/** Minimal EventTarget-like popup window with a document stub and print(). */
+function makeFakeWindow(opts: { readyState?: string } = {}): Window & {
+  printCount: number
+  document: { readyState: string; open: () => void; write: (s: string) => void; close: () => void }
+  close: () => void
+  closed: () => boolean
+  fire: (name: string) => void
+} {
   const listeners: Record<string, Array<() => void>> = {}
   const win: any = {
     printCount: 0,
+    document: {
+      readyState: opts.readyState ?? 'complete',
+      open() {},
+      write(_html: string) {},
+      close() {},
+    },
     print() {
       win.printCount++
     },
@@ -51,8 +63,21 @@ function makeFakeWindow(): Window & { printCount: number; fire: (name: string) =
       for (const fn of [...(listeners[name] ?? [])]) fn()
     },
   }
+  win.close = () => {
+    win._closed = true
+  }
+  win.closed = () => win._closed === true
   return win
 }
+
+const originalWindowOpen = window.open
+const originalCreateObjectURL = URL.createObjectURL
+const originalRevokeObjectURL = URL.revokeObjectURL
+afterEach(() => {
+  window.open = originalWindowOpen
+  URL.createObjectURL = originalCreateObjectURL
+  URL.revokeObjectURL = originalRevokeObjectURL
+})
 
 describe('confirmOnAfterprint', () => {
   test('calls print and resolves true only on the afterprint event', async () => {
@@ -134,24 +159,71 @@ describe('confirmOnAfterprint', () => {
     expect(await p).toBe(false)
   })
 
-  test('print() returning synchronously does not tear the frame down before afterprint fires', async () => {
+  test('print() returning synchronously does not close the popup before afterprint fires', async () => {
     // Real-browser race: Chromium's print() blocks until the dialog closes,
     // then afterprint dispatches ASYNC. Any cleanup that runs right when
-    // print() returns would destroy the frame before the event arrives.
-    const iframe = document.createElement('iframe')
-    document.body.appendChild(iframe)
-    const frameWin: any = makeFakeWindow()
-    Object.defineProperty(iframe, 'contentWindow', { value: frameWin })
-    const p = printViaIframe(iframe)
-    // simulate the load event reaching printViaIframe's handler
-    iframe.dispatchEvent(new Event('load'))
-    // print() returned, dialog closed, but afterprint has not fired yet —
-    // the frame must still be alive so its afterprint can dispatch.
+    // print() returns would close the popup before the event arrives.
+    const popWin = makeFakeWindow()
+    const p = confirmOnAfterprint(popWin)
     await Promise.resolve()
-    expect(iframe.isConnected).toBe(true)
-    frameWin.fire('afterprint')
+    expect(popWin.closed()).toBe(false)
+    popWin.fire('afterprint')
     expect(await p).toBe(true)
-    expect(iframe.isConnected).toBe(true)
-    iframe.remove()
+  })
+})
+
+describe('printViaPopup', () => {
+  test('waits for the popup load event, then prints on the popup window', async () => {
+    // Real-browser contract: a popup loading a PDF is a REAL window context —
+    // unlike a hidden iframe's PDF plugin document, its `load` always fires.
+    const popWin = makeFakeWindow({ readyState: 'loading' })
+    const p = printViaPopup(popWin)
+    await Promise.resolve()
+    expect(popWin.printCount).toBe(0) // load has not fired yet
+    popWin.fire('load')
+    expect(popWin.printCount).toBe(1)
+    popWin.fire('afterprint')
+    expect(await p).toBe(true)
+  })
+
+  test('prints immediately when the popup document is already complete', async () => {
+    const popWin = makeFakeWindow({ readyState: 'complete' })
+    const p = printViaPopup(popWin)
+    expect(popWin.printCount).toBe(1)
+    popWin.fire('afterprint')
+    expect(await p).toBe(true)
+  })
+})
+
+describe('openPrintPopup', () => {
+  test('returns the popup window from window.open', () => {
+    const popWin = makeFakeWindow()
+    window.open = (() => popWin) as unknown as typeof window.open
+    expect(openPrintPopup('blob:x')).toBe(popWin)
+  })
+
+  test('a popup blocker (window.open → null) throws the friendly error', () => {
+    window.open = (() => null) as unknown as typeof window.open
+    expect(() => openPrintPopup()).toThrow('弹窗被拦截，请允许弹窗后重试')
+  })
+})
+
+describe('printBlobUrl (printPdfTask popup flow)', () => {
+  test('opens a popup with the URL, prints, and confirms on the popup afterprint', async () => {
+    const popWin = makeFakeWindow({ readyState: 'complete' })
+    window.open = (() => popWin) as unknown as typeof window.open
+    const p = printBlobUrl('blob:fake')
+    expect(popWin.printCount).toBe(1)
+    popWin.fire('afterprint')
+    expect(await p).toBe(true)
+    // Cleanup runs after the afterprint grace delay, not synchronously.
+    expect(popWin.closed()).toBe(false)
+    await new Promise((r) => setTimeout(r, 1100))
+    expect(popWin.closed()).toBe(true)
+  })
+
+  test('a blocked popup rejects with the friendly error', async () => {
+    window.open = (() => null) as unknown as typeof window.open
+    await expect(printBlobUrl('blob:fake')).rejects.toThrow('弹窗被拦截，请允许弹窗后重试')
   })
 })

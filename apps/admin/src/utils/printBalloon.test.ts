@@ -26,6 +26,7 @@ describe('generateBalloonTicket', () => {
   })
 })
 
-// printBalloonTask's DOM flow (hidden iframe + print) is exercised end-to-end
-// in the browser; the confirm-on-afterprint contract it relies on is covered
-// by printPdf.test.ts (confirmOnAfterprint) and the JobsPage ack-flow tests.
+// printBalloonTask's DOM flow (popup window + document.write + print) is
+// exercised end-to-end in the browser; the confirm-on-afterprint contract it
+// relies on is covered by printPdf.test.ts (confirmOnAfterprint /
+// printViaPopup / openPrintPopup) and the JobsPage ack-flow tests.

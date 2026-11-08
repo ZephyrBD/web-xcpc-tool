@@ -1,19 +1,20 @@
 /**
- * Prints a balloon ticket via a hidden iframe: builds the plain-text ticket
- * HTML from the task and writes it into the iframe document, then triggers
- * the browser print dialog — the same ticket layout as the legacy Java admin
- * UI (vue/src/utils/print.js).
+ * Prints a balloon ticket via a popup window: builds the plain-text ticket
+ * HTML from the task, writes it into the popup's document, and triggers the
+ * browser print dialog — the same ticket layout as the legacy Java admin
+ * UI (vue/src/utils/print.js). Uses the same popup flow as PDF printing so
+ * the behavior (print dialog, afterprint confirmation, popup handling) is
+ * uniform for both task kinds.
  *
- * Note: browsers may silently ignore iframe.contentWindow.print() when there
- * was no prior user gesture (relevant for SSE auto-print). That's accepted —
- * worst case the balloon runner prints the ticket manually from the jobs list.
+ * Note: browsers may silently ignore print() when there was no prior user
+ * gesture (relevant for SSE auto-print). That's accepted — worst case the
+ * balloon runner prints the ticket manually from the jobs list.
  *
  * The promise resolves on `afterprint` (print confirmed by the browser —
- * Chromium dispatches it on the TOP window for iframe print() calls; the
- * frame listener is a fallback), which callers use to auto-ack the balloon
+ * see confirmOnAfterprint), which callers use to auto-ack the balloon
  * as delivered.
  */
-import { printViaIframe } from '@/utils/printPdf'
+import { openPrintPopup, printViaPopup } from '@/utils/printPdf'
 import type { BalloonTask } from '@/types'
 
 /** Local time as HH:mm; falls back to the raw string for unparseable input. */
@@ -58,20 +59,22 @@ export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): 
   </head>
   <body><pre>${escapeHtml(generateBalloonTicket(task))}</pre></body>
 </html>`
-  const iframe = document.createElement('iframe')
-  iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px'
-  document.body.appendChild(iframe)
-  const doc = iframe.contentDocument ?? iframe.contentWindow?.document
-  if (!doc) {
-    iframe.remove()
-    throw new Error('iframe document unavailable')
+  const popWin = openPrintPopup()
+  try {
+    popWin.document.open()
+    popWin.document.write(html)
+    popWin.document.close()
+    // Resolves true only on `afterprint` (browser confirmed the print job;
+    // Firefox also fires it when the dialog is cancelled) — callers may
+    // auto-ack the delivery. False on the confirmation timeout: no ack.
+    return await printViaPopup(popWin)
+  } finally {
+    window.setTimeout(() => {
+      try {
+        popWin.close()
+      } catch {
+        // the popup may already be gone; nothing to clean up
+      }
+    }, 1_000)
   }
-  doc.open()
-  doc.write(html)
-  doc.close()
-  // Resolves true only on `afterprint` (browser confirmed the print job;
-  // Chromium dispatches it on the TOP window, frame listener is a fallback;
-  // Firefox also fires it when the dialog is cancelled) — callers may
-  // auto-ack the delivery. False on the confirmation timeout: no ack.
-  return printViaIframe(iframe)
 }

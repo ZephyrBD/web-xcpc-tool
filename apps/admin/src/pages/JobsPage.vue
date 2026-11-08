@@ -14,8 +14,8 @@ const balloonTasks = ref<BalloonTask[]>([])
 const { page: printPage, pageSize: printPageSize, paged: pagedPrintTasks } = usePagination(printTasks)
 const { page: balloonPage, pageSize: balloonPageSize, paged: pagedBalloonTasks } = usePagination(balloonTasks)
 
-// 收到新任务自动打印：本地开关，默认关。iframe.print 不是弹窗，一般不会被
-// 拦截；若浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
+// 收到新任务自动打印：本地开关，默认关。打印走弹窗窗口（window.open），
+// 若被弹窗拦截或浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
 const AUTO_PRINT_KEY = 'cxtool_autoprint'
 const autoPrint = ref(localStorage.getItem(AUTO_PRINT_KEY) === '1')
 watch(autoPrint, (v) => localStorage.setItem(AUTO_PRINT_KEY, v ? '1' : '0'))
@@ -136,8 +136,11 @@ function formatTime(iso: string): string {
 async function printRow(row: PrintTask): Promise<void> {
   try {
     await printAndAckPrintTask(row.id)
-  } catch {
-    ElMessage.error('打印没成功，请再试一次')
+  } catch (e) {
+    // 弹窗拦截有专属提示；其余失败走通用文案（错误细节可能在内部日志里）
+    ElMessage.error(
+      e instanceof Error && e.message.includes('弹窗') ? e.message : '打印没成功，请再试一次',
+    )
   }
 }
 
@@ -157,8 +160,10 @@ async function ackPrint(row: PrintTask, status: 'printed' | 'failed'): Promise<v
 async function printBalloonRow(row: BalloonTask): Promise<void> {
   try {
     await printAndAckBalloonTask(row)
-  } catch {
-    ElMessage.error('打印没成功，请再试一次')
+  } catch (e) {
+    ElMessage.error(
+      e instanceof Error && e.message.includes('弹窗') ? e.message : '打印没成功，请再试一次',
+    )
   }
 }
 
