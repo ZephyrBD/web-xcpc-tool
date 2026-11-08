@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 const PREFIX = "v1";
 const IV_BYTES = 12;
@@ -46,6 +47,8 @@ export function ensureKeyFile(path: string): string {
   if (existsSync(path)) {
     return readFileSync(path, "utf8").trim();
   }
+  // Fresh checkouts/deployments may not have the data dir yet.
+  mkdirSync(dirname(path), { recursive: true });
   const keyHex = randomBytes(KEY_BYTES).toString("hex");
   writeFileSync(path, keyHex + "\n", "utf8");
   return keyHex;
