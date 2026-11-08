@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElButton, ElEmpty, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { ElButton, ElEmpty, ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
 import type { AuthTask, AuthTaskStatus } from '@/types'
@@ -51,8 +51,13 @@ async function onApprove(row: AuthTask): Promise<void> {
   } catch {
     return
   }
-  await apiFetch(`/admin/api/auth-tasks/${row.id}/approve`, { method: 'POST' })
-  await refresh()
+  try {
+    await apiFetch(`/admin/api/auth-tasks/${row.id}/approve`, { method: 'POST' })
+  } catch {
+    ElMessage.error('操作没成功，请再试一次')
+  } finally {
+    await refresh()
+  }
 }
 
 async function onReject(row: AuthTask): Promise<void> {
@@ -65,14 +70,22 @@ async function onReject(row: AuthTask): Promise<void> {
   } catch {
     return
   }
-  await apiFetch(`/admin/api/auth-tasks/${row.id}/reject`, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  })
-  await refresh()
+  try {
+    await apiFetch(`/admin/api/auth-tasks/${row.id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  } catch {
+    ElMessage.error('操作没成功，请再试一次')
+  } finally {
+    await refresh()
+  }
 }
 
 onMounted(() => void refresh())
+onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+})
 </script>
 
 <template>
@@ -85,7 +98,7 @@ onMounted(() => void refresh())
       <el-table-column prop="strategy" label="识别策略" min-width="110" />
       <el-table-column label="状态" min-width="100">
         <template #default="{ row }">
-          <span class="pill" :class="`pill--${row.status}`">{{ statusLabels[row.status as AuthTaskStatus] }}</span>
+          <span class="pill" :class="`pill--${row.status}`">{{ statusLabels[row.status as AuthTaskStatus] ?? row.status }}</span>
         </template>
       </el-table-column>
       <el-table-column label="提交时间" min-width="170">

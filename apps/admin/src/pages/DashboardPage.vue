@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
 import type { AuthTask } from '@/types'
@@ -53,6 +53,9 @@ const allClear = computed(
 )
 
 onMounted(() => void refresh())
+onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+})
 </script>
 
 <template>

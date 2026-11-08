@@ -8,9 +8,11 @@ import type { AuthTask } from '@/types'
 // ElMessageBox renders into document.body via its own app — mock it out so the
 // confirm click is deterministic in happy-dom.
 const confirmMock = mock(() => Promise.resolve('confirm'))
+const messageErrorMock = mock(() => ({}))
 mock.module('element-plus', () => ({
   ...elementPlus,
   ElMessageBox: { ...elementPlus.ElMessageBox, confirm: confirmMock },
+  ElMessage: { ...elementPlus.ElMessage, error: messageErrorMock },
 }))
 
 const { default: AuthTasksPage } = await import('./AuthTasksPage.vue')
@@ -19,6 +21,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 let tasks: AuthTask[] = []
+let approveShouldFail = false
 const calls: Array<{ method: string; path: string; body: unknown }> = []
 
 function mockFetch() {
@@ -33,6 +36,12 @@ function mockFetch() {
     const approveMatch = path.match(/^\/admin\/api\/auth-tasks\/(.+)\/approve$/)
     const rejectMatch = path.match(/^\/admin\/api\/auth-tasks\/(.+)\/reject$/)
     if (method === 'POST' && approveMatch) {
+      if (approveShouldFail) {
+        return new Response(JSON.stringify({ error: 'boom' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       const t = tasks.find((x) => x.id === approveMatch[1])
       if (t) t.status = 'approved'
       return new Response(JSON.stringify(t), {
@@ -98,6 +107,8 @@ describe('AuthTasksPage', () => {
   beforeEach(() => {
     localStorage.clear()
     confirmMock.mockClear()
+    messageErrorMock.mockClear()
+    approveShouldFail = false
     FakeEventSource.instances.length = 0
     globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
     tasks = [makeTask('t1'), makeTask('t2', { strategy: 'fingerprint' })]
@@ -154,6 +165,24 @@ describe('AuthTasksPage', () => {
     expect(rejectCall).toBeDefined()
     expect(rejectCall!.body).toEqual({})
     expect(wrapper.findAll('.pill--rejected').length).toBe(1)
+  })
+
+  test('a failed approve shows a friendly error and still refreshes the list', async () => {
+    approveShouldFail = true
+    const wrapper = mount(AuthTasksPage, { global: { plugins: [createPinia()] } })
+    await flush()
+    await flush()
+
+    const approveBtn = wrapper.findAll('button').find((b) => b.text() === '批准')!
+    await approveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageErrorMock).toHaveBeenCalledWith('操作没成功，请再试一次')
+    // row reflects reality after the failure
+    const lastCall = calls[calls.length - 1]
+    expect(lastCall).toMatchObject({ method: 'GET', path: '/admin/api/auth-tasks' })
+    expect(wrapper.text()).toContain('2026t1')
   })
 
   test('connects SSE with the session token in the query string', async () => {
