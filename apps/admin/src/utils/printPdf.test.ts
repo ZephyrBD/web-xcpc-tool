@@ -64,6 +64,13 @@ describe('confirmOnAfterprint', () => {
     expect(await p).toBe(true)
   })
 
+  test('a frame window without event methods still confirms via the top window', async () => {
+    const frameWin: any = { printCount: 0, print() { frameWin.printCount++ } }
+    const p = confirmOnAfterprint(frameWin, 50)
+    window.dispatchEvent(new Event('afterprint'))
+    expect(await p).toBe(true)
+  })
+
   test('print() returning synchronously does not tear the frame down before afterprint fires', async () => {
     // Real-browser race: Chromium's print() blocks until the dialog closes,
     // then afterprint dispatches ASYNC. Any cleanup that runs right when

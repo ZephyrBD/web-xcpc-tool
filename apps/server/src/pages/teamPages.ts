@@ -30,8 +30,8 @@ function page(title: string, accent: string, body: string): Response {
 <title>Web XCPC Tool - ${escapeHtml(title)}</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f7fa;color:#1f2430;font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
-.card{background:#fff;border-radius:16px;padding:40px 36px;max-width:420px;width:100%;box-shadow:0 8px 30px rgba(31,36,48,.08);border-top:3px solid ${accent};text-align:center}
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;background:#f5f7fa;color:#1f2430;font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
+.card{background:#fff;border-radius:16px;padding:40px 36px;max-width:420px;width:100%;margin:auto 0;box-shadow:0 8px 30px rgba(31,36,48,.08);border-top:3px solid ${accent};text-align:center}
 h1{margin:0 0 12px;font-size:22px}
 p{margin:8px 0;font-size:15px;color:#5b6472;line-height:1.6}
 input{width:100%;margin-top:20px;padding:12px 14px;font-size:16px;border:1.5px solid #d9dee7;border-radius:10px;outline:none}
@@ -40,7 +40,7 @@ button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:600;co
 button:hover{opacity:.9}
 .hint{margin-top:14px;font-size:13px;color:#8a93a3}
 .brand{margin-bottom:18px;font-size:14px;font-weight:600;letter-spacing:1px;color:${accent};text-transform:uppercase}
-.footer{margin-top:24px;font-size:12px;color:#b0b7c3;text-align:center}
+.footer{margin-top:auto;padding-top:24px;font-size:12px;color:#b0b7c3;text-align:center}
 </style>
 </head>
 <body>

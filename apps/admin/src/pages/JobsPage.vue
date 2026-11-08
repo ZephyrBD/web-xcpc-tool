@@ -54,8 +54,9 @@ async function refresh(): Promise<void> {
 }
 
 /** Print + auto-ack: the ack fires only when the browser confirms the print
- * via the iframe's afterprint event (never on button click alone); a
- * confirmation timeout resolves false and must not ack. */
+ * via afterprint (Chromium dispatches it on the TOP window for iframe
+ * print() calls — never on button click alone); a confirmation timeout
+ * resolves false and must not ack. */
 async function printAndAckPrintTask(id: string): Promise<void> {
   const confirmed = await printPdfTask(id, apiFetch)
   if (!confirmed) return

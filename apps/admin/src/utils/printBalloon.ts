@@ -8,8 +8,10 @@
  * was no prior user gesture (relevant for SSE auto-print). That's accepted —
  * worst case the balloon runner prints the ticket manually from the jobs list.
  *
- * The promise resolves on the frame's `afterprint` event (print confirmed by
- * the browser), which callers use to auto-ack the balloon as delivered.
+ * The promise resolves on `afterprint` (print confirmed by the browser —
+ * Chromium dispatches it on the TOP window for iframe print() calls; the
+ * frame listener is a fallback), which callers use to auto-ack the balloon
+ * as delivered.
  */
 import { printViaIframe } from '@/utils/printPdf'
 import type { BalloonTask } from '@/types'
@@ -67,8 +69,9 @@ export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): 
   doc.open()
   doc.write(html)
   doc.close()
-  // Resolves true only on the frame's `afterprint` (browser confirmed the
-  // print job; Firefox also fires it when the dialog is cancelled) — callers
-  // may auto-ack the delivery. False on the confirmation timeout: no ack.
+  // Resolves true only on `afterprint` (browser confirmed the print job;
+  // Chromium dispatches it on the TOP window, frame listener is a fallback;
+  // Firefox also fires it when the dialog is cancelled) — callers may
+  // auto-ack the delivery. False on the confirmation timeout: no ack.
   return printViaIframe(iframe)
 }

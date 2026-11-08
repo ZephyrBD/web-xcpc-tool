@@ -4,11 +4,14 @@
  * iframe via an object URL, and triggers the browser print dialog — the same
  * approach as the legacy Java admin UI. The object URL is revoked afterwards.
  *
- * The returned promise resolves ONLY on the iframe window's `afterprint`
- * event — the standard best-effort signal that the browser actually accepted
+ * The returned promise resolves ONLY on the browser's `afterprint`
+ * event — the best-effort signal that the browser actually accepted
  * the print request (Chrome/Edge fire it when the job is submitted, not when
  * printing finishes; Firefox also fires it when the dialog is cancelled).
  * Callers treat resolution as "print confirmed" and may auto-ack the task.
+ * The PRIMARY signal is the TOP window's `afterprint`: Chromium dispatches
+ * the event there for iframe print() calls (and for object-URL frames often
+ * not on the frame at all); the frame listener is only a fallback.
  *
  * Note: browsers may silently ignore iframe.contentWindow.print() when there
  * was no prior user gesture (relevant for SSE auto-print). That's accepted —
@@ -43,7 +46,7 @@ export function printViaIframe(iframe: HTMLIFrameElement): Promise<boolean> {
 
 /**
  * Calls the frame window's print() and resolves once the browser confirms
- * the print job via its `afterprint` event (see file header) — true means
+ * the print job via `afterprint` (see file header) — true means
  * confirmed (safe to ack), false means the 60s safety timeout elapsed
  * without afterprint (e.g. the browser silently ignored the print call), so
  * callers must NOT ack. Exposed for testing without a real DOM.
@@ -52,14 +55,17 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
   return new Promise((resolve) => {
     let settled = false
     let timer: number | undefined
-    // Browsers differ on where `afterprint` dispatches for an iframe print():
-    // Chromium targets the frame's window, other engines the top window.
-    // Listen on BOTH, or the confirmation is silently lost and the task
-    // never acks. The listener is registered BEFORE print() because the
-    // event may dispatch while/just after the blocking print() call.
-    // happy-dom's contentWindow lacks event methods; real browsers always
-    // have them. Listen only where listening is possible.
-    const targets = [win, window].filter(
+    // Chromium dispatches `afterprint` for an iframe print() on the TOP
+    // window — for object-URL frames it often does not fire on the frame's
+    // own window at all, which silently starves the confirmation and the
+    // task never acks. The TOP window is therefore the primary signal and
+    // is listed first; the frame listener is kept as a best-effort fallback
+    // for engines that dispatch there. Listeners are registered BEFORE
+    // print() because the event may dispatch while/just after the (async
+    // preview) print() call returns. happy-dom's contentWindow may lack
+    // event methods; real browsers always have them. Listen only where
+    // listening is possible.
+    const targets = [window, win].filter(
       (t) => typeof t.addEventListener === 'function' && typeof t.removeEventListener === 'function',
     )
     const onAfterprint = () => {
