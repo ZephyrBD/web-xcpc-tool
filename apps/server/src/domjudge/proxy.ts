@@ -79,6 +79,9 @@ async function forwardToDj(
     headers[k] = v;
   }
   for (const h of HOP_BY_HOP) headers[h] = undefined;
+  // The proxy re-encodes the streamed body: a stale content-length from the
+  // original request produces a duplicate header and upstream 400s on POSTs.
+  headers["content-length"] = undefined;
   headers["cookie"] = forwardCookie(req.headers.get("cookie"));
   // DOMjudge processes X-Headers at its /login URL whatever base-url prefix
   // precedes it: match the final path segment so /demoweb/login also gets

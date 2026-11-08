@@ -21,7 +21,7 @@ function testStore(): TeamStore {
 }
 
 let hits = 0;
-let lastReq: { method: string; path: string; body: string; cookie: string | null; headers: Record<string, string> } | null = null;
+let lastReq: { method: string; path: string; body: string; cookie: string | null; headers: Record<string, string>; contentLengthCount: number } | null = null;
 let upstreamPort = 0;
 
 const upstream = Bun.serve({
@@ -34,6 +34,8 @@ const upstream = Bun.serve({
       body: await req.text(),
       cookie: req.headers.get("cookie"),
       headers: Object.fromEntries(req.headers.entries()),
+      // duplicate headers are joined with ", " by Headers; count the raw values
+      contentLengthCount: req.headers.get("content-length")?.split(",").length ?? 0,
     };
     return new Response(JSON.stringify({ echo: "upstream-ok" }), {
       status: 200,
@@ -196,19 +198,26 @@ describe("DOMjudge reverse proxy", () => {
     expect(await json.json()).toEqual({ ok: false, reason: "upstream error" });
   });
 
-  test("POST body is forwarded to upstream", async () => {
+  test("POST body is forwarded to upstream with a single content-length", async () => {
     const app = createApp(makeCfg());
     const token = await signTeamToken(SECRET, 3600, "2025001");
+    const body = JSON.stringify({ problem: "A", language: "cpp" });
+    // browsers send content-length on the original request; the proxy re-encodes
+    // the body, so the stale header must be dropped or upstream sees it twice
     const res = await app.request("/dj/api/submissions", {
       method: "POST",
-      headers: { cookie: `cxtool-token=${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ problem: "A", language: "cpp" }),
+      headers: { cookie: `cxtool-token=${token}`, "content-type": "application/json", "content-length": String(body.length) },
+      body,
     });
     expect(res.status).toBe(200);
     expect(hits).toBe(1);
     expect(lastReq?.method).toBe("POST");
-    expect(lastReq?.body).toBe('{"problem":"A","language":"cpp"}');
+    expect(lastReq?.body).toBe(body);
     expect(lastReq?.path).toBe("/api/submissions");
+    // the stale content-length from the original request must not survive the
+    // re-encode: at most one header, and it must match the forwarded body
+    expect(lastReq?.contentLengthCount).toBeLessThanOrEqual(1);
+    expect(Number(lastReq?.headers["content-length"])).toBe(Buffer.byteLength(body));
   });
 
   test("request to upstream /login injects X-DOMjudge-Login/Pass from the team store", async () => {
