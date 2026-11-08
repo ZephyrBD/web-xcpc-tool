@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import { loadConfig } from "./config";
-import { createApp } from "./server";
+import { createApp, resolveStaticDir } from "./server";
 import { adminAuthHeaders } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { DjClient } from "./domjudge/client";
@@ -405,5 +405,90 @@ describe("static hosting", () => {
   test("non-GET miss does not fall back to index.html", async () => {
     const res = await makeApp().request("/wxt/login", { method: "POST" });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("resolveStaticDir fallback chain", () => {
+  const makeDirs = () => {
+    const root = mkdtempSync(join(tmpdir(), "static-resolve-"));
+    return { root, moduleDir: join(root, "module-static"), cwdDir: join(root, "cwd-static") };
+  };
+
+  const withEnv = async (value: string | undefined, fn: () => void | Promise<void>) => {
+    const prev = process.env.WXT_STATIC_DIR;
+    if (value === undefined) delete process.env.WXT_STATIC_DIR;
+    else process.env.WXT_STATIC_DIR = value;
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.WXT_STATIC_DIR;
+      else process.env.WXT_STATIC_DIR = prev;
+    }
+  };
+
+  test("explicit env dir wins over module and cwd candidates", () => {
+    const { root, moduleDir, cwdDir } = makeDirs();
+    mkdirSync(moduleDir, { recursive: true });
+    mkdirSync(cwdDir, { recursive: true });
+    withEnv(join(root, "env-static"), () => {
+      mkdirSync(join(root, "env-static"), { recursive: true });
+      expect(resolveStaticDir({ moduleStaticDir: moduleDir, cwdStaticDir: cwdDir })).toBe(
+        join(root, "env-static"),
+      );
+    });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("falls back to the module dir when env is unset", () => {
+    const { root, moduleDir, cwdDir } = makeDirs();
+    mkdirSync(moduleDir, { recursive: true });
+    withEnv(undefined, () => {
+      expect(resolveStaticDir({ moduleStaticDir: moduleDir, cwdStaticDir: cwdDir })).toBe(
+        moduleDir,
+      );
+    });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("falls back to the cwd dir when env and module dir are missing", () => {
+    const { root, cwdDir } = makeDirs();
+    mkdirSync(cwdDir, { recursive: true });
+    withEnv(undefined, () => {
+      // Compiled binaries have no ../static next to import.meta.dir, so
+      // cwd/static is what a release package relies on.
+      expect(resolveStaticDir({ moduleStaticDir: join(root, "missing"), cwdStaticDir: cwdDir })).toBe(
+        cwdDir,
+      );
+    });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("returns the cwd candidate (resolved) when nothing exists, so hosting is simply skipped", () => {
+    const { root, moduleDir, cwdDir } = makeDirs();
+    withEnv(undefined, () => {
+      expect(resolveStaticDir({ moduleStaticDir: moduleDir, cwdStaticDir: cwdDir })).toBe(cwdDir);
+    });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("createApp serves a package-root static dir via WXT_STATIC_DIR (release layout)", async () => {
+    const { root, cwdDir } = makeDirs();
+    mkdirSync(cwdDir, { recursive: true });
+    writeFileSync(join(cwdDir, "index.html"), "<!doctype html><body>PKG-INDEX</body></html>");
+    // apps/server/static cannot be hidden here (the dev server holds it open),
+    // so the env override stands in for "module dir missing"; the ordering
+    // itself (env → module → cwd) is covered by the resolveStaticDir unit tests.
+    await withEnv(cwdDir, async () => {
+      const app = new Hono().route(
+        "/wxt",
+        createApp(loadConfigWithSecret(), {
+          dataDir: mkdtempSync(join(tmpdir(), "static-cwd-data-")),
+        }),
+      );
+      const res = await app.request("/wxt/");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("PKG-INDEX");
+    });
+    rmSync(root, { recursive: true, force: true });
   });
 });

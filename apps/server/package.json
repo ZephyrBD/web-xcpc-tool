@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "compile": "bun build --compile --define WXT_BUILD_VERSION:'dev-local' src/index.ts --outfile dist/web-xcpc-tool"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

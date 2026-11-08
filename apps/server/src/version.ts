@@ -10,7 +10,21 @@ export interface VersionInfo {
   year: number;
 }
 
+/**
+ * Baked in at build time via `bun build --compile --define WXT_BUILD_VERSION:"<tag>"`.
+ * Unset under plain `bun run` / `bun test`, hence the typeof guard.
+ */
+declare const WXT_BUILD_VERSION: string | undefined;
+
 let cached: VersionInfo | null = null;
+
+function resolveVersion(): string {
+  // Build-time define (release binaries) → build/runtime env → git hash → "dev".
+  const baked = typeof WXT_BUILD_VERSION !== "undefined" ? WXT_BUILD_VERSION : undefined;
+  if (baked) return baked;
+  if (process.env.WXT_VERSION) return process.env.WXT_VERSION;
+  return resolveGitHash();
+}
 
 function resolveGitHash(): string {
   // version.ts lives at apps/server/src → repo root is three levels up.
@@ -33,7 +47,7 @@ function resolveGitHash(): string {
 
 export function getVersionInfo(): VersionInfo {
   if (!cached) {
-    cached = { hash: resolveGitHash(), year: new Date().getFullYear() };
+    cached = { hash: resolveVersion(), year: new Date().getFullYear() };
   }
   return cached;
 }

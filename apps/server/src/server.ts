@@ -37,11 +37,32 @@ export type Deps = {
   staticDir?: string;
 };
 
-const DEFAULT_STATIC_DIR = join(import.meta.dir, "..", "static");
+/**
+ * Static dir resolution order:
+ * 1. deps.staticDir (programmatic override)
+ * 2. env WXT_STATIC_DIR
+ * 3. ../static relative to this module (dev: apps/server/static)
+ * 4. ./static relative to the process cwd (compiled binary run from package root)
+ * The first candidate that exists on disk wins; the last one is the fallback
+ * so the app still boots (without SPA hosting) on a bare checkout.
+ */
+export function resolveStaticDir(opts?: {
+  envDir?: string;
+  moduleStaticDir?: string;
+  cwdStaticDir?: string;
+}): string {
+  const moduleDir = opts?.moduleStaticDir ?? join(import.meta.dir, "..", "static");
+  const cwdDir = opts?.cwdStaticDir ?? join(process.cwd(), "static");
+  const candidates = [opts?.envDir ?? process.env.WXT_STATIC_DIR, moduleDir, cwdDir];
+  for (const dir of candidates) {
+    if (dir && existsSync(dir)) return resolve(dir);
+  }
+  return resolve(cwdDir);
+}
 
 export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   const dataDir = deps?.dataDir ?? "data";
-  const staticDir = resolve(deps?.staticDir ?? DEFAULT_STATIC_DIR);
+  const staticDir = deps?.staticDir ? resolve(deps.staticDir) : resolveStaticDir();
   const app = new Hono();
 
   const bus = deps?.bus ?? new SseBus();
