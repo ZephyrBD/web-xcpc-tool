@@ -139,6 +139,26 @@ export async function handleRootDjProxy(req: Request, cfg: Config, teamStore?: T
   return forwardToDj(req, cfg, teamStore, payload, new URL(req.url).pathname);
 }
 
+/**
+ * Old cached admin SPAs still request /cxtool/*, which now falls into the
+ * DOMjudge root proxy and 404s. 301 them onto the current contextPath
+ * (empty contextPath redirects to /...).
+ */
+export function legacyContextPathRedirect(
+  contextPath: string,
+  req: Request,
+): Response | null {
+  if (req.method !== "GET") return null;
+  const url = new URL(req.url);
+  const legacy = "/cxtool";
+  if (url.pathname !== legacy && !url.pathname.startsWith(`${legacy}/`)) {
+    return null;
+  }
+  const rest = url.pathname.slice(legacy.length);
+  const target = `${contextPath.replace(/\/+$/, "")}${rest}` || "/";
+  return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
+}
+
 type HonoLike = { fetch: (req: Request) => Promise<Response> | Response };
 
 /**

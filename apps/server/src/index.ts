@@ -11,7 +11,7 @@ import { DjClient, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
-import { handleRootDjProxy, makeRootDispatch } from "./domjudge/proxy";
+import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
 
 const CONFIG_PATH = "data/settings.json";
 const DATA_DIR = "data";
@@ -59,9 +59,25 @@ const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
 // DOMjudge with the same team-token semantics as /dj/*; the admin UI keeps
 // its own prefix untouched.
 const fetch_ = makeRootDispatch(serving, cfg, teamStore);
+const fetchWithLegacyRedirect = (req: Request) =>
+  legacyContextPathRedirect(cfg.contextPath, req) ?? fetch_(req);
+
+// Cached old admin SPAs still request /cxtool/*, which now falls into the
+// DOMjudge root proxy and 404s. 301 them onto the current contextPath.
+const LEGACY_PREFIX = "/cxtool";
+const redirectToContextPath = (req: Request): Response | null => {
+  if (req.method !== "GET") return null;
+  const url = new URL(req.url);
+  if (url.pathname !== LEGACY_PREFIX && !url.pathname.startsWith(`${LEGACY_PREFIX}/`)) {
+    return null;
+  }
+  const rest = url.pathname.slice(LEGACY_PREFIX.length);
+  const target = `${cfg.contextPath.replace(/\/+$/, "")}${rest}` || "/";
+  return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
+};
 
 server = Bun.serve({
-  fetch: fetch_,
+  fetch: fetchWithLegacyRedirect,
   port: cfg.port,
 });
 balloonService.start();

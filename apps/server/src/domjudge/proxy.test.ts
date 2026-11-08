@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { loadConfig } from "../config";
 import { signAdminToken, signTeamToken } from "../auth/token";
 import { createApp } from "../server";
-import { handleRootDjProxy, makeRootDispatch } from "./proxy";
+import { handleRootDjProxy, legacyContextPathRedirect, makeRootDispatch } from "./proxy";
 import { SecretBox } from "../store/secretbox";
 import { setDataDir } from "../store/store";
 import { TeamStore } from "../store/teams";
@@ -224,6 +224,37 @@ describe("DOMjudge reverse proxy", () => {
       );
       expect(proxied.status).toBe(200);
       expect(lastReq?.path).toBe("/api/contests");
+    });
+  });
+
+  describe("legacyContextPathRedirect", () => {
+    test("301s /cxtool paths onto the contextPath preserving the remainder and query", () => {
+      for (const [path, expected] of [
+        ["/cxtool", "/wxt"],
+        ["/cxtool/", "/wxt/"],
+        ["/cxtool/teams", "/wxt/teams"],
+        ["/cxtool/assets/a.js", "/wxt/assets/a.js"],
+        ["/cxtool/login?next=%2Fx", "/wxt/login?next=%2Fx"],
+      ] as const) {
+        const res = legacyContextPathRedirect("/wxt", new Request(`http://s.test${path}`, { redirect: "manual" }));
+        expect(res?.status).toBe(301);
+        expect(res?.headers.get("location")).toBe(`http://s.test${expected}`);
+      }
+    });
+
+    test("empty contextPath redirects to the root", () => {
+      const res = legacyContextPathRedirect("", new Request("http://s.test/cxtool/teams", { redirect: "manual" }));
+      expect(res?.status).toBe(301);
+      expect(res?.headers.get("location")).toBe("http://s.test/teams");
+      const bare = legacyContextPathRedirect("", new Request("http://s.test/cxtool", { redirect: "manual" }));
+      expect(bare?.headers.get("location")).toBe("http://s.test/");
+    });
+
+    test("ignores non-GET, other prefixes and the current contextPath itself", () => {
+      expect(legacyContextPathRedirect("/wxt", new Request("http://s.test/cxtool/teams", { method: "POST" }))).toBeNull();
+      expect(legacyContextPathRedirect("/wxt", new Request("http://s.test/other/x"))).toBeNull();
+      expect(legacyContextPathRedirect("/wxt", new Request("http://s.test/cxtoolhouse"))).toBeNull();
+      expect(legacyContextPathRedirect("/wxt", new Request("http://s.test/wxt/teams"))).toBeNull();
     });
   });
 
