@@ -4,6 +4,7 @@
  * no external assets — everything inline so the pages work offline.
  * Palette mirrors the admin UI (Design-md).
  */
+import { getVersionInfo } from "../version";
 
 const PALETTE = {
   green: "#0acf83",
@@ -38,12 +39,14 @@ input:focus{border-color:${accent}}
 button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:600;color:#fff;background:${accent};border:none;border-radius:10px;cursor:pointer}
 button:hover{opacity:.9}
 .hint{margin-top:14px;font-size:13px;color:#8a93a3}
+.footer{margin-top:24px;font-size:12px;color:#b0b7c3;text-align:center}
 </style>
 </head>
 <body>
 <div class="card">
 ${body}
 </div>
+<div class="footer">Copyright (c) 2018~${getVersionInfo().year} Modding Craft ZBD Studio, Version: ${escapeHtml(getVersionInfo().hash)}</div>
 </body>
 </html>`;
   return new Response(html, {

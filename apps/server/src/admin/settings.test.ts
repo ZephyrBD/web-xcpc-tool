@@ -46,6 +46,17 @@ describe("settings routes", () => {
     expect(text).not.toContain("passwordHash");
   });
 
+  test("GET /admin/api/settings exposes version info for the footer", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const res = await app.request("/admin/api/settings", { headers: await adminAuthHeaders(cfg) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { version?: { hash: string; year: number } };
+    expect(body.version).toBeDefined();
+    expect(body.version?.hash).toMatch(/^(dev|[0-9a-f]{7,})$/);
+    expect(body.version?.year).toBe(new Date().getFullYear());
+  });
+
   test("GET /admin/api/settings requires admin auth", async () => {
     const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });

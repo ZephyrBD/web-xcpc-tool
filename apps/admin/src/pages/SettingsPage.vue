@@ -9,6 +9,7 @@ interface SettingsView {
   print: { tokenMasked: string }
   teamLogin?: { start: string; end: string }
   admin: { username: string }
+  version?: { hash: string; year: number }
 }
 
 const form = reactive({
@@ -29,6 +30,7 @@ const loading = ref(false)
 const saving = ref(false)
 const printTokenMasked = ref('')
 const adminPasswordError = ref('')
+const versionInfo = ref<NonNullable<SettingsView['version']> | null>(null)
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -42,6 +44,7 @@ async function refresh(): Promise<void> {
     printTokenMasked.value = s.print.tokenMasked
     form.teamLoginStart = isoToLocalInput(s.teamLogin?.start ?? '')
     form.teamLoginEnd = isoToLocalInput(s.teamLogin?.end ?? '')
+    versionInfo.value = s.version ?? null
   } catch {
     ElMessage.error('设置加载失败，请刷新重试')
   } finally {
@@ -266,6 +269,13 @@ onMounted(() => void refresh())
       <ElButton type="primary" :loading="saving" @click="save">保存设置</ElButton>
       <span class="footer-note">保存后写入 settings.json，重启服务才生效。</span>
     </div>
+
+    <section v-if="versionInfo" class="settings-card version-card" aria-label="版本信息">
+      <h2 class="card-title">版本信息</h2>
+      <p class="version-line">
+        Copyright (c) 2018~{{ versionInfo.year }} Modding Craft ZBD Studio, Version: {{ versionInfo.hash }}
+      </p>
+    </section>
   </div>
 </template>
 
@@ -347,6 +357,16 @@ onMounted(() => void refresh())
 }
 
 .footer-note {
+  font-size: var(--text-13);
+  color: var(--text-muted);
+}
+
+.version-card {
+  grid-column: 1 / -1;
+}
+
+.version-line {
+  margin: 0;
   font-size: var(--text-13);
   color: var(--text-muted);
 }

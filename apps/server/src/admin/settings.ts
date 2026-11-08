@@ -4,6 +4,7 @@ import { z } from "zod";
 import { hashSync } from "bcryptjs";
 import { parseConfig, type Config } from "../config";
 import { isoOrEmpty } from "../config";
+import { getVersionInfo } from "../version";
 
 /**
  * Subset of settings.json editable from the admin UI. Secret fields are
@@ -55,6 +56,7 @@ export function safeSettingsView(cfg: Config) {
     print: { tokenMasked: maskToken(cfg.print.token) },
     teamLogin: { start: cfg.teamLogin.start, end: cfg.teamLogin.end },
     admin: { username: cfg.admin.username },
+    version: getVersionInfo(),
   };
 }
 

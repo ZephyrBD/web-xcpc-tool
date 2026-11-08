@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { apiFetch } from '@/api'
 import { useSessionStore } from '@/stores/session'
+
+interface VersionInfo {
+  hash: string
+  year: number
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +41,18 @@ const accents: Record<string, string> = {
 }
 
 const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purple)')
+
+const version = ref<VersionInfo | null>(null)
+
+onMounted(async () => {
+  // skipAuthRedirect: the guard already handles auth; a 401 here shouldn't bounce.
+  try {
+    const s = await apiFetch<{ version?: VersionInfo }>('/admin/api/settings', { skipAuthRedirect: true })
+    if (s.version) version.value = s.version
+  } catch {
+    // 版本信息仅作展示，加载失败就静默省略。
+  }
+})
 </script>
 
 <template>
@@ -68,6 +86,9 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
         <router-view />
       </div>
     </main>
+    <footer v-if="version" class="layout-footer">
+      Copyright (c) 2018~{{ version.year }} Modding Craft ZBD Studio, Version: {{ version.hash }}
+    </footer>
   </div>
 </template>
 
@@ -176,6 +197,15 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
   flex-direction: column;
   overflow: hidden;
   background: var(--section-tint);
+}
+
+.layout-footer {
+  flex-shrink: 0;
+  padding: 8px 40px 12px;
+  font-size: 12px;
+  color: var(--text-muted, #8a93a3);
+  text-align: center;
+  user-select: none;
 }
 
 .layout-scroll {

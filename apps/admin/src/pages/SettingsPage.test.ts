@@ -15,6 +15,7 @@ const settingsView = {
   print: { tokenMasked: 'abcd***' },
   teamLogin: { start: '', end: '' },
   admin: { username: 'admin' },
+  version: { hash: 'abc1234', year: new Date().getFullYear() },
 }
 
 let putCalls: Array<{ path: string; body: unknown }> = []
@@ -294,6 +295,17 @@ describe('SettingsPage', () => {
     const body = putCalls[0]!.body as Record<string, { start: string; end: string }>
     expect(body.teamLogin).toEqual({ start: '', end: '' })
     settingsView.teamLogin = { start: '', end: '' }
+  })
+
+  test('版本信息 section shows the studio copyright and version hash', async () => {
+    const wrapper = await mountPage()
+    await flush()
+    await flush()
+    const section = wrapper.find('.version-card')
+    expect(section.exists()).toBe(true)
+    expect(section.text()).toContain('版本信息')
+    expect(section.text()).toContain('Modding Craft ZBD Studio')
+    expect(section.text()).toContain('Version: abc1234')
   })
 
   test('清除时段 is disabled while both fields are already empty', async () => {

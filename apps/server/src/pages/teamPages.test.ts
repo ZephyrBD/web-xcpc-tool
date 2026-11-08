@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { verifyFormPage } from "./teamPages";
+import { verifyFormPage, verifyMissPage } from "./teamPages";
 
 const text = (res: Response) => res.text();
 
@@ -27,5 +27,20 @@ describe("verifyFormPage login window hint", () => {
   test("omitting the window entirely still renders the hint as 不限", async () => {
     const html = await text(verifyFormPage("/cx"));
     expect(html).toContain("登录时段：不限");
+  });
+});
+
+describe("copyright footer", () => {
+  test("verifyFormPage shows the studio copyright and version hash", async () => {
+    const html = await text(verifyFormPage("/cx"));
+    expect(html).toContain("Modding Craft ZBD Studio");
+    expect(html).toContain("Version:");
+    expect(html).toContain("Copyright (c) 2018~");
+  });
+
+  test("miss page carries the same footer", async () => {
+    const html = await text(verifyMissPage());
+    expect(html).toContain("Modding Craft ZBD Studio");
+    expect(html).toContain("Version:");
   });
 });
