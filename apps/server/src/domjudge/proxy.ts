@@ -139,7 +139,10 @@ async function forwardToDj(
     }
   }
   try {
-    const res = await proxy(target, { raw: req, headers });
+    // redirect:"manual" keeps 302s (and their Set-Cookie) verbatim: DOMjudge's
+    // xheaders login replies 302 with the session cookie, which fetch would
+    // otherwise swallow while following the redirect and drop the login.
+    const res = await proxy(target, { raw: req, headers, redirect: "manual" });
     return await rewriteResponseCookies(res);
   } catch (err) {
     console.error(`dj proxy upstream error: ${target}`, err instanceof Error ? err.message : err);

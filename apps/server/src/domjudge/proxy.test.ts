@@ -25,11 +25,19 @@ let lastReq: { method: string; path: string; body: string; cookie: string | null
 let upstreamPort = 0;
 
 let upstreamSetCookie: string[] | null = null;
+let upstreamRedirect: string | null = null;
 
 const upstream = Bun.serve({
   port: 0,
   fetch: async (req) => {
     hits++;
+    if (upstreamRedirect) {
+      const headers = new Headers({ location: upstreamRedirect });
+      if (upstreamSetCookie) {
+        for (const cookie of upstreamSetCookie) headers.append("set-cookie", cookie);
+      }
+      return new Response(null, { status: 302, headers });
+    }
     lastReq = {
       method: req.method,
       path: new URL(req.url).pathname,
@@ -54,6 +62,7 @@ describe("DOMjudge reverse proxy", () => {
     hits = 0;
     lastReq = null;
     upstreamSetCookie = null;
+    upstreamRedirect = null;
   });
 
   const makeCfg = (contextPath = "") => ({
@@ -408,6 +417,21 @@ describe("DOMjudge reverse proxy", () => {
     } finally {
       capture.stop(true);
     }
+  });
+
+  test("upstream 302 on login is passed through verbatim with its session cookie (not followed)", async () => {
+    upstreamRedirect = "/public";
+    upstreamSetCookie = ["DOMjudgeSID=sess1; path=/demoweb; secure; httponly"];
+    const app = createApp(makeCfg());
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/login", {
+      method: "POST",
+      headers: { cookie: `cxtool-token=${token}` },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/public");
+    expect(res.headers.getSetCookie()).toEqual(["DOMjudgeSID=sess1; Path=/; httponly"]);
   });
 
   test("Secure is stripped and Path normalized to / on proxied Set-Cookie", async () => {
