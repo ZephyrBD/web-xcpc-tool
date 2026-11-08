@@ -71,8 +71,9 @@ export function verifyPendingPage(examNum: string): Response {
     "队伍认证",
     PALETTE.blue,
     `<h1>队伍认证</h1>
+<meta http-equiv="refresh" content="5">
 <p>认证申请已提交，等待监考批准…</p>
-<p>批准后本页面会自动进入比赛系统，请稍候。</p>
+<p>批准后本页面会每 5 秒自动刷新，进入比赛系统，请稍候。</p>
 ${examNum ? `<span class="exam">考号：${escapeHtml(examNum)}</span>` : ""}`,
   );
 }

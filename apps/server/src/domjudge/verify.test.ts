@@ -187,6 +187,29 @@ describe("GET /dj/verify route", () => {
     expect(await res.text()).toContain("认证被拒绝");
   });
 
+  test("pending page auto-refreshes so approval takes effect without manual reload", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    queue.enqueue({ examNum: "E777", clientId: null, strategy: "ua-regex" });
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=E777", {
+      headers: { "user-agent": "Mozilla/5.0 QtWebEngine/6.5.3" },
+    });
+    expect(await res.text()).toContain('http-equiv="refresh"');
+  });
+
+  test("examNum is escaped in the miss page (XSS regression)", async () => {
+    const cfg = testCfg();
+    const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
+    const app = createApp(cfg, { authQueue: queue });
+    const res = await app.request("/dj/verify?examNum=<script>alert(1)</script>", {
+      headers: { "user-agent": "curl/8.0" },
+    });
+    const text = await res.text();
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text).not.toContain("<script>alert(1)</script>");
+  });
+
   test("pending page renders under a /cxtool mount", async () => {
     const cfg = { ...testCfg(), contextPath: "/cxtool" };
     const queue = new AuthQueue(join(tmpdir(), `verify-route-${crypto.randomUUID()}.json`));
