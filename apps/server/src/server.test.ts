@@ -46,6 +46,28 @@ describe("createApp", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
+
+  // ack is async (domjudge balloon sync); an unknown id must still 404, not 200 {}.
+  test("balloon ack for unknown id returns 404", async () => {
+    const cfg = loadConfigWithSecret();
+    const bus = new SseBus();
+    const balloonService = new BalloonService({
+      client: {} as DjClient,
+      store: new JsonStore(join(dataDir, "balloon-tasks-404.json"), []),
+      bus,
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {},
+    });
+    const app = createApp(cfg, { dataDir, balloonService });
+
+    const res = await app.request("/admin/api/balloon-tasks/unknown/ack", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+  });
 });
 
 const TEAMS_JSON = [

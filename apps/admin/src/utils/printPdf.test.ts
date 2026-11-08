@@ -20,30 +20,33 @@ function makeFakeWindow(): Window & { printCount: number; fire: (name: string) =
 }
 
 describe('confirmOnAfterprint', () => {
-  test('calls print and resolves only on the afterprint event', async () => {
+  test('calls print and resolves true only on the afterprint event', async () => {
     const win = makeFakeWindow()
-    let resolved = false
-    const p = confirmOnAfterprint(win).then(() => {
-      resolved = true
-    })
+    const p = confirmOnAfterprint(win)
 
     expect(win.printCount).toBe(1)
+    let resolved: boolean | undefined
+    void p.then((v) => {
+      resolved = v
+    })
     await Promise.resolve()
-    expect(resolved).toBe(false) // print() alone is not a confirmation
+    expect(resolved).toBeUndefined() // print() alone is not a confirmation
 
     win.fire('afterprint')
-    await p
-    expect(resolved).toBe(true)
+    expect(await p).toBe(true)
   })
 
-  test('no afterprint: stays pending (caller must not ack)', async () => {
+  test('confirmation timeout resolves false (unconfirmed → caller must not ack)', async () => {
     const win = makeFakeWindow()
-    let resolved = false
-    void confirmOnAfterprint(win).then(() => {
-      resolved = true
-    })
-    await Promise.resolve()
-    expect(resolved).toBe(false)
+    expect(await confirmOnAfterprint(win, 10)).toBe(false)
     expect(win.printCount).toBe(1)
+  })
+
+  test('late afterprint after the timeout does not flip the result to true', async () => {
+    const win = makeFakeWindow()
+    const p = confirmOnAfterprint(win, 10)
+    expect(await p).toBe(false)
+    win.fire('afterprint')
+    expect(await p).toBe(false)
   })
 })

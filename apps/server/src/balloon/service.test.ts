@@ -254,7 +254,7 @@ describe("BalloonService", () => {
         return body({ ok: true });
       }
       if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "7", teamid: "t1", done: false }]);
+        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: false }]);
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     }) as unknown as typeof fetch;
@@ -265,6 +265,63 @@ describe("BalloonService", () => {
     const acked = await svc.ack("s1");
     expect(acked?.status).toBe("delivered");
     expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
+  });
+
+  test("ack with two balloons for the same team POSTs only the matching problem", async () => {
+    const posts: string[] = [];
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+        posts.push(u);
+        return body({ ok: true });
+      }
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        // Same team, two problems: only problem A (id p1) may be marked done.
+        return body([
+          { balloonid: "11", teamid: "t1", problem: "p2", contestproblem: { label: "B" }, done: false },
+          { balloonid: "7", teamid: "t1", problem: "p1", contestproblem: { label: "A" }, done: false },
+        ]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    await svc.pollOnce();
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
+  });
+
+  test("ack skips already-done balloons (no re-POST)", async () => {
+    const posts: string[] = [];
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+        posts.push(u);
+        return body({ ok: true });
+      }
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: true }]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    await svc.pollOnce();
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(posts).toHaveLength(0);
+    expect(svc.list("delivered")).toHaveLength(1);
   });
 
   test("ack without a matching balloon only updates local status", async () => {
@@ -280,7 +337,7 @@ describe("BalloonService", () => {
         return body({ ok: true });
       }
       if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "9", teamid: "t-other", done: false }]);
+        return body([{ balloonid: "9", teamid: "t-other", problem: "p1", done: false }]);
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     }) as unknown as typeof fetch;
@@ -305,7 +362,7 @@ describe("BalloonService", () => {
         return Promise.resolve(new Response("boom", { status: 500 }));
       }
       if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "7", teamid: "t1", done: false }]);
+        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: false }]);
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     }) as unknown as typeof fetch;

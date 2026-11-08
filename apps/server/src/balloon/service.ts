@@ -138,7 +138,14 @@ export class BalloonService {
     return found;
   }
 
-  /** Resolve the balloon for the task's team and POST done. Skipped when the team can't be matched. */
+  /**
+   * Resolve the balloon for the task's team + problem and POST done.
+   * Matching rule (review fix): a team can hold several pending balloons at
+   * once, so matching on teamid alone marks the wrong balloon; we additionally
+   * require a not-yet-done entry and the same problem label (falling back to
+   * the raw problem id when the API omits contestproblem.label). Skipped
+   * (logged, no sync) when the team or the balloon can't be matched.
+   */
   private async syncBalloonDone(task: BalloonTask): Promise<void> {
     const team =
       this.teams.find((t) => t.name === task.teamName || t.display_name === task.teamName) ??
@@ -148,10 +155,21 @@ export class BalloonService {
       return;
     }
     const balloons = await this.client.getBalloons(this.contestId);
-    const balloon = balloons.find((b) => b.teamid === team.id);
+    const balloon = balloons.find((b) => {
+      if (b.teamid !== team.id || b.done) return false;
+      // Prefer the API's own label; else derive it from the problem id via the
+      // refreshed problems list; else compare raw ids (tasks created before a
+      // sync hold the raw problem id as their label).
+      const label =
+        b.contestproblem?.label ??
+        this.problems.find((p) => p.id === (b.problem ?? b.problemid))?.label ??
+        b.problem ??
+        b.problemid;
+      return label === task.problemLabel;
+    });
     if (!balloon) {
       console.error(
-        `balloon ack: no pending balloon for team ${team.id} in contest ${this.contestId}, skipping domjudge balloon sync`,
+        `balloon ack: no pending balloon for team ${team.id} problem ${task.problemLabel} in contest ${this.contestId}, skipping domjudge balloon sync`,
       );
       return;
     }

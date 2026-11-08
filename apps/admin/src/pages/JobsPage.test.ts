@@ -11,10 +11,10 @@ mock.module('element-plus', () => ({
   ElMessage: { ...elementPlus.ElMessage, error: messageErrorMock },
 }))
 
-const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve())
+const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve(true))
 mock.module('@/utils/printPdf', () => ({ printPdfTask: printPdfTaskMock }))
 
-const printBalloonTaskMock = mock((_task: unknown, _apiFetch: unknown) => Promise.resolve())
+const printBalloonTaskMock = mock((_task: unknown, _apiFetch: unknown) => Promise.resolve(true))
 mock.module('@/utils/printBalloon', () => ({ printBalloonTask: printBalloonTaskMock }))
 
 const { default: JobsPage } = await import('./JobsPage.vue')
@@ -286,6 +286,20 @@ describe('JobsPage', () => {
     expect(ackCall).toBeDefined()
     expect(ackCall!.body).toEqual({ status: 'printed' })
     expect(wrapper.findAll('.pill--printed').length).toBe(2)
+  })
+
+  test('打印 button does NOT ack when the print was never confirmed by afterprint', async () => {
+    printPdfTaskMock.mockResolvedValueOnce(false)
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '打印')!
+    await btn.trigger('click')
+    await flush()
+    await flush()
+
+    expect(calls.find((c) => c.method === 'POST' && c.path.endsWith('/p1/ack'))).toBeUndefined()
   })
 
   test('气球任务 打印 button acks delivered after the print util confirms (afterprint)', async () => {

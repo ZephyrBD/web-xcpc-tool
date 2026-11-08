@@ -129,6 +129,8 @@ export type DjBalloon = {
   teamid: string;
   problem?: string;
   problemid?: string;
+  /** Problem object carrying the display label on real DOMjudge responses. */
+  contestproblem?: { label?: string; id?: string; name?: string };
   contesttime?: string;
   time?: string;
   submitted?: string;

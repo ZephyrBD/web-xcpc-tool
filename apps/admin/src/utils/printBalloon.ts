@@ -38,7 +38,7 @@ function escapeHtml(text: string): string {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
 
-export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): Promise<void> {
+export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): Promise<boolean> {
   const html = `<!DOCTYPE html>
 <html>
   <head>
@@ -67,8 +67,8 @@ export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): 
   doc.open()
   doc.write(html)
   doc.close()
-  // Resolves only on the frame's `afterprint` (browser confirmed the print
-  // job; Firefox also fires it when the dialog is cancelled) so callers can
-  // auto-ack the delivery.
-  await printViaIframe(iframe)
+  // Resolves true only on the frame's `afterprint` (browser confirmed the
+  // print job; Firefox also fires it when the dialog is cancelled) — callers
+  // may auto-ack the delivery. False on the confirmation timeout: no ack.
+  return printViaIframe(iframe)
 }

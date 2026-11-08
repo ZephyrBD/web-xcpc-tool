@@ -53,10 +53,12 @@ async function refresh(): Promise<void> {
   await Promise.all([refreshPrint(), refreshBalloon()])
 }
 
-/** Print + auto-ack: the ack fires only after the browser confirms the print
- * via the iframe's afterprint event (never on button click alone). */
+/** Print + auto-ack: the ack fires only when the browser confirms the print
+ * via the iframe's afterprint event (never on button click alone); a
+ * confirmation timeout resolves false and must not ack. */
 async function printAndAckPrintTask(id: string): Promise<void> {
-  await printPdfTask(id, apiFetch)
+  const confirmed = await printPdfTask(id, apiFetch)
+  if (!confirmed) return
   await apiFetch(`/admin/api/print-tasks/${id}/ack`, {
     method: 'POST',
     body: JSON.stringify({ status: 'printed' }),
@@ -65,7 +67,8 @@ async function printAndAckPrintTask(id: string): Promise<void> {
 }
 
 async function printAndAckBalloonTask(task: BalloonTask): Promise<void> {
-  await printBalloonTask(task, apiFetch)
+  const confirmed = await printBalloonTask(task, apiFetch)
+  if (!confirmed) return
   await apiFetch(`/admin/api/balloon-tasks/${task.id}/ack`, {
     method: 'POST',
     body: JSON.stringify({}),
