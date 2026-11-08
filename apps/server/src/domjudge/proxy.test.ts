@@ -24,6 +24,8 @@ let hits = 0;
 let lastReq: { method: string; path: string; body: string; cookie: string | null; headers: Record<string, string>; contentLengthCount: number } | null = null;
 let upstreamPort = 0;
 
+let upstreamSetCookie: string[] | null = null;
+
 const upstream = Bun.serve({
   port: 0,
   fetch: async (req) => {
@@ -37,10 +39,11 @@ const upstream = Bun.serve({
       // duplicate headers are joined with ", " by Headers; count the raw values
       contentLengthCount: req.headers.get("content-length")?.split(",").length ?? 0,
     };
-    return new Response(JSON.stringify({ echo: "upstream-ok" }), {
-      status: 200,
-      headers: { "content-type": "application/json", "x-upstream": "mock" },
-    });
+    const headers = new Headers({ "content-type": "application/json", "x-upstream": "mock" });
+    if (upstreamSetCookie) {
+      for (const cookie of upstreamSetCookie) headers.append("set-cookie", cookie);
+    }
+    return new Response(JSON.stringify({ echo: "upstream-ok" }), { status: 200, headers });
   },
 });
 upstreamPort = upstream.port as number;
@@ -50,6 +53,7 @@ describe("DOMjudge reverse proxy", () => {
   afterEach(() => {
     hits = 0;
     lastReq = null;
+    upstreamSetCookie = null;
   });
 
   const makeCfg = (contextPath = "") => ({
@@ -404,6 +408,42 @@ describe("DOMjudge reverse proxy", () => {
     } finally {
       capture.stop(true);
     }
+  });
+
+  test("Secure is stripped and Path normalized to / on proxied Set-Cookie", async () => {
+    upstreamSetCookie = ["PHPSESSID=abc123; path=/demoweb; secure; httponly"];
+    const app = createApp(makeCfg());
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/login", {
+      method: "POST",
+      headers: { cookie: `cxtool-token=${token}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["PHPSESSID=abc123; Path=/; httponly"]);
+  });
+
+  test("multiple upstream Set-Cookie headers are all rewritten, others preserved", async () => {
+    upstreamSetCookie = [
+      "DOMjudgeSID=s1; path=/demoweb; secure; httponly; SameSite=Lax",
+      "theme=dark; path=/; samesite=Strict",
+    ];
+    const app = createApp(makeCfg());
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/api/contests", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.headers.getSetCookie()).toEqual([
+      "DOMjudgeSID=s1; Path=/; httponly; SameSite=Lax",
+      "theme=dark; Path=/; samesite=Strict",
+    ]);
+  });
+
+  test("responses without Set-Cookie pass through untouched", async () => {
+    const app = createApp(makeCfg());
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await app.request("/dj/api/contests", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-upstream")).toBe("mock");
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(await res.json()).toEqual({ echo: "upstream-ok" });
   });
 
   test("proxyFilter and resolveTarget helpers", async () => {

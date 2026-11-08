@@ -65,6 +65,44 @@ export function forwardCookie(header: string | null | undefined): string | undef
   return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
+/**
+ * Rewrites upstream Set-Cookie headers for our reverse proxy: teams reach us
+ * over plain HTTP on the LAN, so a `Secure` cookie from the HTTPS demo would
+ * be dropped by the browser and the login session never stored. `Path` is
+ * normalized to "/" because upstream base-url prefixes like /demoweb would
+ * otherwise scope the session cookie away from our proxied root paths.
+ * On HTTPS deployments dropping Secure is a mild attribute downgrade,
+ * acceptable for this LAN tool. Everything else (HttpOnly, SameSite,
+ * name=value) is preserved.
+ */
+function rewriteSetCookie(cookie: string): string {
+  const parts = cookie.split(";").map((p) => p.trim());
+  const kept: string[] = [];
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === "secure") continue;
+    if (lower.startsWith("path=")) {
+      kept.push("Path=/");
+      continue;
+    }
+    if (part !== "") kept.push(part);
+  }
+  return kept.join("; ");
+}
+
+async function rewriteResponseCookies(res: Response): Promise<Response> {
+  const cookies = res.headers.getSetCookie?.() ?? [];
+  if (cookies.length === 0) return res;
+  const headers = new Headers(res.headers);
+  headers.delete("set-cookie");
+  for (const cookie of cookies) {
+    headers.append("set-cookie", rewriteSetCookie(cookie));
+  }
+  // 304 and other empty-body statuses must not carry a body.
+  const body = res.status === 204 || res.status === 304 || res.status === 205 ? null : res.body;
+  return new Response(body, { status: res.status, statusText: res.statusText, headers });
+}
+
 /** Shared upstream forwarding: headers, login injection, proxy call. */
 async function forwardToDj(
   req: Request,
@@ -101,7 +139,8 @@ async function forwardToDj(
     }
   }
   try {
-    return await proxy(target, { raw: req, headers });
+    const res = await proxy(target, { raw: req, headers });
+    return await rewriteResponseCookies(res);
   } catch (err) {
     console.error(`dj proxy upstream error: ${target}`, err instanceof Error ? err.message : err);
     // Browsers navigating here are humans: show a friendly retry page instead
