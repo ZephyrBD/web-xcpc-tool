@@ -2,15 +2,15 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LoginPage from '@/pages/LoginPage.vue'
 import DashboardPage from '@/pages/DashboardPage.vue'
 import AuthTasksPage from '@/pages/AuthTasksPage.vue'
-import JobsView from '@/views/JobsView.vue'
-import TeamsView from '@/views/TeamsView.vue'
+import JobsPage from '@/pages/JobsPage.vue'
+import TeamsPage from '@/pages/TeamsPage.vue'
 
 export const routes = [
   { path: '/login', name: 'login', component: LoginPage, meta: { title: '登录' } },
   { path: '/', name: 'overview', component: DashboardPage, meta: { title: '总览' } },
   { path: '/auth-tasks', name: 'auth-tasks', component: AuthTasksPage, meta: { title: '认证任务' } },
-  { path: '/jobs', name: 'jobs', component: JobsView, meta: { title: '打印 / 气球' } },
-  { path: '/teams', name: 'teams', component: TeamsView, meta: { title: '队伍' } },
+  { path: '/jobs', name: 'jobs', component: JobsPage, meta: { title: '打印 / 气球' } },
+  { path: '/teams', name: 'teams', component: TeamsPage, meta: { title: '队伍' } },
 ]
 
 const router = createRouter({
