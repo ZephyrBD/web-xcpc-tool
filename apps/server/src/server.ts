@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { extname, join, resolve, sep } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { Config } from "./config";
@@ -19,6 +19,7 @@ import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
+import { appPath } from "./domjudge/proxy";
 
 export type Deps = {
   dataDir: string;
@@ -31,13 +32,16 @@ export type Deps = {
   djClient?: DjClient;
   /** Bun's Server is structurally compatible with this shape. */
   server?: { requestIP(req: Request): { address: string } | null };
+  /** Admin frontend build output directory. Defaults to apps/server/static. */
+  staticDir?: string;
 };
 
 const CAPTURE_FILE = "fingerprints.jsonl";
-const STATIC_DIR = join(import.meta.dir, "..", "static");
+const DEFAULT_STATIC_DIR = join(import.meta.dir, "..", "static");
 
 export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   const dataDir = deps?.dataDir ?? "data";
+  const staticDir = resolve(deps?.staticDir ?? DEFAULT_STATIC_DIR);
   const app = new Hono();
 
   const queue = deps?.authQueue ?? new AuthQueue(join(dataDir, "auth-tasks.json"));
@@ -232,18 +236,61 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     });
   });
 
-  if (existsSync(STATIC_DIR)) {
-    app.get("*", (c) => {
-      const rel = new URL(c.req.url).pathname.replace(/^\/+/, "");
-      const filePath = join(STATIC_DIR, rel);
-      const resolved =
-        rel !== "" && filePath.startsWith(STATIC_DIR) && existsSync(filePath)
-          ? filePath
-          : join(STATIC_DIR, "index.html");
-      if (!existsSync(resolved)) {
-        return c.notFound();
+  if (existsSync(staticDir)) {
+    const MIME: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "application/javascript",
+      ".css": "text/css; charset=utf-8",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".ico": "image/x-icon",
+      ".json": "application/json",
+      ".woff2": "font/woff2",
+    };
+    const indexHtml = join(staticDir, "index.html");
+    const safeDecode = (value: string): string | null => {
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return null;
       }
-      return new Response(readFileSync(resolved));
+    };
+    const serveFile = (filePath: string): Response | null => {
+      const type = MIME[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+      try {
+        return new Response(readFileSync(filePath), {
+          headers: { "content-type": type, "cache-control": filePath === indexHtml ? "no-cache" : "public, max-age=3600" },
+        });
+      } catch {
+        return null;
+      }
+    };
+
+    app.get("*", (c) => {
+      // Validate the decoded form (URL-encoded traversal like %2e%2e must not
+      // survive decoding into a ".." segment); also reject raw suspicious
+      // sequences in case decoding already happened upstream.
+      const raw = appPath(c, cfg);
+      if (/(^|\/)\.\.?(\/|$)/.test(raw) || /%2e|%2f|%5c/i.test(raw)) {
+        return c.json({ ok: false, reason: "forbidden" }, 403);
+      }
+      const decodedPath = raw === "/" ? "" : safeDecode(raw);
+      if (decodedPath === null) return c.json({ ok: false, reason: "forbidden" }, 403);
+      const rel = decodedPath.replace(/^\/+/, "");
+      if (!rel) {
+        return serveFile(indexHtml) ?? c.notFound();
+      }
+      const decoded = safeDecode(rel);
+      if (decoded === null) return c.json({ ok: false, reason: "forbidden" }, 403);
+      const filePath = resolve(join(staticDir, decoded));
+      if (filePath !== staticDir && !filePath.startsWith(staticDir + sep)) {
+        return c.json({ ok: false, reason: "forbidden" }, 403);
+      }
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        return serveFile(filePath) ?? c.notFound();
+      }
+      // SPA fallback: only GET misses outside API surfaces reach here.
+      return serveFile(indexHtml) ?? c.notFound();
     });
   }
 

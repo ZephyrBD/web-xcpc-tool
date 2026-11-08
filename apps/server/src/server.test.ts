@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
@@ -279,5 +279,82 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].teamName).toBe("Team X");
     expect(tasks[0].problemLabel).toBe("A");
     expect(tasks[0].location).toBe("A-101");
+  });
+});
+
+describe("static hosting", () => {
+  let root: string;
+  let staticDir: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "static-test-"));
+    staticDir = join(root, "static");
+    mkdirSync(join(staticDir, "assets"), { recursive: true });
+    writeFileSync(join(staticDir, "index.html"), "<!doctype html><html><head><title>admin</title></head><body>ADMIN-INDEX</body></html>");
+    writeFileSync(join(staticDir, "assets", "app-H4SH.js"), "console.log('fixture-js');");
+    writeFileSync(join(staticDir, "logo.svg"), "<svg></svg>");
+    writeFileSync(join(root, "secret.txt"), "TOP-SECRET");
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const makeCfg = () => ({ ...loadConfigWithSecret(), contextPath: "/cxtool" });
+  const makeApp = () => new Hono().route("/cxtool", createApp(makeCfg(), { dataDir: mkdtempSync(join(tmpdir(), "static-data-")), staticDir }));
+
+  test("GET /cxtool/ serves index.html as text/html", async () => {
+    const res = await makeApp().request("/cxtool/");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("ADMIN-INDEX");
+  });
+
+  test("GET .js asset returns application/javascript", async () => {
+    const res = await makeApp().request("/cxtool/assets/app-H4SH.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/javascript");
+    expect(await res.text()).toContain("fixture-js");
+  });
+
+  test("GET .svg asset returns image/svg+xml", async () => {
+    const res = await makeApp().request("/cxtool/logo.svg");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/svg+xml");
+  });
+
+  test.each([
+    "/cxtool/%2e%2e/secret.txt",
+    "/cxtool/assets/%2e%2e/%2e%2e/secret.txt",
+    "/cxtool/assets/..%2fsecret.txt",
+    "/cxtool/..%5csecret.txt",
+  ])("GET %s never leaks files outside staticDir", async (path) => {
+    const res = await makeApp().request(path);
+    expect([403, 404]).toContain(res.status);
+    expect(await res.text()).not.toContain("TOP-SECRET");
+  });
+
+  test("deep link /cxtool/login falls back to index.html", async () => {
+    const res = await makeApp().request("/cxtool/login");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("ADMIN-INDEX");
+  });
+
+  test("SPA fallback does not swallow /admin/api 404s", async () => {
+    const res = await makeApp().request("/cxtool/admin/api/no-such-route");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-type")).toContain("application/json");
+  });
+
+  test("SPA fallback does not swallow /dj 404s", async () => {
+    const res = await makeApp().request("/cxtool/dj/no-such-route");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-type")).toContain("application/json");
+  });
+
+  test("non-GET miss does not fall back to index.html", async () => {
+    const res = await makeApp().request("/cxtool/login", { method: "POST" });
+    expect(res.status).toBe(404);
   });
 });
