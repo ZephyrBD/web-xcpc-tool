@@ -12,6 +12,9 @@
  * The PRIMARY signal is the TOP window's `afterprint`: Chromium dispatches
  * the event there for iframe print() calls (and for object-URL frames often
  * not on the frame at all); the frame listener is only a fallback.
+ * A second layered signal is the `print` media query on the TOP window:
+ * Chromium flips it on when the preview opens and off when it closes, so a
+ * false→true→false transition also counts as confirmed.
  *
  * Note: browsers may silently ignore iframe.contentWindow.print() when there
  * was no prior user gesture (relevant for SSE auto-print). That's accepted —
@@ -68,23 +71,50 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
     const targets = [window, win].filter(
       (t) => typeof t.addEventListener === 'function' && typeof t.removeEventListener === 'function',
     )
-    const onAfterprint = () => {
+    // Layered confirmation #2: Chromium toggles the `print` media query when
+    // the print preview opens and closes. A false→true→false transition on
+    // the TOP window counts as "preview closed = print confirmed" even when
+    // `afterprint` never fires (observed in real Chromium for object-URL
+    // iframes). A close-transition without a prior open is ignored — it may
+    // be a stale query matching at call time. Guarded by method checks so
+    // environments without functioning matchMedia (test stubs) simply skip
+    // this layer.
+    let mql: MediaQueryList | undefined
+    let onMediaChange: (() => void) | undefined
+    const detachPrintMedia = () => {
+      if (!mql || !onMediaChange) return
+      const legacy = mql as unknown as { removeListener?: (fn: () => void) => void }
+      if (typeof mql.removeEventListener === 'function') mql.removeEventListener('change', onMediaChange)
+      else if (typeof legacy.removeListener === 'function') legacy.removeListener(onMediaChange)
+    }
+    if (typeof window.matchMedia === 'function') {
+      mql = window.matchMedia('print')
+      const legacy = mql as unknown as { addListener?: (fn: () => void) => void }
+      onMediaChange = () => {
+        if (mql?.matches) printPreviewOpen = true
+        else if (printPreviewOpen) settle(true)
+      }
+      if (typeof mql.addEventListener === 'function') mql.addEventListener('change', onMediaChange)
+      else if (typeof legacy.addListener === 'function') legacy.addListener(onMediaChange)
+      else {
+        mql = undefined
+        onMediaChange = undefined
+      }
+    }
+    let printPreviewOpen = mql?.matches === true
+    const settle = (confirmed: boolean) => {
       if (settled) return
       settled = true
       window.clearTimeout(timer)
       for (const t of targets) t.removeEventListener('afterprint', onAfterprint)
-      resolve(true)
+      detachPrintMedia()
+      resolve(confirmed)
     }
+    const onAfterprint = () => settle(true)
     for (const t of targets) t.addEventListener('afterprint', onAfterprint)
     // happy-dom (test env) has no window.print; real browsers always do.
     if (typeof win.print === 'function') win.print()
-    timer = window.setTimeout(() => {
-      if (!settled) {
-        settled = true
-        for (const t of targets) t.removeEventListener('afterprint', onAfterprint)
-        resolve(false)
-      }
-    }, timeoutMs)
+    timer = window.setTimeout(() => settle(false), timeoutMs)
   })
 }
 
