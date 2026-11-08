@@ -68,20 +68,29 @@ export class BalloonService {
 
   /**
    * Task 7 calls this after team sync to refresh label/name lookups. Pending
-   * tasks created before problems were known (e.g. the first poll after a
-   * server restart, verified live against the demo) hold raw problem ids as
-   * labels; once problems arrive they are re-labeled.
+   * tasks created before problems/teams were known (e.g. the first poll after
+   * a server restart, verified live against the demo) hold raw problem ids as
+   * labels and raw team ids as teamName with null location; once those arrive
+   * they are re-labeled. Delivered tasks are left untouched.
    */
   refresh(teams: DjTeam[], problems: Array<Pick<DjProblem, "id" | "label" | "name">>): void {
     this.teams = teams;
     this.problems = problems;
-    if (problems.length === 0) return;
+    if (problems.length === 0 && teams.length === 0) return;
     const labelById = new Map(problems.map((p) => [p.id, p.label]));
+    const teamById = new Map(teams.map((t) => [t.id, t]));
     this.store.update((cur) =>
       cur.map((t) => {
         if (t.status !== "pending") return t;
         const label = labelById.get(t.problemLabel);
-        return label && label !== t.problemLabel ? { ...t, problemLabel: label } : t;
+        const team = teamById.get(t.teamName);
+        if (!label && !team) return t;
+        return {
+          ...t,
+          problemLabel: label && label !== t.problemLabel ? label : t.problemLabel,
+          teamName: team ? team.name : t.teamName,
+          location: team ? (team.location?.description ?? null) : t.location,
+        };
       }),
     );
   }

@@ -20,6 +20,7 @@ const navItems = [
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
   { path: '/api-list', label: '接口', accent: 'var(--text-muted)' },
+  { path: '/help', label: '帮助', accent: 'var(--text-muted)' },
   { path: '/settings', label: '设置', accent: 'var(--text-muted)' },
 ]
 
@@ -29,6 +30,7 @@ const accents: Record<string, string> = {
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
   'api-list': 'var(--text-muted)',
+  help: 'var(--text-muted)',
   settings: 'var(--text-muted)',
 }
 

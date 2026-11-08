@@ -273,4 +273,55 @@ describe("BalloonService", () => {
     svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
     expect(svc.list()[0].problemLabel).toBe("p1");
   });
+
+  // Live-debugged gap: tasks created by a poll before team sync keep the raw
+  // team id as teamName and null location; refresh must re-label those too.
+  test("refresh re-labels teamName/location on pending tasks holding raw team ids", async () => {
+    const { svc, store } = makeService(makeFetch());
+    store.update((cur) => [
+      ...cur,
+      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "111", location: null, status: "pending", createdAt: new Date().toISOString() },
+    ]);
+
+    svc.refresh(
+      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
+      [{ id: "p1", label: "A", name: "Alpha" }],
+    );
+    expect(svc.list().find((t) => t.id === "s9")).toMatchObject({
+      teamName: "VILNIUS TECH 1",
+      location: "I1",
+    });
+  });
+
+  test("refresh leaves tasks whose teamName is already a real name untouched", async () => {
+    const { svc, store } = makeService(makeFetch());
+    store.update((cur) => [
+      ...cur,
+      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Already A Name", location: null, status: "pending", createdAt: new Date().toISOString() },
+    ]);
+
+    svc.refresh(
+      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
+      [{ id: "p1", label: "A", name: "Alpha" }],
+    );
+    const task = svc.list().find((t) => t.id === "s9")!;
+    expect(task.teamName).toBe("Already A Name");
+    expect(task.location).toBeNull();
+  });
+
+  test("refresh re-labels only pending tasks; delivered tasks keep raw ids", async () => {
+    const { svc, store } = makeService(makeFetch());
+    store.update((cur) => [
+      ...cur,
+      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "111", location: null, status: "delivered", createdAt: new Date().toISOString() },
+    ]);
+
+    svc.refresh(
+      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
+      [{ id: "p1", label: "A", name: "Alpha" }],
+    );
+    const task = svc.list().find((t) => t.id === "s9")!;
+    expect(task.teamName).toBe("111");
+    expect(task.location).toBeNull();
+  });
 });

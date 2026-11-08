@@ -100,4 +100,58 @@ describe('SettingsPage', () => {
     expect(body.domjudge.adminPassword).toBe('new-dj-pass')
     expect('print' in body).toBe(false)
   })
+
+  test('生成 fills the print token input with a non-empty changed value', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    // The print token is the last password-type input on the page.
+    const target = wrapper.findAll('input[type="password"]')[
+      wrapper.findAll('input[type="password"]').length - 1
+    ]!
+
+    const genBtn = wrapper.findAll('button').find((b) => b.text() === '生成')!
+    expect(genBtn).toBeDefined()
+    await genBtn.trigger('click')
+    await flush()
+
+    const value = (target.element as HTMLInputElement).value
+    expect(value).not.toBe('')
+    expect(value).toBe(formToken(wrapper))
+    expect(value.length).toBeGreaterThanOrEqual(16)
+    // Second click produces a different token.
+    await genBtn.trigger('click')
+    expect(formToken(wrapper)).not.toBe(value)
+  })
+
+  test('复制 button exists next to the token field', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const copyBtn = wrapper.findAll('button').find((b) => b.text() === '复制')!
+    expect(copyBtn).toBeDefined()
+  })
+
+  test('save PUTs the generated token', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+    const genBtn = wrapper.findAll('button').find((b) => b.text() === '生成')!
+    await genBtn.trigger('click')
+    await flush()
+    const generated = formToken(wrapper)
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存设置')!
+    await saveBtn.trigger('click')
+    await flush()
+    await flush()
+
+    const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    expect((body.print as { token: string }).token).toBe(generated)
+  })
 })
+
+function formToken(wrapper: ReturnType<typeof mountPage>): string {
+  const passwordInputs = wrapper.findAll('input[type="password"]')
+  return (passwordInputs[passwordInputs.length - 1]!.element as HTMLInputElement).value
+}

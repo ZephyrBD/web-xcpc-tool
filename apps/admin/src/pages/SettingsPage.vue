@@ -72,6 +72,31 @@ async function save(): Promise<void> {
   }
 }
 
+function randomToken(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  let bits = '';
+  for (const b of bytes) bits += b.toString(2).padStart(8, '0');
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let out = '';
+  for (let i = 0; i < 32; i++) out += chars[parseInt(bits.slice(i * 6, i * 6 + 6), 2)];
+  return out;
+}
+
+async function generateToken(): Promise<void> {
+  form.printToken = randomToken();
+}
+
+async function copyToken(): Promise<void> {
+  if (!form.printToken) return;
+  try {
+    await navigator.clipboard.writeText(form.printToken);
+    ElMessage.success('已复制到剪贴板');
+  } catch {
+    ElMessage.error('复制失败，请手动复制');
+  }
+}
+
 onMounted(() => void refresh())
 </script>
 
@@ -123,8 +148,13 @@ onMounted(() => void refresh())
         <label class="field">
           <span class="field-label">Token</span>
           <ElInput v-model="form.printToken" type="password" show-password placeholder="留空则不修改" />
+          <div class="token-actions">
+            <ElButton size="small" @click="generateToken">生成</ElButton>
+            <ElButton size="small" @click="copyToken">复制</ElButton>
+          </div>
           <span class="field-help">
-            当前：{{ printTokenMasked || '未设置' }}。DOMjudge 调打印回调时携带它做校验。
+            当前：{{ printTokenMasked || '未设置' }}。生成一个随机令牌，保存后重启生效，需要同步填到
+            DOMjudge 的打印配置里（header <code>org.domjudge.print-token</code>）。
           </span>
         </label>
       </section>
@@ -192,6 +222,11 @@ onMounted(() => void refresh())
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border-radius: 4px;
   padding: 0 4px;
+}
+
+.token-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .settings-footer {
