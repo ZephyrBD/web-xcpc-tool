@@ -13,6 +13,15 @@ export type DjTeam = {
   location?: { description?: string };
 };
 
+/**
+ * Effective account key for a team: icpc_id when present, otherwise the
+ * DOMjudge team id — which is also the DOMjudge login username for team
+ * accounts, so X-DOMjudge-Login semantics stay correct.
+ */
+export function teamAccountKey(t: Pick<DjTeam, "id" | "icpc_id">): string {
+  return (t.icpc_id ?? "").trim() || t.id;
+}
+
 export type DjContest = {
   id: string;
   name: string;

@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import type { SecretBox } from "./secretbox";
 import { JsonStore } from "./store";
 
-type TeamEntry = { password: string; teamCode?: string };
+type TeamEntry = { password?: string; teamCode?: string };
 
 /** Unambiguous charset for human-typed team codes: no 0/O/1/l/I. */
 const CODE_CHARSET = "23456789abcdefghjkmnpqrstuvwxyz";
@@ -37,7 +37,7 @@ export class TeamStore {
 
   getPassword(icpcId: string): string | null {
     const payload = this.entries()[icpcId];
-    if (payload === undefined) return null;
+    if (payload?.password === undefined) return null;
     return this.box.decrypt(payload.password);
   }
 
@@ -50,8 +50,10 @@ export class TeamStore {
     const assigned = code ?? this.generateCode();
     this.store.update((cur) => {
       const entry = cur[icpcId];
-      const password = typeof entry === "string" ? entry : entry?.password ?? "";
-      return { ...cur, [icpcId]: { password, teamCode: assigned } };
+      const password = typeof entry === "string" ? entry : entry?.password;
+      const next: TeamEntry = { teamCode: assigned };
+      if (password !== undefined) next.password = password;
+      return { ...cur, [icpcId]: next };
     });
     return assigned;
   }

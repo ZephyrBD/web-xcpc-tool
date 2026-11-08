@@ -19,7 +19,8 @@ export function inLoginWindow(now: Date, window: Config["teamLogin"]): boolean {
  * Pure verification: check the login window first (so a wrong code and a
  * right code behave identically while the window is closed), then look up
  * the typed team code, and sign a team token whose payload carries the
- * team's icpcId.
+ * team's effective account key (icpc id, or DOMjudge team id when the
+ * icpc id is missing).
  */
 export async function verifyTeamCode(
   code: string,

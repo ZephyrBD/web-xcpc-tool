@@ -9,7 +9,7 @@ import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import type { BalloonService } from "./balloon/service";
-import { DjClient, type DjTeam } from "./domjudge/client";
+import { DjClient, teamAccountKey, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
@@ -235,7 +235,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   app.get("/admin/api/team-codes", (c) => {
     return c.json(
       teamsStore.load().map((t) => {
-        const icpcId = (t.icpc_id ?? "").trim();
+        const icpcId = teamAccountKey(t);
         return {
           icpcId,
           name: t.display_name?.trim() || t.name,
@@ -252,7 +252,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     if (body?.all === true) {
       let count = 0;
       for (const t of teams) {
-        const icpcId = (t.icpc_id ?? "").trim();
+        const icpcId = teamAccountKey(t);
         if (!icpcId || teamStore.getTeamCode(icpcId)) continue;
         teamStore.setTeamCode(icpcId);
         count++;
@@ -261,7 +261,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     }
     const icpcId = typeof body?.icpcId === "string" ? body.icpcId.trim() : "";
     if (!icpcId) return c.json({ error: "icpcId required" }, 400);
-    if (!teams.some((t) => (t.icpc_id ?? "").trim() === icpcId)) {
+    if (!teams.some((t) => teamAccountKey(t) === icpcId)) {
       return c.json({ error: "team not found" }, 404);
     }
     return c.json({ icpcId, teamCode: teamStore.setTeamCode(icpcId) });
@@ -272,7 +272,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const cell = (v: string) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
     const rows = [["队伍名", "DOMjudge用户名", "队伍码", "DOMjudge密码"]];
     for (const t of teamsStore.load()) {
-      const icpcId = (t.icpc_id ?? "").trim();
+      const icpcId = teamAccountKey(t);
       rows.push([
         t.display_name?.trim() || t.name || "",
         icpcId,
@@ -310,13 +310,13 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     let targets: DjTeam[];
     if (body?.all === true) {
       targets = teams.filter((t) => {
-        const icpcId = (t.icpc_id ?? "").trim();
+        const icpcId = teamAccountKey(t);
         return icpcId !== "" && (!teamStore.getTeamCode(icpcId) || !teamStore.hasPassword(icpcId));
       });
     } else {
       const icpcId = typeof body?.icpcId === "string" ? body.icpcId.trim() : "";
       if (!icpcId) return c.json({ error: "icpcId required" }, 400);
-      const team = teams.find((t) => (t.icpc_id ?? "").trim() === icpcId);
+      const team = teams.find((t) => teamAccountKey(t) === icpcId);
       if (!team) return c.json({ error: "team not found" }, 404);
       targets = [team];
     }
@@ -325,7 +325,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     let skipped = 0;
     const errors: Array<{ icpcId: string; reason: string }> = [];
     for (const t of targets) {
-      const icpcId = (t.icpc_id ?? "").trim();
+      const icpcId = teamAccountKey(t);
       if (!teamStore.getTeamCode(icpcId)) teamStore.setTeamCode(icpcId);
       const password = randomPassword();
       try {

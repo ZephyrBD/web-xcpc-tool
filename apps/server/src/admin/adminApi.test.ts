@@ -128,6 +128,100 @@ describe("admin team-code & login-history API", () => {
   });
 });
 
+describe("admin team-code API: teams without icpc_id fall back to the DOMjudge team id", () => {
+  const TEAMS_WITHOUT_ICPC = [
+    { id: "t1", icpc_id: "icpc1", name: "队伍一", display_name: "Team One" },
+    { id: "djteam9", name: "DOMjudge", display_name: "Demo Team" },
+  ];
+  let dataDir: string;
+  let teamStore: TeamStore;
+  let app: ReturnType<typeof createApp>;
+  let headers: Record<string, string>;
+
+  beforeEach(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "admin-api-noicpc-"));
+    teamStore = new TeamStore(
+      join(dataDir, "team-passwords.json"),
+      new SecretBox(ensureKeyFile(join(dataDir, "secret.key"))),
+    );
+    teamStore.setPassword("icpc1", "secret-pw-1");
+    app = createApp(cfg(), {
+      dataDir,
+      teamStore,
+      teamsStore: new JsonStore(join(dataDir, "teams.json"), TEAMS_WITHOUT_ICPC),
+    });
+    headers = await adminAuthHeaders(cfg());
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test("generate all assigns a code keyed by the DOMjudge team id", async () => {
+    const res = await app.request("/admin/api/team-codes/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ all: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 2 });
+    expect(teamStore.getTeamCode("djteam9")).not.toBeNull();
+  });
+
+  test("team-codes list reports the team id as icpcId", async () => {
+    const code = teamStore.setTeamCode("djteam9");
+    const res = await app.request("/admin/api/team-codes", { headers });
+    const rows = (await res.json()) as Array<{ icpcId: string; name: string; teamCode: string | null; hasPassword: boolean }>;
+    expect(rows[1]).toEqual({ icpcId: "djteam9", name: "Demo Team", teamCode: code, hasPassword: false });
+  });
+
+  test("export lists the DOMjudge team id as the username", async () => {
+    const code = teamStore.setTeamCode("djteam9");
+    const res = await app.request("/admin/api/team-codes/export", { headers });
+    const text = await res.text();
+    expect(text).toContain(`Demo Team,djteam9,${code},`);
+  });
+
+  test("verify with its code signs a token whose sub is the team id", async () => {
+    const { verifyTeamToken } = await import("../auth/token");
+    const code = teamStore.setTeamCode("djteam9");
+    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    expect((await verifyTeamToken("admin-api-test-secret", token))?.sub).toBe("djteam9");
+  });
+
+  test("proxy /login injects x-domjudge-login with the team id", async () => {
+    const { signTeamToken } = await import("../auth/token");
+    const injected: { login: string | null; pass: string | null } = { login: null, pass: null };
+    const upstream = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        injected.login = req.headers.get("x-domjudge-login");
+        injected.pass = req.headers.get("x-domjudge-pass");
+        return new Response("login-ok");
+      },
+    });
+    try {
+      const djApp = createApp(
+        {
+          ...cfg(),
+          domjudge: { baseUrl: `http://127.0.0.1:${upstream.port}`, adminUser: "", adminPassword: "", timeoutSeconds: 5 },
+        },
+        { dataDir, teamStore },
+      );
+      teamStore.setPassword("djteam9", "dj-pw");
+      const token = await signTeamToken("admin-api-test-secret", 3600, "djteam9");
+      const res = await djApp.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
+      expect(res.status).toBe(200);
+      expect(injected.login).toBe("djteam9");
+      expect(injected.pass).toBe(Buffer.from("dj-pw", "utf8").toString("base64"));
+    } finally {
+      upstream.stop(true);
+    }
+  });
+});
+
 describe("POST /admin/api/team-codes/provision", () => {
   let dataDir: string;
   let teamStore: TeamStore;
