@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createMemoryHistory, createRouter, createWebHistory, type Router } from 'vue-router'
 import LoginPage from '@/pages/LoginPage.vue'
 import DashboardPage from '@/pages/DashboardPage.vue'
 import TeamCodesPage from '@/pages/TeamCodesPage.vue'
@@ -7,6 +7,7 @@ import TeamsPage from '@/pages/TeamsPage.vue'
 import SettingsPage from '@/pages/SettingsPage.vue'
 import ApiListPage from '@/pages/ApiListPage.vue'
 import HelpPage from '@/pages/HelpPage.vue'
+import { getToken } from '@/api'
 
 export const routes = [
   { path: '/login', name: 'login', component: LoginPage, meta: { title: '登录' } },
@@ -19,9 +20,18 @@ export const routes = [
   { path: '/settings', name: 'settings', component: SettingsPage, meta: { title: '设置' } },
 ]
 
-const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
-  routes,
-})
+// 退出登录或 token 过期后，任何非 /login 页面一律回到登录页。
+export function authGuard(to: { path: string }): boolean | string {
+  if (to.path !== '/login' && !getToken()) return '/login'
+  return true
+}
+
+export function createAppRouter(history: ReturnType<typeof createWebHistory> | ReturnType<typeof createMemoryHistory>): Router {
+  const router = createRouter({ history, routes })
+  router.beforeEach(authGuard)
+  return router
+}
+
+const router = createAppRouter(createWebHistory(import.meta.env.BASE_URL))
 
 export default router

@@ -223,11 +223,27 @@ describe("admin team-code API: teams without icpc_id fall back to the DOMjudge t
 });
 
 describe("POST /admin/api/team-codes/provision", () => {
+  // Mock DOMjudge user directory covering the roles guard matrix.
+  const DJ_USERS = [
+    { id: "7", username: "icpc1", roles: ["team"] },
+    { id: "2", username: "icpc2", roles: ["admin"] },
+    { id: "3", username: "icpc4", roles: ["jury"] },
+    // Roles missing entirely: cannot prove it is a team account.
+    { id: "4", username: "icpc5" },
+    { id: "5", username: "icpc6", roles: ["team", "admin"] },
+  ];
   let dataDir: string;
   let teamStore: TeamStore;
   let app: ReturnType<typeof createApp>;
   let headers: Record<string, string>;
   const djCalls: Array<{ method: string; url: string; body: unknown }> = [];
+  // Teams for the guard tests: icpc4 (jury), icpc5 (roles missing), icpc6 (team+admin).
+  const TEAMS_PROVISION = [
+    ...TEAMS,
+    { id: "t4", icpc_id: "icpc4", name: "队伍四" },
+    { id: "t5", icpc_id: "icpc5", name: "队伍五" },
+    { id: "t6", icpc_id: "icpc6", name: "队伍六" },
+  ];
 
   beforeEach(async () => {
     djCalls.length = 0;
@@ -246,8 +262,7 @@ describe("POST /admin/api/team-codes/provision", () => {
       const path = u.pathname;
       if (path.endsWith("/users") && (init?.method ?? "GET") === "GET") {
         const username = u.searchParams.get("username");
-        const users =
-          username === "icpc1" ? [{ id: "7", username: "icpc1" }] : [];
+        const users = DJ_USERS.filter((user) => user.username === username);
         return new Response(JSON.stringify(users), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -268,7 +283,7 @@ describe("POST /admin/api/team-codes/provision", () => {
     app = createApp(cfg(), {
       dataDir,
       teamStore,
-      teamsStore: new JsonStore(join(dataDir, "teams.json"), TEAMS),
+      teamsStore: new JsonStore(join(dataDir, "teams.json"), TEAMS_PROVISION),
       djClient: client,
     });
     headers = await adminAuthHeaders(cfg());
@@ -303,11 +318,11 @@ describe("POST /admin/api/team-codes/provision", () => {
   });
 
   test("unknown DOMjudge user is skipped, not a batch failure", async () => {
-    teamStore.setTeamCode("icpc2");
+    teamStore.setTeamCode("icpc3");
     const res = await app.request("/admin/api/team-codes/provision", {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify({ icpcId: "icpc2" }),
+      body: JSON.stringify({ icpcId: "icpc3" }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -317,9 +332,30 @@ describe("POST /admin/api/team-codes/provision", () => {
     };
     expect(body.provisioned).toBe(0);
     expect(body.skipped).toBe(1);
-    expect(body.errors).toEqual([{ icpcId: "icpc2", reason: expect.any(String) }]);
+    expect(body.errors).toEqual([{ icpcId: "icpc3", reason: expect.any(String) }]);
     // no password stored for the skipped team
-    expect(teamStore.hasPassword("icpc2")).toBe(false);
+    expect(teamStore.hasPassword("icpc3")).toBe(false);
+    expect(djCalls.some((call) => call.method === "PATCH")).toBe(false);
+  });
+
+  test.each([
+    ["icpc2", "admin user"],
+    ["icpc4", "jury user"],
+    ["icpc5", "user with missing roles"],
+    ["icpc6", "team+admin hybrid user"],
+  ])("refuses non-team user (%s)", async (icpcId) => {
+    teamStore.setTeamCode(icpcId);
+    const res = await app.request("/admin/api/team-codes/provision", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ icpcId }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { provisioned: number; skipped: number; errors: Array<{ reason: string }> };
+    expect(body.provisioned).toBe(0);
+    expect(body.skipped).toBe(1);
+    expect(body.errors[0].reason).toContain("refusing non-team user");
+    expect(teamStore.hasPassword(icpcId)).toBe(false);
     expect(djCalls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
@@ -331,10 +367,12 @@ describe("POST /admin/api/team-codes/provision", () => {
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({ all: true }),
     });
-    const body = (await res.json()) as { provisioned: number; skipped: number; errors: unknown[] };
-    // icpc1 has no code+password yet → provisioned; icpc2 complete → not targeted;
-    // icpc3 targeted but has no DOMjudge user → skipped
-    expect(body).toEqual({ provisioned: 1, skipped: 1, errors: [{ icpcId: "icpc3", reason: expect.any(String) }] });
+    const body = (await res.json()) as { provisioned: number; skipped: number; errors: Array<{ icpcId: string; reason: string }> };
+    // icpc1 (team roles) → provisioned; icpc2 complete → not targeted;
+    // icpc3 has no DOMjudge user, icpc4/5/6 fail the team-roles guard → skipped
+    expect(body.provisioned).toBe(1);
+    expect(body.skipped).toBe(4);
+    expect(body.errors.map((e) => e.icpcId).sort()).toEqual(["icpc3", "icpc4", "icpc5", "icpc6"]);
   });
 
   test("without a domjudge client returns 503", async () => {

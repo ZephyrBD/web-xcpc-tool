@@ -116,6 +116,8 @@ export type DjUser = {
   id: string;
   username: string;
   name?: string;
+  /** CLICS User roles, e.g. ["team"] or ["admin"]. */
+  roles?: string[];
 };
 
 export class DjClient {
@@ -183,7 +185,9 @@ export class DjClient {
   /** Look up a DOMjudge user by username; null when no user matches. */
   async getUserByUsername(username: string): Promise<DjUser | null> {
     const users = await this.get<DjUser[]>(`users?username=${encodeURIComponent(username)}`);
-    return users[0] ?? null;
+    // Some deployments ignore the username query param and return the full
+    // user list; never hand back a user whose username does not match.
+    return users.find((u) => u.username === username) ?? null;
   }
 
   /** Reset a DOMjudge user's password via the admin API (PATCH /users/{id}). */

@@ -11,6 +11,7 @@ import { DjClient, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
+import { handleRootDjProxy, makeRootDispatch } from "./domjudge/proxy";
 
 const CONFIG_PATH = "data/settings.json";
 const DATA_DIR = "data";
@@ -54,8 +55,13 @@ const app = createApp(cfg, {
 });
 const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
 
+// Everything outside the admin contextPath is reverse-proxied straight to
+// DOMjudge with the same team-token semantics as /dj/*; the admin UI keeps
+// its own prefix untouched.
+const fetch_ = makeRootDispatch(serving, cfg, teamStore);
+
 server = Bun.serve({
-  fetch: serving.fetch,
+  fetch: fetch_,
   port: cfg.port,
 });
 balloonService.start();

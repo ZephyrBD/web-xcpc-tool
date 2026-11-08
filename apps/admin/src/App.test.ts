@@ -1,28 +1,28 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { mount } from '@vue/test-utils'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory } from 'vue-router'
 import { createPinia } from 'pinia'
 import App from './App.vue'
-import { routes } from './router'
+import { createAppRouter } from './router'
 import { useSessionStore } from './stores/session'
 import { clearToken, setToken } from './api'
 
-function makeRouter() {
-  return createRouter({
-    history: createMemoryHistory(),
-    routes,
-  })
+// DashboardPage opens an SSE connection on mount; bun has no EventSource.
+class FakeEventSource {
+  addEventListener(): void {}
+  close(): void {}
 }
+;(globalThis as Record<string, unknown>).EventSource ??= FakeEventSource
 
 function mountApp() {
-  const router = makeRouter()
+  const router = createAppRouter(createMemoryHistory())
   const pinia = createPinia()
   const wrapper = mount(App, {
     global: {
       plugins: [pinia, router],
     },
   })
-  return { wrapper, pinia }
+  return { wrapper, pinia, router }
 }
 
 describe('App', () => {
@@ -32,39 +32,52 @@ describe('App', () => {
   })
 
   test('renders nav shell with links for the five routes', async () => {
-    const router = makeRouter()
+    setToken('tok')
+    const { wrapper, router } = mountApp()
     await router.push('/')
     await router.isReady()
-
-    const wrapper = mount(App, {
-      global: {
-        plugins: [createPinia(), router],
-      },
-    })
+    await wrapper.vm.$nextTick()
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    for (const route of ['/', '/login', '/team-codes', '/jobs', '/teams']) {
+    for (const route of ['/', '/team-codes', '/jobs', '/teams', '/api-list', '/help', '/settings']) {
       expect(hrefs).toContain(route)
     }
   })
 
-  test('shows 登录 link and no 退出 button when not authenticated', async () => {
-    const { wrapper } = mountApp()
-    expect(wrapper.find('.login-link').exists()).toBe(true)
-    expect(wrapper.find('.logout-btn').exists()).toBe(false)
+  test('router guard redirects unauthenticated visits to /login', async () => {
+    const { router } = mountApp()
+    await router.push('/')
+    await router.isReady()
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  test('/login renders standalone: no nav shell, no page header', async () => {
+    const { wrapper, router } = mountApp()
+    await router.push('/login')
+    await router.isReady()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.admin-layout').exists()).toBe(false)
+    expect(wrapper.find('.layout-header').exists()).toBe(false)
+    expect(wrapper.find('.login-page').exists()).toBe(true)
   })
 
   test('shows 退出 button and no 登录 link when authenticated; logout returns to login', async () => {
     setToken('tok')
-    const { wrapper, pinia } = mountApp()
+    const { wrapper, pinia, router } = mountApp()
     useSessionStore(pinia)
+    await router.push('/')
+    await router.isReady()
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.logout-btn').exists()).toBe(true)
     expect(wrapper.find('.login-link').exists()).toBe(false)
 
     await wrapper.find('.logout-btn').trigger('click')
-    await wrapper.vm.$nextTick()
-    expect(wrapper.find('.login-link').exists()).toBe(true)
+    await flushPromises()
+    const session = useSessionStore(pinia)
+    expect(session.token).toBeNull()
+    expect(router.currentRoute.value.path).toBe('/login')
+    // 登录页是独立页面，不再渲染导航壳
     expect(wrapper.find('.logout-btn').exists()).toBe(false)
+    expect(wrapper.find('.login-page').exists()).toBe(true)
   })
 })

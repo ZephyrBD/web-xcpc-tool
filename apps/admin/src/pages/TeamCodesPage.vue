@@ -249,6 +249,21 @@ onMounted(() => void refresh())
   flex: 1;
 }
 
+/* Tab content stretches to the leftover viewport height; tables scroll
+   internally and the pagination footer stays visible inside the fill area. */
+.code-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .tab-toolbar {
   display: flex;
   align-items: center;
@@ -288,5 +303,6 @@ onMounted(() => void refresh())
 .table-pagination {
   margin-top: 12px;
   justify-content: flex-end;
+  flex: none;
 }
 </style>

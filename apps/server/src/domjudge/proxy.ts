@@ -64,25 +64,21 @@ export function forwardCookie(header: string | null | undefined): string | undef
   return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
-export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamStore): Promise<Response> {
-  const token = getCookie(c.req.header("cookie"), "cxtool-token");
-  const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
-  if (!payload) {
-    // Teams are humans: send them to the verify page, where they type their
-    // team code (shown on screen) to start authentication.
-    return c.redirect(`${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`, 302);
-  }
-  const rest = proxyFilter(c, cfg);
-  if (rest === null) {
-    return c.json({ ok: false, reason: "not found" }, 404);
-  }
-  const target = resolveTarget(cfg, rest) + new URL(c.req.url).search;
+/** Shared upstream forwarding: headers, login injection, proxy call. */
+async function forwardToDj(
+  req: Request,
+  cfg: Config,
+  teamStore: TeamStore | undefined,
+  payload: { sub: string },
+  rest: string,
+): Promise<Response> {
+  const target = resolveTarget(cfg, rest) + new URL(req.url).search;
   const headers: Record<string, string | undefined> = {};
-  for (const [k, v] of c.req.raw.headers.entries()) {
+  for (const [k, v] of req.headers.entries()) {
     headers[k] = v;
   }
   for (const h of HOP_BY_HOP) headers[h] = undefined;
-  headers["cookie"] = forwardCookie(c.req.header("cookie"));
+  headers["cookie"] = forwardCookie(req.headers.get("cookie"));
   // DOMjudge processes X-Headers only at /login: inject the team credential
   // there so the team is logged in without typing a DOMjudge password.
   if (rest === "/login" || rest.startsWith("/login/")) {
@@ -97,9 +93,63 @@ export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamSto
     }
   }
   try {
-    return await proxy(target, { raw: c.req.raw, headers });
+    return await proxy(target, { raw: req, headers });
   } catch (err) {
     console.error(`dj proxy upstream error: ${target}`, err instanceof Error ? err.message : err);
-    return c.json({ ok: false, reason: "upstream error" }, 502);
+    return new Response(JSON.stringify({ ok: false, reason: "upstream error" }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
   }
+}
+
+export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamStore): Promise<Response> {
+  const token = getCookie(c.req.header("cookie"), "cxtool-token");
+  const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
+  if (!payload) {
+    // Teams are humans: send them to the verify page, where they type their
+    // team code (shown on screen) to start authentication.
+    return c.redirect(`${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`, 302);
+  }
+  const rest = proxyFilter(c, cfg);
+  if (rest === null) {
+    return c.json({ ok: false, reason: "not found" }, 404);
+  }
+  return forwardToDj(c.req.raw, cfg, teamStore, payload, rest);
+}
+
+/**
+ * Reverse-proxy any path outside the admin contextPath directly to DOMjudge,
+ * with the same team-token semantics as /dj/*: a valid team cookie is
+ * forwarded upstream, anything else is sent to the team verify page.
+ */
+export async function handleRootDjProxy(req: Request, cfg: Config, teamStore?: TeamStore): Promise<Response> {
+  const token = getCookie(req.headers.get("cookie"), "cxtool-token");
+  const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
+  if (!payload) {
+    const location = `${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`;
+    return Response.redirect(new URL(location, req.url).toString(), 302);
+  }
+  return forwardToDj(req, cfg, teamStore, payload, new URL(req.url).pathname);
+}
+
+type HonoLike = { fetch: (req: Request) => Promise<Response> | Response };
+
+/**
+ * Dispatcher for Bun.serve: paths inside the admin contextPath go to the
+ * Hono app; everything else falls through to the DOMjudge root proxy.
+ */
+export function makeRootDispatch(
+  serving: HonoLike,
+  cfg: Config,
+  teamStore?: TeamStore,
+): (req: Request) => Promise<Response> {
+  const prefix = cfg.contextPath.replace(/\/+$/, "");
+  return async (req) => {
+    const path = new URL(req.url).pathname;
+    if (prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+      return serving.fetch(req);
+    }
+    return handleRootDjProxy(req, cfg, teamStore);
+  };
 }

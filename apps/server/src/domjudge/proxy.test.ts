@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { loadConfig } from "../config";
 import { signAdminToken, signTeamToken } from "../auth/token";
 import { createApp } from "../server";
+import { handleRootDjProxy, makeRootDispatch } from "./proxy";
 import { SecretBox } from "../store/secretbox";
 import { setDataDir } from "../store/store";
 import { TeamStore } from "../store/teams";
@@ -171,6 +172,46 @@ describe("DOMjudge reverse proxy", () => {
     const token = await signTeamToken(SECRET, 3600, "2025 001\t");
     await app.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
     expect(lastReq?.headers["x-domjudge-login"]).toBe("2025001");
+  });
+
+  describe("root DOMjudge proxy (outside contextPath)", () => {
+    test("valid team token forwards the root path to upstream", async () => {
+      const token = await signTeamToken(SECRET, 3600, "2025001");
+      const res = await handleRootDjProxy(
+        new Request(`http://127.0.0.1:${upstreamPort}/some/dj/page`, { headers: { cookie: `cxtool-token=${token}` } }),
+        makeCfg("/wxt"),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ echo: "upstream-ok" });
+      expect(lastReq?.path).toBe("/some/dj/page");
+    });
+
+    test("missing token redirects to the team verify page like /dj/*", async () => {
+      const res = await handleRootDjProxy(
+        new Request(`http://127.0.0.1:${upstreamPort}/scoreboard`),
+        makeCfg("/wxt"),
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")?.endsWith("/wxt/dj/verify")).toBe(true);
+      expect(hits).toBe(0);
+    });
+
+    test("dispatcher keeps the contextPath admin UI intact and proxies the rest", async () => {
+      const app = createApp(makeCfg("/wxt"), { teamStore: testStore() });
+      const serving = new Hono().route("/wxt", app);
+      const dispatch = makeRootDispatch(serving, makeCfg("/wxt"));
+      // /wxt paths reach the admin app, not the proxy
+      const adminRes = await dispatch(new Request(`http://127.0.0.1:${upstreamPort}/wxt/login`, { redirect: "manual" }));
+      expect(hits).toBe(0);
+      expect(adminRes.status).not.toBe(302);
+      // root paths reach the proxy
+      const token = await signTeamToken(SECRET, 3600, "2025001");
+      const proxied = await dispatch(
+        new Request(`http://127.0.0.1:${upstreamPort}/api/contests`, { headers: { cookie: `cxtool-token=${token}` } }),
+      );
+      expect(proxied.status).toBe(200);
+      expect(lastReq?.path).toBe("/api/contests");
+    });
   });
 
   test("non-/login paths do NOT get X-Headers injected", async () => {

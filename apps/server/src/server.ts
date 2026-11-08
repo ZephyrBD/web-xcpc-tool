@@ -332,7 +332,17 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         const user = await client.getUserByUsername(icpcId);
         if (!user) {
           skipped++;
-          errors.push({ icpcId, reason: "DOMjudge 中没有该用户名的账号" });
+          errors.push({ icpcId, reason: "user not found in DOMjudge" });
+          continue;
+        }
+        // Hard guard after the demo-API incident: only exact team accounts
+        // may be PATCHed, no matter what the API returned.
+        const roles = Array.isArray(user.roles) ? user.roles : [];
+        const usernameMatches = user.username === icpcId;
+        const teamOnly = roles.length > 0 && roles.every((r) => r === "team");
+        if (!usernameMatches || !teamOnly) {
+          skipped++;
+          errors.push({ icpcId, reason: "refusing non-team user" });
           continue;
         }
         await client.patchUserPassword(user.id, password);
