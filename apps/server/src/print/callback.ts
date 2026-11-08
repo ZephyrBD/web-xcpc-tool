@@ -43,12 +43,28 @@ export async function handlePrintCallback(c: Context, cfg: Config, queue: PrintQ
   const pdfPath = join(pdfDir, `${id}.pdf`);
   writeFileSync(pdfPath, pdf);
 
+  // Archive the raw uploaded source (non-PDF uploads) so the admin print flow
+  // can re-render it as an HTML document (Chromium's iframe PDF viewer can't
+  // be printed programmatically, but document.write HTML can). Same filename
+  // sanitization as the /pdf route.
+  let sourcePath: string | undefined;
+  if (raw.subarray(0, 5).toString("ascii") !== "%PDF-") {
+    const originalName = file.name || String(form.get("original") ?? "") || "source.txt";
+    const sanitized = originalName.replace(/[^\w.\-]+/g, "_") || "source.txt";
+    const sourceDir = join(dataDir, "printed", id);
+    mkdirSync(sourceDir, { recursive: true });
+    sourcePath = join(sourceDir, sanitized);
+    writeFileSync(sourcePath, raw);
+  }
+
   const task = queue.add({
+    id,
     location: String(form.get("location") ?? ""),
     teamName: String(form.get("teamname") ?? ""),
     teamId: String(form.get("teamid") ?? ""),
     originalFilename: file.name || String(form.get("original") ?? ""),
     pdfPath,
+    sourcePath,
   });
   return c.json(task);
 }

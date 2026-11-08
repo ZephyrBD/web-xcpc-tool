@@ -1,4 +1,4 @@
-import type { DjClient, DjProblem, DjTeam } from "../domjudge/client";
+import type { DjBalloon, DjClient, DjProblem, DjTeam } from "../domjudge/client";
 import type { SseBus } from "../sse/bus";
 import type { JsonStore } from "../store/store";
 
@@ -10,6 +10,8 @@ export type BalloonTask = {
   location: string | null;
   status: "pending" | "delivered";
   createdAt: string;
+  /** DOMjudge balloon id (balloons API) matched at poll time; null when unmatched or pre-plumbing data. */
+  balloonId?: number | null;
 };
 
 export type BalloonServiceDeps = {
@@ -139,24 +141,19 @@ export class BalloonService {
   }
 
   /**
-   * Resolve the balloon for the task's team + problem and POST done.
+   * Resolve the balloon for the task's team + problem and POST done. When the
+   * task carries a balloonId matched at poll time it is used directly; the
+   * ad-hoc match below is the fallback for tasks created before that
+   * plumbing (or whose balloon wasn't visible at poll time).
    * Matching rule (review fix): a team can hold several pending balloons at
    * once, so matching on teamid alone marks the wrong balloon; we additionally
    * require a not-yet-done entry and the same problem label (falling back to
    * the raw problem id when the API omits contestproblem.label). Skipped
    * (logged, no sync) when the team or the balloon can't be matched.
    */
-  private async syncBalloonDone(task: BalloonTask): Promise<void> {
-    const team =
-      this.teams.find((t) => t.name === task.teamName || t.display_name === task.teamName) ??
-      this.teams.find((t) => t.id === task.teamName);
-    if (!team) {
-      console.error(`balloon ack: no team matches "${task.teamName}", skipping domjudge balloon sync`);
-      return;
-    }
-    const balloons = await this.client.getBalloons(this.contestId);
-    const balloon = balloons.find((b) => {
-      if (b.teamid !== team.id || b.done) return false;
+  private matchBalloon(teamId: string, problemLabel: string, balloons: DjBalloon[]): DjBalloon | undefined {
+    return balloons.find((b) => {
+      if (b.teamid !== teamId || b.done) return false;
       // Prefer the API's own label; else derive it from the problem id via the
       // refreshed problems list; else compare raw ids (tasks created before a
       // sync hold the raw problem id as their label).
@@ -165,8 +162,42 @@ export class BalloonService {
         this.problems.find((p) => p.id === (b.problem ?? b.problemid))?.label ??
         b.problem ??
         b.problemid;
-      return label === task.problemLabel;
+      return label === problemLabel;
     });
+  }
+
+  private static toBalloonId(balloonid: string): number | null {
+    const n = Number(balloonid);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** Balloon sync is auxiliary to the local ack; an API failure must not break polling. */
+  private async fetchBalloonsSafe(): Promise<DjBalloon[]> {
+    try {
+      return await this.client.getBalloons(this.contestId);
+    } catch (err) {
+      console.error(
+        `balloon poll: could not fetch balloons for contest ${this.contestId}, proceeding without balloon ids:`,
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  private async syncBalloonDone(task: BalloonTask): Promise<void> {
+    if (task.balloonId != null) {
+      await this.client.markBalloonDone(this.contestId, String(task.balloonId));
+      return;
+    }
+    const team =
+      this.teams.find((t) => t.name === task.teamName || t.display_name === task.teamName) ??
+      this.teams.find((t) => t.id === task.teamName);
+    if (!team) {
+      console.error(`balloon ack: no team matches "${task.teamName}", skipping domjudge balloon sync`);
+      return;
+    }
+    const balloons = await this.client.getBalloons(this.contestId);
+    const balloon = this.matchBalloon(team.id, task.problemLabel, balloons);
     if (!balloon) {
       console.error(
         `balloon ack: no pending balloon for team ${team.id} problem ${task.problemLabel} in contest ${this.contestId}, skipping domjudge balloon sync`,
@@ -197,11 +228,12 @@ export class BalloonService {
 
   /** Fetch judgements once and enqueue balloons for new correct submissions. Returns the number created. */
   async pollOnce(): Promise<number> {
-    const [judgings, judgementTypes, submissions, problems] = await Promise.all([
+    const [judgings, judgementTypes, submissions, problems, balloons] = await Promise.all([
       this.client.getJudgings(this.contestId),
       this.client.getJudgementTypes(this.contestId),
       this.client.getSubmissions(this.contestId),
       this.ensureProblems(),
+      this.fetchBalloonsSafe(),
     ]);
 
     const correctTypeIds = new Set(
@@ -222,20 +254,41 @@ export class BalloonService {
       if (!correctTypeIds.has(j.judgement_type_id)) continue;
       const sub = submissionsById.get(j.submission);
       if (!sub || existingIds.has(sub.id)) continue;
+      const problemLabel =
+        problems.find((p) => p.id === sub.problem)?.label ?? sub.problem;
+      const matched = this.matchBalloon(sub.team, problemLabel, balloons);
       // One balloon per submission id: the task id is the submission id, so
       // re-judgings of the same submission can never create a second balloon.
       const task: BalloonTask = {
         id: sub.id,
         contestId: this.contestId,
-        problemLabel:
-          problems.find((p) => p.id === sub.problem)?.label ?? sub.problem,
+        problemLabel,
         teamName: this.teams.find((t) => t.id === sub.team)?.name ?? sub.team,
         location: this.teams.find((t) => t.id === sub.team)?.location?.description ?? null,
         status: "pending",
         createdAt: new Date().toISOString(),
+        balloonId: matched ? BalloonService.toBalloonId(matched.balloonid) : null,
       };
       existingIds.add(task.id);
       created.push(task);
+    }
+
+    // Backfill: tasks stored before the balloonid plumbing (or polled while
+    // the balloons API was down) get their balloonId matched on later polls.
+    // Pending only — a delivered task must not gain an id that a later ack
+    // would mark done again.
+    if (balloons.length > 0 && existingIds.size > 0) {
+      this.store.update((cur) =>
+        cur.map((t) => {
+          if (t.status !== "pending" || t.balloonId != null) return t;
+          const team =
+            this.teams.find((x) => x.name === t.teamName || x.display_name === t.teamName) ??
+            this.teams.find((x) => x.id === t.teamName);
+          if (!team) return t;
+          const b = this.matchBalloon(team.id, t.problemLabel, balloons);
+          return b ? { ...t, balloonId: BalloonService.toBalloonId(b.balloonid) } : t;
+        }),
+      );
     }
 
     if (created.length === 0) return 0;

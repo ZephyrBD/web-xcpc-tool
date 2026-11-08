@@ -18,6 +18,8 @@ export interface BalloonTask {
   location: string | null
   status: 'pending' | 'delivered'
   createdAt: string
+  /** DOMjudge balloon id matched at poll time; null/absent when unmatched. */
+  balloonId?: number | null
 }
 
 export interface Team {

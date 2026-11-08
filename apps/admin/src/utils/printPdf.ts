@@ -1,61 +1,33 @@
 /**
- * Fetches a print task's PDF with the admin auth header (a popup window
- * cannot set Authorization headers either, so a plain URL won't do), loads
- * it into a real popup window via an object URL, and triggers the browser
- * print dialog. The object URL is revoked afterwards.
+ * Prints a print-task's archived source as an HTML document inside a hidden
+ * iframe. The server renders GET /admin/api/print-tasks/:id/source-html
+ * (formatted code + per-page header/footer); the HTML TEXT is written into
+ * the iframe via document.write and print() is called on the frame window.
  *
- * Why a popup and not a hidden iframe: Chromium renders PDFs in its
- * built-in PDF viewer plugin inside the frame. The plugin document is not
- * a normal document, so the iframe's `load` event never fires for our
- * listener — the print call never happened and afterprint never fired
- * (root cause of the silent "打印 does nothing" bug). A popup window is a
- * real window context: its `load` fires and print()/afterprint work.
+ * Why document.write HTML and not the PDF blob: Chromium renders PDFs in its
+ * built-in PDF viewer plugin inside the frame — a plugin document is not a
+ * normal document, so the iframe's `load` never fires and print()/afterprint
+ * are unreachable (root cause of the silent "打印 does nothing" bug). An HTML
+ * document written via document.write is a real document: load fires,
+ * print() works, afterprint confirms. The balloon ticket path already
+ * printed successfully this way — both task kinds share printViaIframe.
  *
- * The returned promise resolves ONLY on the browser's `afterprint`
- * event — the best-effort signal that the browser actually accepted
- * the print request (Chrome/Edge fire it when the job is submitted, not when
- * printing finishes; Firefox also fires it when the dialog is cancelled).
- * Callers treat resolution as "print confirmed" and may auto-ack the task.
- * Signals are layered (see confirmOnAfterprint): the POPUP window's
- * `afterprint`, the TOP (opener) window's `afterprint`, and the `print`
- * media query transition on the opener.
- *
- * Note: browsers may silently ignore print() without a prior user gesture
- * (relevant for SSE auto-print). That's accepted — worst case the promise
- * never resolves and the admin prints the task manually from the jobs list.
- * The popup also stays open with the PDF viewer's own print button, so the
- * admin can always print it by hand.
+ * The returned promise resolves ONLY on the layered confirmation
+ * (confirmOnAfterprint): true means confirmed (safe to ack), false means the
+ * 60s safety timeout elapsed (unconfirmed → do NOT ack). Browsers may
+ * silently ignore print() without a prior user gesture (relevant for
+ * SSE auto-print) — accepted, worst case the admin prints manually.
  */
-export type PdfApiFetch = <T>(path: string, opts?: { blob?: boolean }) => Promise<T>
 
 /** Safety timeout for the afterprint confirmation (unconfirmed → no ack). */
 const CONFIRM_TIMEOUT_MS = 60_000
 
-/**
- * Opens a print popup. Returns the real window context for the document to
- * print. Throws a friendly error when a popup blocker nulls the open (the
- * click-handler chain is a user gesture, so this mostly happens for
- * SSE-triggered auto-print without prior interaction).
- */
-export function openPrintPopup(url: string | undefined = undefined): Window {
-  const popWin = window.open(url ?? 'about:blank', '_blank', 'popup,width=900,height=700')
-  if (!popWin) throw new Error('弹窗被拦截，请允许弹窗后重试')
-  return popWin
-}
+/** Grace period after the print promise settles before the iframe is removed:
+ * the afterprint may still dispatch asynchronously, and an immediate teardown
+ * would kill the frame first. */
+const AFTERPRINT_GRACE_MS = 1_000
 
-/**
- * Drives the print dialog in an already-opened popup window: waits for the
- * popup's `load` (a real window context — unlike a hidden iframe loading a
- * PDF plugin document, this always fires), then hands the popup window to
- * confirmOnAfterprint, which calls print() and resolves on confirmation.
- */
-export function printViaPopup(popWin: Window): Promise<boolean> {
-  return new Promise((resolve) => {
-    const start = () => void confirmOnAfterprint(popWin).then(resolve)
-    if (popWin.document.readyState === 'complete') start()
-    else popWin.addEventListener('load', start, { once: true })
-  })
-}
+export type PrintApiFetch = <T>(path: string, opts?: { blob?: boolean; text?: boolean }) => Promise<T>
 
 /**
  * Calls the window's print() and resolves once the browser confirms
@@ -117,7 +89,7 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
       detachPrintMedia()
       resolve(confirmed)
     }
-    const onAfterprint = () => settle(true, 'afterprint on ' + (win === window ? 'top' : 'popup'))
+    const onAfterprint = () => settle(true, 'afterprint on ' + (win === window ? 'top' : 'frame'))
     for (const t of targets) t.addEventListener('afterprint', onAfterprint)
     // happy-dom (test env) has no window.print; real browsers always do.
     if (typeof win.print === 'function') {
@@ -130,41 +102,71 @@ export function confirmOnAfterprint(win: Window, timeoutMs = CONFIRM_TIMEOUT_MS)
   })
 }
 
-/** Grace period after the print promise settles before the popup is closed
- * and the object URL revoked: the afterprint may still dispatch
- * asynchronously, and an immediate teardown would kill the window first. */
-const AFTERPRINT_GRACE_MS = 1_000
-
-export async function printPdfTask(id: string, apiFetch: PdfApiFetch): Promise<boolean> {
-  const blob = await apiFetch<Blob>(`/admin/api/print-tasks/${id}/pdf`, { blob: true })
-  const url = URL.createObjectURL(blob)
-  try {
-    return await printBlobUrl(url)
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(url), AFTERPRINT_GRACE_MS)
-  }
+/**
+ * Shared print flow for both task kinds: writes an HTML document into a
+ * fresh hidden iframe (document.write — the proven mechanics from the
+ * balloon ticket path), calls print() on the frame window once the write's
+ * load has landed, and resolves on the layered confirmation. The iframe is
+ * removed after a grace delay so an async afterprint still lands.
+ */
+export function printViaIframe(html: string, timeoutMs = CONFIRM_TIMEOUT_MS): Promise<boolean> {
+  return new Promise((resolve) => {
+    const frame = document.createElement('iframe')
+    frame.setAttribute('aria-hidden', 'true')
+    const style = frame.style
+    style.position = 'fixed'
+    style.width = '0'
+    style.height = '0'
+    style.border = '0'
+    style.visibility = 'hidden'
+    const cleanup = () => {
+      if (frame.parentNode) frame.parentNode.removeChild(frame)
+    }
+    const start = () => {
+      const win = frame.contentWindow
+      if (!win) {
+        resolve(false)
+        return
+      }
+      void confirmOnAfterprint(win, timeoutMs).then((confirmed) => {
+        window.setTimeout(cleanup, AFTERPRINT_GRACE_MS)
+        resolve(confirmed)
+      })
+    }
+    document.body.appendChild(frame)
+    const doc = frame.contentDocument
+    if (!doc) {
+      resolve(false)
+      return
+    }
+    doc.open()
+    doc.write(html)
+    doc.close()
+    // The write triggers an async load; if the document already reports
+    // complete, start immediately. A short fallback covers environments
+    // where the frame's load event never lands (after close() the document
+    // is fully parsed, so printing then is safe).
+    frame.addEventListener('load', start, { once: true })
+    if (doc.readyState === 'complete') start()
+    else window.setTimeout(start, 100)
+  })
 }
 
 /**
- * Prints an already-created object URL in a print popup: opens the window,
- * focuses it, waits for `load`, calls print(), and resolves on the layered
- * afterprint/matchMedia confirmation (see confirmOnAfterprint). The popup is
- * closed after a grace delay so an async afterprint still lands. Separated
- * from printPdfTask so tests can exercise the full popup flow against the
- * real implementation while the fetch/object-URL plumbing stays thin.
+ * Fetches the task's print-ready HTML from the server and prints it via the
+ * hidden-iframe flow. Throws a distinguishable error for tasks archived
+ * before source archival existed (or PDF-only uploads) so the caller can
+ * surface "旧任务没有留档，请手动标记" instead of a generic failure.
  */
-export async function printBlobUrl(url: string): Promise<boolean> {
-  const popWin = openPrintPopup(url)
+export async function printPdfTask(id: string, apiFetch: PrintApiFetch): Promise<boolean> {
+  let html: string
   try {
-    if (typeof popWin.focus === 'function') popWin.focus()
-    return await printViaPopup(popWin)
-  } finally {
-    window.setTimeout(() => {
-      try {
-        popWin.close()
-      } catch {
-        // the popup may already be gone; nothing to clean up
-      }
-    }, AFTERPRINT_GRACE_MS)
+    html = await apiFetch<string>(`/admin/api/print-tasks/${id}/source-html`, { text: true })
+  } catch (e) {
+    if (e && typeof e === 'object' && (e as { status?: unknown }).status === 404) {
+      throw new Error('旧任务没有留档，请手动标记')
+    }
+    throw e
   }
+  return printViaIframe(html)
 }

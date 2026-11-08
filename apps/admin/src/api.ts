@@ -18,6 +18,8 @@ export interface ApiFetchOptions extends RequestInit {
   skipAuthRedirect?: boolean
   /** Return the response body as a Blob instead of parsed JSON (binary downloads, e.g. PDFs). */
   blob?: boolean
+  /** Return the response body as raw text (e.g. the print source-html document). */
+  text?: boolean
 }
 
 export class ApiError extends Error {
@@ -32,7 +34,7 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
-  const { query, headers, skipAuthRedirect, blob, ...rest } = opts
+  const { query, headers, skipAuthRedirect, blob, text, ...rest } = opts
   const url = new URL(`/wxt${path}`, window.location.origin)
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -64,5 +66,6 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
   }
   if (res.status === 204) return undefined as T
   if (blob) return (await res.blob()) as T
+  if (text) return (await res.text()) as T
   return (await res.json()) as T
 }

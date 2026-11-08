@@ -93,6 +93,7 @@ function makeFetch(overrides: {
   judgements?: DjJudging[];
   failJudgementsTimes?: number;
   failProblemsTimes?: number;
+  balloons?: Array<{ balloonid: string; teamid: string; problem?: string; contestproblem?: { label?: string }; done?: boolean }>;
 } = {}) {
   let failCount = overrides.failJudgementsTimes ?? 0;
   let failProblems = overrides.failProblemsTimes ?? 0;
@@ -108,6 +109,7 @@ function makeFetch(overrides: {
       }
       return body([{ id: "p1", label: "A", name: "Alpha" }]);
     }
+    if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) return body(overrides.balloons ?? []);
     if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) {
       if (failCount > 0) {
         failCount--;
@@ -229,6 +231,83 @@ describe("BalloonService", () => {
     expect(scheduled[2].ms).toBe(40_000);
     expect(scheduled[2].ms).toBeGreaterThanOrEqual(20_000);
     expect(scheduled[3].ms).toBe(10_000);
+  });
+
+  test("pollOnce stores the matching balloonId on the new task", async () => {
+    const { svc } = makeService(makeFetch({
+      balloons: [
+        { balloonid: "11", teamid: "t2", problem: "p1", done: false },
+        { balloonid: "5", teamid: "t1", problem: "p1", done: true }, // already done — skipped
+        { balloonid: "7", teamid: "t1", problem: "p1", done: false },
+      ],
+    }));
+    await svc.pollOnce();
+    expect(svc.list()[0]).toMatchObject({ id: "s1", balloonId: 7 });
+  });
+
+  test("pollOnce stores null balloonId when no balloon matches", async () => {
+    const { svc } = makeService(makeFetch({ balloons: [] }));
+    await svc.pollOnce();
+    expect(svc.list()[0].balloonId).toBeNull();
+  });
+
+  test("tasks stored without a balloonId are backfilled on the next poll", async () => {
+    const { svc, store } = makeService(makeFetch({
+      balloons: [{ balloonid: "7", teamid: "t1", problem: "p1", done: false }],
+    }));
+    store.update((cur) => [
+      ...cur,
+      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString() },
+    ]);
+    await svc.pollOnce();
+    const s9 = svc.list().find((t) => t.id === "s9");
+    expect(s9?.balloonId).toBe(7);
+  });
+
+  test("backfill skips delivered tasks and tasks that already carry a balloonId", async () => {
+    const { svc, store } = makeService(makeFetch({
+      balloons: [{ balloonid: "7", teamid: "t1", problem: "p1", done: false }],
+    }));
+    store.update((cur) => [
+      ...cur,
+      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "delivered", createdAt: new Date().toISOString() },
+      { id: "s8", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString(), balloonId: 3 },
+    ]);
+    await svc.pollOnce();
+    expect(svc.list().find((t) => t.id === "s9")?.balloonId).toBeUndefined();
+    expect(svc.list().find((t) => t.id === "s8")?.balloonId).toBe(3);
+  });
+
+  test("ack uses the stored balloonId directly without ad-hoc balloon matching", async () => {
+    const gets: string[] = [];
+    const posts: string[] = [];
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (method === "GET") gets.push(u);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && method === "POST") {
+        posts.push(u);
+        return body({ ok: true });
+      }
+      // Deliberately WRONG data: ad-hoc matching would pick balloon 99, not 7.
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        return body([{ balloonid: "99", teamid: "t1", problem: "p1", done: false }]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc, store } = makeService(fetchImpl);
+    store.update((cur) => [
+      ...cur,
+      { id: "s1", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString(), balloonId: 7 },
+    ]);
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
+    expect(gets.some((u) => u.includes("/balloons"))).toBe(false);
   });
 
   test("ack transitions pending task to delivered; unknown id returns null", async () => {

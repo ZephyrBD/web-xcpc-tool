@@ -11,6 +11,8 @@ export type PrintTask = {
   originalFilename: string;
   status: PrintTaskStatus;
   pdfPath: string;
+  /** Server-local archive of the raw uploaded source; absent for PDF uploads and legacy tasks. */
+  sourcePath?: string;
   createdAt: string;
 };
 
@@ -22,10 +24,10 @@ export class PrintQueue {
     this.store = new JsonStore<PrintTask[]>(filePath, []);
   }
 
-  add(t: Omit<PrintTask, "id" | "status" | "createdAt">): PrintTask {
+  add(t: Omit<PrintTask, "id" | "status" | "createdAt"> & { id?: string }): PrintTask {
     const task: PrintTask = {
       ...t,
-      id: randomUUID(),
+      id: t.id ?? randomUUID(),
       status: "pending",
       createdAt: new Date().toISOString(),
     };

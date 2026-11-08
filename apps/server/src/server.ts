@@ -8,6 +8,7 @@ import { verifyTeamCode } from "./domjudge/verify";
 import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
+import { buildSourceHtml } from "./print/sourceHtml";
 import type { BalloonService } from "./balloon/service";
 import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
@@ -116,9 +117,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   app.get("/admin/api/print-tasks", (c) => {
     const status = c.req.query("status");
     const valid = ["pending", "printed", "failed"] as const;
-    // pdfPath is server-local; never expose it to the admin UI.
+    // pdfPath/sourcePath are server-local; never expose them to the admin UI.
     return c.json(
-      printQueue.list(valid.includes(status as never) ? (status as never) : undefined).map(({ pdfPath: _p, ...t }) => t),
+      printQueue.list(valid.includes(status as never) ? (status as never) : undefined).map(({ pdfPath: _p, sourcePath: _s, ...t }) => t),
     );
   });
 
@@ -127,7 +128,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const status = body?.status === "failed" ? "failed" : "printed";
     const t = printQueue.ack(c.req.param("id"), status);
     if (!t) return c.json({ error: "task not found" }, 404);
-    const { pdfPath: _p, ...safe } = t;
+    const { pdfPath: _p, sourcePath: _s, ...safe } = t;
     return c.json(safe);
   });
 
@@ -150,6 +151,26 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         "content-type": "application/pdf",
         "content-disposition": `inline; filename="${filename}"`,
       },
+    });
+  });
+
+  // Print-ready HTML for the archived source (hidden-iframe flow — Chromium's
+  // iframe PDF viewer plugin never fires load/print, an HTML document does).
+  // sourcePath is server-internal, re-validated here like pdfPath.
+  app.get("/admin/api/print-tasks/:id/source-html", (c) => {
+    const t = printQueue.list().find((x) => x.id === c.req.param("id"));
+    if (!t) return c.json({ error: "task not found" }, 404);
+    if (!t.sourcePath) return c.json({ error: "source not archived" }, 404);
+    const printedDir = resolve(join(dataDir, "printed"));
+    const filePath = resolve(t.sourcePath);
+    if (filePath !== printedDir && !filePath.startsWith(printedDir + sep)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      return c.json({ error: "source not found" }, 404);
+    }
+    return new Response(buildSourceHtml(t, readFileSync(filePath, "utf8")), {
+      headers: { "content-type": "text/html; charset=utf-8" },
     });
   });
 

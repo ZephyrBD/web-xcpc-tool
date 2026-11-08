@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
@@ -12,14 +12,26 @@ mock.module('element-plus', () => ({
 }))
 
 const printPdfTaskMock = mock((_id: string, _apiFetch: unknown) => Promise.resolve(true))
-// Spread the real module so other importers (printBalloon → openPrintPopup /
-// printViaPopup) keep working while printPdfTask itself is mocked.
+// Spread the real module so other importers (printBalloon → printViaIframe)
+// keep working while printPdfTask itself is mocked. Pristine copies are taken
+// BEFORE mock.module: it mutates the shared namespace in place, so a later
+// spread would re-register the mocks (see the afterAll below).
 import * as realPrintPdf from '@/utils/printPdf'
-mock.module('@/utils/printPdf', () => ({ ...realPrintPdf, printPdfTask: printPdfTaskMock }))
+const pristinePrintPdf = { ...realPrintPdf }
+mock.module('@/utils/printPdf', () => ({ ...pristinePrintPdf, printPdfTask: printPdfTaskMock }))
 
 const printBalloonTaskMock = mock((_task: unknown, _apiFetch: unknown) => Promise.resolve(true))
 import * as realPrintBalloon from '@/utils/printBalloon'
-mock.module('@/utils/printBalloon', () => ({ ...realPrintBalloon, printBalloonTask: printBalloonTaskMock }))
+const pristinePrintBalloon = { ...realPrintBalloon }
+mock.module('@/utils/printBalloon', () => ({ ...pristinePrintBalloon, printBalloonTask: printBalloonTaskMock }))
+
+// Module mocks are process-wide in bun and leak into files that run later
+// (utils/printPdf.test.ts exercises the REAL printPdfTask); re-register the
+// real implementations when this file is done.
+afterAll(() => {
+  mock.module('@/utils/printPdf', () => ({ ...pristinePrintPdf }))
+  mock.module('@/utils/printBalloon', () => ({ ...pristinePrintBalloon }))
+})
 
 const { default: JobsPage } = await import('./JobsPage.vue')
 
@@ -325,6 +337,22 @@ describe('JobsPage', () => {
     const ackCall = calls.find((c) => c.method === 'POST' && c.path.endsWith('/b1/ack'))
     expect(ackCall).toBeDefined()
     expect(wrapper.findAll('.pill--delivered').length).toBe(1)
+  })
+
+  test('气球任务 table shows the balloon id column with a dash fallback', async () => {
+    balloonTasks = [makeBalloonTask('b1', { balloonId: 7 }), makeBalloonTask('b2')]
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]
+    expect(balloonPane!.text()).toContain('气球 ID')
+    expect(balloonPane!.text()).toContain('7')
+    expect(balloonPane!.text()).toContain('—')
   })
 
   test('blocked popup: the friendly 弹窗 toast shows and nothing acks (print task)', async () => {

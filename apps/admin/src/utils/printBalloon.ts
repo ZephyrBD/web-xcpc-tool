@@ -1,10 +1,12 @@
 /**
- * Prints a balloon ticket via a popup window: builds the plain-text ticket
- * HTML from the task, writes it into the popup's document, and triggers the
- * browser print dialog — the same ticket layout as the legacy Java admin
- * UI (vue/src/utils/print.js). Uses the same popup flow as PDF printing so
- * the behavior (print dialog, afterprint confirmation, popup handling) is
- * uniform for both task kinds.
+ * Prints a balloon ticket as an HTML document in a hidden iframe: builds the
+ * plain-text ticket HTML from the task, writes it into the iframe's document
+ * via document.write, and triggers the browser print dialog — the same
+ * ticket layout as the legacy Java admin UI (vue/src/utils/print.js). Uses
+ * the same iframe flow as source printing (printViaIframe) so the behavior
+ * (print dialog, afterprint confirmation, cleanup) is uniform for both task
+ * kinds; document.write HTML is the mechanics that actually works in
+ * Chromium frames (a PDF plugin document never fires load/print).
  *
  * Note: browsers may silently ignore print() when there was no prior user
  * gesture (relevant for SSE auto-print). That's accepted — worst case the
@@ -14,7 +16,7 @@
  * see confirmOnAfterprint), which callers use to auto-ack the balloon
  * as delivered.
  */
-import { openPrintPopup, printViaPopup } from '@/utils/printPdf'
+import { printViaIframe } from '@/utils/printPdf'
 import type { BalloonTask } from '@/types'
 
 /** Local time as HH:mm; falls back to the raw string for unparseable input. */
@@ -59,22 +61,5 @@ export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): 
   </head>
   <body><pre>${escapeHtml(generateBalloonTicket(task))}</pre></body>
 </html>`
-  const popWin = openPrintPopup()
-  try {
-    popWin.document.open()
-    popWin.document.write(html)
-    popWin.document.close()
-    // Resolves true only on `afterprint` (browser confirmed the print job;
-    // Firefox also fires it when the dialog is cancelled) — callers may
-    // auto-ack the delivery. False on the confirmation timeout: no ack.
-    return await printViaPopup(popWin)
-  } finally {
-    window.setTimeout(() => {
-      try {
-        popWin.close()
-      } catch {
-        // the popup may already be gone; nothing to clean up
-      }
-    }, 1_000)
-  }
+  return printViaIframe(html)
 }

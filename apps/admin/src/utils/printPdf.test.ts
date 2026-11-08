@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { confirmOnAfterprint, openPrintPopup, printBlobUrl, printViaPopup } from '@/utils/printPdf'
+import { confirmOnAfterprint, printPdfTask, printViaIframe } from '@/utils/printPdf'
 
 /** Controllable MediaQueryList stub matching the real browser API surface. */
 function makeFakeMql() {
@@ -27,57 +27,10 @@ function makeFakeMql() {
 const originalMatchMedia = window.matchMedia
 afterEach(() => {
   window.matchMedia = originalMatchMedia
+  document.querySelectorAll('iframe').forEach((f) => f.remove())
 })
 
-/** Minimal EventTarget-like popup window with a document stub and print(). */
-function makeFakeWindow(opts: { readyState?: string } = {}): Window & {
-  printCount: number
-  document: { readyState: string; open: () => void; write: (s: string) => void; close: () => void }
-  close: () => void
-  closed: () => boolean
-  fire: (name: string) => void
-} {
-  const listeners: Record<string, Array<() => void>> = {}
-  const win: any = {
-    printCount: 0,
-    document: {
-      readyState: opts.readyState ?? 'complete',
-      open() {},
-      write(_html: string) {},
-      close() {},
-    },
-    print() {
-      win.printCount++
-    },
-    addEventListener(name: string, fn: () => void) {
-      ;(listeners[name] ??= []).push(fn)
-    },
-    removeEventListener(name: string, fn: () => void) {
-      const a = listeners[name]
-      if (a) {
-        const i = a.indexOf(fn)
-        if (i >= 0) a.splice(i, 1)
-      }
-    },
-    fire(name: string) {
-      for (const fn of [...(listeners[name] ?? [])]) fn()
-    },
-  }
-  win.close = () => {
-    win._closed = true
-  }
-  win.closed = () => win._closed === true
-  return win
-}
-
-const originalWindowOpen = window.open
-const originalCreateObjectURL = URL.createObjectURL
-const originalRevokeObjectURL = URL.revokeObjectURL
-afterEach(() => {
-  window.open = originalWindowOpen
-  URL.createObjectURL = originalCreateObjectURL
-  URL.revokeObjectURL = originalRevokeObjectURL
-})
+const PRINT_HTML = '<html><body><pre>int main(){}</pre></body></html>'
 
 describe('confirmOnAfterprint', () => {
   test('calls print and resolves true only on the afterprint event', async () => {
@@ -159,71 +112,101 @@ describe('confirmOnAfterprint', () => {
     expect(await p).toBe(false)
   })
 
-  test('print() returning synchronously does not close the popup before afterprint fires', async () => {
+  test('print() returning synchronously does not remove the iframe before afterprint fires', async () => {
     // Real-browser race: Chromium's print() blocks until the dialog closes,
     // then afterprint dispatches ASYNC. Any cleanup that runs right when
-    // print() returns would close the popup before the event arrives.
-    const popWin = makeFakeWindow()
-    const p = confirmOnAfterprint(popWin)
+    // print() returns would kill the frame before the event arrives.
+    const win = makeFakeWindow()
+    const p = confirmOnAfterprint(win)
     await Promise.resolve()
-    expect(popWin.closed()).toBe(false)
-    popWin.fire('afterprint')
+    expect(document.querySelectorAll('iframe')).toHaveLength(0)
+    win.fire('afterprint')
     expect(await p).toBe(true)
   })
 })
 
-describe('printViaPopup', () => {
-  test('waits for the popup load event, then prints on the popup window', async () => {
-    // Real-browser contract: a popup loading a PDF is a REAL window context —
-    // unlike a hidden iframe's PDF plugin document, its `load` always fires.
-    const popWin = makeFakeWindow({ readyState: 'loading' })
-    const p = printViaPopup(popWin)
-    await Promise.resolve()
-    expect(popWin.printCount).toBe(0) // load has not fired yet
-    popWin.fire('load')
-    expect(popWin.printCount).toBe(1)
-    popWin.fire('afterprint')
-    expect(await p).toBe(true)
-  })
+describe('printViaIframe', () => {
+  test('writes the html into a hidden iframe document and confirms on afterprint', async () => {
+    const p = printViaIframe(PRINT_HTML, 50)
+    await new Promise((r) => setTimeout(r, 0))
 
-  test('prints immediately when the popup document is already complete', async () => {
-    const popWin = makeFakeWindow({ readyState: 'complete' })
-    const p = printViaPopup(popWin)
-    expect(popWin.printCount).toBe(1)
-    popWin.fire('afterprint')
-    expect(await p).toBe(true)
-  })
-})
+    const frame = document.querySelector('iframe')
+    expect(frame).toBeDefined()
+    expect(frame!.getAttribute('aria-hidden')).toBe('true')
+    // The html was written into the frame document (document.write mechanics).
+    expect(frame!.contentDocument?.body?.textContent).toContain('int main(){}')
 
-describe('openPrintPopup', () => {
-  test('returns the popup window from window.open', () => {
-    const popWin = makeFakeWindow()
-    window.open = (() => popWin) as unknown as typeof window.open
-    expect(openPrintPopup('blob:x')).toBe(popWin)
-  })
-
-  test('a popup blocker (window.open → null) throws the friendly error', () => {
-    window.open = (() => null) as unknown as typeof window.open
-    expect(() => openPrintPopup()).toThrow('弹窗被拦截，请允许弹窗后重试')
-  })
-})
-
-describe('printBlobUrl (printPdfTask popup flow)', () => {
-  test('opens a popup with the URL, prints, and confirms on the popup afterprint', async () => {
-    const popWin = makeFakeWindow({ readyState: 'complete' })
-    window.open = (() => popWin) as unknown as typeof window.open
-    const p = printBlobUrl('blob:fake')
-    expect(popWin.printCount).toBe(1)
-    popWin.fire('afterprint')
+    window.dispatchEvent(new Event('afterprint'))
     expect(await p).toBe(true)
     // Cleanup runs after the afterprint grace delay, not synchronously.
-    expect(popWin.closed()).toBe(false)
+    expect(document.querySelector('iframe')).toBeDefined()
     await new Promise((r) => setTimeout(r, 1100))
-    expect(popWin.closed()).toBe(true)
+    expect(document.querySelector('iframe')).toBeNull()
   })
 
-  test('a blocked popup rejects with the friendly error', async () => {
-    window.open = (() => null) as unknown as typeof window.open
-    await expect(printBlobUrl('blob:fake')).rejects.toThrow('弹窗被拦截，请允许弹窗后重试')
+  test('confirmation timeout resolves false (no ack) and the iframe is removed', async () => {
+    const p = printViaIframe(PRINT_HTML, 10)
+    expect(await p).toBe(false)
+    await new Promise((r) => setTimeout(r, 1100))
+    expect(document.querySelector('iframe')).toBeNull()
   })
 })
+
+describe('printPdfTask (source-html iframe flow)', () => {
+  test('fetches the source-html text and prints it via the iframe flow', async () => {
+    const calls: Array<{ path: string; opts?: { text?: boolean; blob?: boolean } }> = []
+    const apiFetch = (async (path: string, opts?: { text?: boolean; blob?: boolean }) => {
+      calls.push({ path, opts })
+      return PRINT_HTML
+    }) as never
+    const p = printPdfTask('p1', apiFetch)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([{ path: '/admin/api/print-tasks/p1/source-html', opts: { text: true } }])
+    const frame = document.querySelector('iframe')
+    expect(frame?.contentDocument?.body?.textContent).toContain('int main(){}')
+    window.dispatchEvent(new Event('afterprint'))
+    expect(await p).toBe(true)
+  })
+
+  test('a 404 (legacy task without source archive) throws the friendly archival error', async () => {
+    const apiFetch = (async () => {
+      throw Object.assign(new Error('API error 404'), { status: 404 })
+    }) as never
+    await expect(printPdfTask('p-old', apiFetch)).rejects.toThrow('旧任务没有留档，请手动标记')
+  })
+
+  test('other fetch errors propagate unchanged', async () => {
+    const apiFetch = (async () => {
+      throw Object.assign(new Error('API error 500'), { status: 500 })
+    }) as never
+    await expect(printPdfTask('p1', apiFetch)).rejects.toThrow('API error 500')
+  })
+})
+
+/** Minimal EventTarget-like window with a document stub and print(). */
+function makeFakeWindow(): Window & {
+  printCount: number
+  fire: (name: string) => void
+} {
+  const listeners: Record<string, Array<() => void>> = {}
+  const win: any = {
+    printCount: 0,
+    print() {
+      win.printCount++
+    },
+    addEventListener(name: string, fn: () => void) {
+      ;(listeners[name] ??= []).push(fn)
+    },
+    removeEventListener(name: string, fn: () => void) {
+      const a = listeners[name]
+      if (a) {
+        const i = a.indexOf(fn)
+        if (i >= 0) a.splice(i, 1)
+      }
+    },
+    fire(name: string) {
+      for (const fn of [...(listeners[name] ?? [])]) fn()
+    },
+  }
+  return win
+}

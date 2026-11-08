@@ -14,8 +14,8 @@ const balloonTasks = ref<BalloonTask[]>([])
 const { page: printPage, pageSize: printPageSize, paged: pagedPrintTasks } = usePagination(printTasks)
 const { page: balloonPage, pageSize: balloonPageSize, paged: pagedBalloonTasks } = usePagination(balloonTasks)
 
-// 收到新任务自动打印：本地开关，默认关。打印走弹窗窗口（window.open），
-// 若被弹窗拦截或浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
+// 收到新任务自动打印：本地开关，默认关。打印走隐藏 iframe（document.write
+// HTML），若浏览器因缺少用户手势忽略打印请求，管理员可手动点「打印」。
 const AUTO_PRINT_KEY = 'cxtool_autoprint'
 const autoPrint = ref(localStorage.getItem(AUTO_PRINT_KEY) === '1')
 watch(autoPrint, (v) => localStorage.setItem(AUTO_PRINT_KEY, v ? '1' : '0'))
@@ -137,9 +137,11 @@ async function printRow(row: PrintTask): Promise<void> {
   try {
     await printAndAckPrintTask(row.id)
   } catch (e) {
-    // 弹窗拦截有专属提示；其余失败走通用文案（错误细节可能在内部日志里）
+    // 专属文案（弹窗拦截 / 旧任务无留档）原样提示；其余失败走通用文案
     ElMessage.error(
-      e instanceof Error && e.message.includes('弹窗') ? e.message : '打印没成功，请再试一次',
+      e instanceof Error && (e.message.includes('弹窗') || e.message.includes('留档'))
+        ? e.message
+        : '打印没成功，请再试一次',
     )
   }
 }
@@ -162,7 +164,9 @@ async function printBalloonRow(row: BalloonTask): Promise<void> {
     await printAndAckBalloonTask(row)
   } catch (e) {
     ElMessage.error(
-      e instanceof Error && e.message.includes('弹窗') ? e.message : '打印没成功，请再试一次',
+      e instanceof Error && (e.message.includes('弹窗') || e.message.includes('留档'))
+        ? e.message
+        : '打印没成功，请再试一次',
     )
   }
 }
@@ -249,6 +253,9 @@ onUnmounted(() => {
         <el-table :data="pagedBalloonTasks" height="100%">
           <el-table-column prop="problemLabel" label="题目" min-width="90" />
           <el-table-column prop="teamName" label="队伍" min-width="150" />
+          <el-table-column label="气球 ID" min-width="90">
+            <template #default="{ row }">{{ (row as BalloonTask).balloonId ?? '—' }}</template>
+          </el-table-column>
           <el-table-column label="位置" min-width="110">
             <template #default="{ row }">{{ row.location ?? '—' }}</template>
           </el-table-column>
