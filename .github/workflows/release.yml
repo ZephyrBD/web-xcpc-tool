@@ -1,0 +1,125 @@
+name: release
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            target: bun-windows-x64
+            binary: web-xcpc-tool.exe
+          - platform: linux-x64
+            target: bun-linux-x64
+            binary: web-xcpc-tool
+          - platform: linux-arm64
+            target: bun-linux-arm64
+            binary: web-xcpc-tool
+          - platform: macos-x64
+            target: bun-darwin-x64
+            binary: web-xcpc-tool
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The admin UI build output is served by the server binary from ./static
+      # next to the process cwd (see resolveStaticDir in apps/server/src/server.ts).
+      - name: build admin
+        working-directory: apps/admin
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: install server deps
+        working-directory: apps/server
+        run: bun install --frozen-lockfile
+
+      - name: compile server binary (${{ matrix.platform }})
+        working-directory: apps/server
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION:-$(git describe --tags --always)}"
+          mkdir -p dist/${{ matrix.platform }}
+          bun build --compile \
+            --target=${{ matrix.target }} \
+            --define "WXT_BUILD_VERSION:\"$version\"" \
+            src/index.ts \
+            --outfile dist/${{ matrix.platform }}/${{ matrix.binary }}
+
+      - name: package zip
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION:-$(git describe --tags --always)}"
+          pkg="web-xcpc-tool-${version}-${{ matrix.platform }}"
+          mkdir -p "pkg/${pkg}"
+          cp "apps/server/dist/${{ matrix.platform }}/${{ matrix.binary }}" "pkg/${pkg}/"
+          cp -r apps/server/static "pkg/${pkg}/static"
+          cp script/deploy/deploy.md "pkg/${pkg}/DEPLOY.md"
+          cp LICENSE "pkg/${pkg}/LICENSE"
+          ( cd pkg && zip -r "${pkg}.zip" "${pkg}" )
+          echo "PKG_ZIP=pkg/${pkg}.zip" >> "$GITHUB_ENV"
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-xcpc-tool-${{ matrix.platform }}
+          path: ${{ env.PKG_ZIP }}
+          retention-days: 7
+
+  release:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: pkg/
+
+      - name: build release notes
+        run: |
+          prev=$(git tag --sort=-creatordate | sed -n '2p')
+          {
+            echo "### 变更（${prev:-初始版本}..${GITHUB_REF_NAME}）"
+            echo
+            if [ -n "$prev" ]; then
+              git log --oneline "${prev}..${GITHUB_REF_NAME}"
+            else
+              git log --oneline
+            fi
+            echo
+            echo "### 包内容"
+            echo "每个 zip 内含：web-xcpc-tool 可执行文件、static/（管理端前端）、DEPLOY.md、LICENSE。"
+            echo "静态目录解析顺序：WXT_STATIC_DIR 环境变量 → 可执行文件旁的 ../static → 当前目录 ./static；"
+            echo "解压后在包根目录直接运行 web-xcpc-tool（Linux/macOS 先 chmod +x）即可。"
+          } > release-notes.md
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: pkg/*.zip
+          fail_on_unmatched_files: true

@@ -54,6 +54,23 @@ bun run src/index.ts                            # 或在仓库根目录 bun run 
 
 完整部署步骤（Windows / Linux、settings.json 配置、systemd 单元示例）见 [script/deploy/deploy.md](script/deploy/deploy.md)。
 
+## 打包发布
+
+推送到 `v*` 格式的 tag（如 `v1.0.0`）会触发 [release 工作流](.github/workflows/release.yml)：自动构建管理端前端、用 `bun build --compile` 交叉编译出 windows-x64 / linux-x64 / linux-arm64 / macos-x64 四个单文件可执行程序，连同 `static/`（管理端前端）、`DEPLOY.md`、`LICENSE` 打成 zip，并创建 GitHub Release（变更日志取自上一个 tag 到当前 tag 的 git log）。
+
+每个 zip 解压后在包根目录直接运行 `web-xcpc-tool`（Windows 为 `web-xcpc-tool.exe`，Linux/macOS 先 `chmod +x`）即可。静态目录解析顺序：
+
+1. 环境变量 `WXT_STATIC_DIR`
+2. 可执行文件旁的 `../static`
+3. 当前目录 `./static`（zip 包内即此布局）
+
+本地编译示例（版本号注入为 `dev-local`）：
+
+```bash
+cd apps/server
+bun run compile   # 输出 dist/web-xcpc-tool(.exe)，配合 apps/server/static 运行
+```
+
 ## DOMjudge 集成前提
 
 - DOMjudge 需启用 `xheaders` 认证方式（`etc/restapi.secret` 对应的 `xheaders` 凭据供服务端调用 REST API）。
