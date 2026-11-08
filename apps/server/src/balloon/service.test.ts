@@ -234,11 +234,88 @@ describe("BalloonService", () => {
   test("ack transitions pending task to delivered; unknown id returns null", async () => {
     const { svc } = makeService(makeFetch());
     await svc.pollOnce();
-    const acked = svc.ack("s1");
+    const acked = await svc.ack("s1");
     expect(acked?.status).toBe("delivered");
     expect(svc.list("delivered")).toHaveLength(1);
     expect(svc.list("pending")).toHaveLength(0);
-    expect(svc.ack("nope")).toBeNull();
+    expect(await svc.ack("nope")).toBeNull();
+  });
+
+  test("ack with delivered status POSTs done to the matching domjudge balloon", async () => {
+    const posts: string[] = [];
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+        posts.push(u);
+        return body({ ok: true });
+      }
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        return body([{ balloonid: "7", teamid: "t1", done: false }]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    await svc.pollOnce();
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
+  });
+
+  test("ack without a matching balloon only updates local status", async () => {
+    const posts: string[] = [];
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+        posts.push(u);
+        return body({ ok: true });
+      }
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        return body([{ balloonid: "9", teamid: "t-other", done: false }]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    await svc.pollOnce();
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(posts).toHaveLength(0);
+    expect(svc.list("delivered")).toHaveLength(1);
+  });
+
+  test("balloon done POST failure is logged and the local ack still lands", async () => {
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const u = String(url);
+      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
+      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+        return Promise.resolve(new Response("boom", { status: 500 }));
+      }
+      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
+        return body([{ balloonid: "7", teamid: "t1", done: false }]);
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+    const { svc } = makeService(fetchImpl);
+    await svc.pollOnce();
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+
+    const acked = await svc.ack("s1");
+    expect(acked?.status).toBe("delivered");
+    expect(svc.list("delivered")).toHaveLength(1);
   });
 
   // Demo-debugged regression: a restarted server polls before any team sync
@@ -269,7 +346,7 @@ describe("BalloonService", () => {
   test("refresh leaves delivered tasks and already-labeled tasks untouched", async () => {
     const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
     await svc.pollOnce();
-    svc.ack("s1");
+    await svc.ack("s1");
     svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
     expect(svc.list()[0].problemLabel).toBe("p1");
   });

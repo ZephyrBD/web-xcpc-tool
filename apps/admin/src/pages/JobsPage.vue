@@ -53,6 +53,26 @@ async function refresh(): Promise<void> {
   await Promise.all([refreshPrint(), refreshBalloon()])
 }
 
+/** Print + auto-ack: the ack fires only after the browser confirms the print
+ * via the iframe's afterprint event (never on button click alone). */
+async function printAndAckPrintTask(id: string): Promise<void> {
+  await printPdfTask(id, apiFetch)
+  await apiFetch(`/admin/api/print-tasks/${id}/ack`, {
+    method: 'POST',
+    body: JSON.stringify({ status: 'printed' }),
+  })
+  await refreshPrint()
+}
+
+async function printAndAckBalloonTask(task: BalloonTask): Promise<void> {
+  await printBalloonTask(task, apiFetch)
+  await apiFetch(`/admin/api/balloon-tasks/${task.id}/ack`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  await refreshBalloon()
+}
+
 // SSE 变更按事件类型分流到对应 Tab 的列表，各自 300ms 防抖合并刷新。
 let printTimer: ReturnType<typeof setTimeout> | null = null
 let balloonTimer: ReturnType<typeof setTimeout> | null = null
@@ -78,7 +98,7 @@ useSse((event, data) => {
     if (t?.id && !knownPrintIds.has(t.id)) {
       knownPrintIds.add(t.id)
       if (autoPrint.value && t.status === 'pending') {
-        void printPdfTask(t.id, apiFetch).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
+        void printAndAckPrintTask(t.id).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
       }
     }
   }
@@ -87,7 +107,7 @@ useSse((event, data) => {
     if (t?.id && !knownBalloonIds.has(t.id)) {
       knownBalloonIds.add(t.id)
       if (autoPrintBalloon.value && t.status === 'pending') {
-        void printBalloonTask(t, apiFetch).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
+        void printAndAckBalloonTask(t).catch(() => ElMessage.error('自动打印没成功，请手动打印'))
       }
     }
   }
@@ -111,7 +131,7 @@ function formatTime(iso: string): string {
 
 async function printRow(row: PrintTask): Promise<void> {
   try {
-    await printPdfTask(row.id, apiFetch)
+    await printAndAckPrintTask(row.id)
   } catch {
     ElMessage.error('打印没成功，请再试一次')
   }
@@ -132,7 +152,7 @@ async function ackPrint(row: PrintTask, status: 'printed' | 'failed'): Promise<v
 
 async function printBalloonRow(row: BalloonTask): Promise<void> {
   try {
-    await printBalloonTask(row, apiFetch)
+    await printAndAckBalloonTask(row)
   } catch {
     ElMessage.error('打印没成功，请再试一次')
   }

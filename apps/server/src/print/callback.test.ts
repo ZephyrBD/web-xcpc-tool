@@ -22,13 +22,15 @@ afterEach(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-function makeMultipart(): BodyInit {
+const PDF_BYTES = "%PDF-1.4\n%fake-for-tests\n";
+
+function makeMultipart(fileContent: string = PDF_BYTES, filename = "main.pdf"): BodyInit {
   const form = new FormData();
   form.set("location", "room1");
   form.set("teamname", "team-a");
   form.set("teamid", "42");
   form.set("original", "main.cpp");
-  form.set("file", new Blob([new Uint8Array([1, 2, 3, 4])], { type: "application/pdf" }), "main.pdf");
+  form.set("file", new Blob([fileContent], { type: "application/pdf" }), filename);
   return form;
 }
 
@@ -51,7 +53,7 @@ describe("POST /dj/print", () => {
     expect(existsSync(pdfDir)).toBe(true);
     const files = readdirSync(pdfDir);
     expect(files.length).toBe(1);
-    expect(readFileSync(join(pdfDir, files[0])).byteLength).toBe(4);
+    expect(readFileSync(join(pdfDir, files[0])).subarray(0, 5).toString("ascii")).toBe("%PDF-");
 
     const tasks = await (await app.request("/admin/api/print-tasks", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
@@ -64,6 +66,47 @@ describe("POST /dj/print", () => {
     expect(events.length).toBe(1);
     expect(events[0].event).toBe("print-task");
     expect((events[0].data as { id: string }).id).toBe(tasks[0].id);
+  });
+
+  test("source code upload is formatted and converted to PDF", async () => {
+    const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
+    const bus = new SseBus();
+    const app = createApp(cfg, { dataDir, bus });
+
+    const src = "int main(){\r\nif(x){\r\ny();\r\n}\r\n}\r\n";
+    const res = await app.request("/dj/print", {
+      method: "POST",
+      headers: { "org.domjudge.print-token": "secret" },
+      body: makeMultipart(src, "main.cpp"),
+    });
+    expect(res.status).toBe(200);
+
+    const pdfDir = join(dataDir, "pdf");
+    const files = readdirSync(pdfDir);
+    expect(files.length).toBe(1);
+    const stored = readFileSync(join(pdfDir, files[0]));
+    expect(stored.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+    expect(stored.byteLength).toBeGreaterThan(1000);
+
+    const tasks = await (await app.request("/admin/api/print-tasks", { headers: await adminAuthHeaders(cfg) })).json();
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].status).toBe("pending");
+    expect(tasks[0].originalFilename).toBe("main.cpp");
+    expect(tasks[0].teamId).toBe("42");
+  });
+
+  test("source code with unknown extension is stored as a passthrough PDF", async () => {
+    const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
+    const app = createApp(cfg, { dataDir });
+
+    const res = await app.request("/dj/print", {
+      method: "POST",
+      headers: { "org.domjudge.print-token": "secret" },
+      body: makeMultipart("plain notes\n\nsecond line\n", "notes.txt"),
+    });
+    expect(res.status).toBe(200);
+    const files = readdirSync(join(dataDir, "pdf"));
+    expect(readFileSync(join(dataDir, "pdf", files[0])).subarray(0, 5).toString("ascii")).toBe("%PDF-");
   });
 
   test("missing token is 403 and writes no file", async () => {

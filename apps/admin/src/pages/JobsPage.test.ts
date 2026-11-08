@@ -272,6 +272,43 @@ describe('JobsPage', () => {
     expect(printPdfTaskMock).toHaveBeenCalledWith('p1', expect.any(Function))
   })
 
+  test('打印 button acks printed after the print util confirms (afterprint)', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '打印')!
+    await btn.trigger('click')
+    await flush()
+    await flush()
+
+    const ackCall = calls.find((c) => c.method === 'POST' && c.path.endsWith('/p1/ack'))
+    expect(ackCall).toBeDefined()
+    expect(ackCall!.body).toEqual({ status: 'printed' })
+    expect(wrapper.findAll('.pill--printed').length).toBe(2)
+  })
+
+  test('气球任务 打印 button acks delivered after the print util confirms (afterprint)', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]
+    const btn = balloonPane!.findAll('button').find((b) => b.text() === '打印')!
+    await btn.trigger('click')
+    await flush()
+    await flush()
+
+    const ackCall = calls.find((c) => c.method === 'POST' && c.path.endsWith('/b1/ack'))
+    expect(ackCall).toBeDefined()
+    expect(wrapper.findAll('.pill--delivered').length).toBe(1)
+  })
+
   test('auto-print ON: a new SSE print-task event triggers printPdfTask for the new id only', async () => {
     localStorage.setItem('cxtool_autoprint', '1')
     const wrapper = mountPage()

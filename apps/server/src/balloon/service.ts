@@ -114,16 +114,48 @@ export class BalloonService {
     return status ? tasks.filter((t) => t.status === status) : tasks;
   }
 
-  ack(id: string): BalloonTask | null {
+  async ack(id: string, status: BalloonTask["status"] = "delivered"): Promise<BalloonTask | null> {
     let found: BalloonTask | null = null;
     this.store.update((cur) =>
       cur.map((t) => {
         if (t.id !== id) return t;
-        found = { ...t, status: "delivered" };
+        found = { ...t, status };
         return found;
       }),
     );
+    if (found && status === "delivered") {
+      // Delivery state lives in DOMjudge's own balloon API, not just locally;
+      // sync is best-effort and never fails the local ack.
+      try {
+        await this.syncBalloonDone(found);
+      } catch (err) {
+        console.error(
+          `balloon ack: could not mark balloon done in domjudge for task ${id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
     return found;
+  }
+
+  /** Resolve the balloon for the task's team and POST done. Skipped when the team can't be matched. */
+  private async syncBalloonDone(task: BalloonTask): Promise<void> {
+    const team =
+      this.teams.find((t) => t.name === task.teamName || t.display_name === task.teamName) ??
+      this.teams.find((t) => t.id === task.teamName);
+    if (!team) {
+      console.error(`balloon ack: no team matches "${task.teamName}", skipping domjudge balloon sync`);
+      return;
+    }
+    const balloons = await this.client.getBalloons(this.contestId);
+    const balloon = balloons.find((b) => b.teamid === team.id);
+    if (!balloon) {
+      console.error(
+        `balloon ack: no pending balloon for team ${team.id} in contest ${this.contestId}, skipping domjudge balloon sync`,
+      );
+      return;
+    }
+    await this.client.markBalloonDone(this.contestId, balloon.balloonid);
   }
 
   /**

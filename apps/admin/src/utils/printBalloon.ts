@@ -7,11 +7,12 @@
  * Note: browsers may silently ignore iframe.contentWindow.print() when there
  * was no prior user gesture (relevant for SSE auto-print). That's accepted —
  * worst case the balloon runner prints the ticket manually from the jobs list.
+ *
+ * The promise resolves on the frame's `afterprint` event (print confirmed by
+ * the browser), which callers use to auto-ack the balloon as delivered.
  */
+import { printViaIframe } from '@/utils/printPdf'
 import type { BalloonTask } from '@/types'
-
-/** Delay before iframe cleanup so the print dialog has time to read the doc. */
-const CLEANUP_DELAY_MS = 60_000
 
 /** Local time as HH:mm; falls back to the raw string for unparseable input. */
 export function formatBalloonTime(iso: string): string {
@@ -66,8 +67,8 @@ export async function printBalloonTask(task: BalloonTask, _apiFetch?: unknown): 
   doc.open()
   doc.write(html)
   doc.close()
-  iframe.addEventListener('load', () => {
-    window.setTimeout(() => iframe.contentWindow?.print(), 200)
-  })
-  window.setTimeout(() => iframe.remove(), CLEANUP_DELAY_MS)
+  // Resolves only on the frame's `afterprint` (browser confirmed the print
+  // job; Firefox also fires it when the dialog is cancelled) so callers can
+  // auto-ack the delivery.
+  await printViaIframe(iframe)
 }

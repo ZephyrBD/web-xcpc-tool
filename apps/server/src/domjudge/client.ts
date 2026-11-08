@@ -123,6 +123,18 @@ export type DjUser = {
   team_id?: string;
 };
 
+/** An entry of GET /contests/{cid}/balloons (DOMjudge balloon API). */
+export type DjBalloon = {
+  balloonid: string;
+  teamid: string;
+  problem?: string;
+  problemid?: string;
+  contesttime?: string;
+  time?: string;
+  submitted?: string;
+  done?: boolean;
+};
+
 export class DjClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -166,6 +178,33 @@ export class DjClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      throw new DjApiError(url, 0, err);
+    }
+    if (!res.ok) {
+      throw new DjApiError(url, res.status);
+    }
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  private async post(path: string, body?: unknown): Promise<unknown> {
+    const url = this.baseUrl + path;
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: this.authHeader,
+          Accept: "application/json",
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
@@ -236,5 +275,14 @@ export class DjClient {
         // `submission`; internal shapes pass through unchanged.
         judgings.map((item) => ({ ...item, submission: item.submission ?? item.submission_id! })),
     );
+  }
+
+  getBalloons(contestId: string): Promise<DjBalloon[]> {
+    return this.get<DjBalloon[]>(`contests/${contestId}/balloons`);
+  }
+
+  /** Mark a balloon as delivered (POST /contests/{cid}/balloons/{id}/done). */
+  markBalloonDone(contestId: string, balloonId: string): Promise<unknown> {
+    return this.post(`contests/${contestId}/balloons/${encodeURIComponent(balloonId)}/done`);
   }
 }
