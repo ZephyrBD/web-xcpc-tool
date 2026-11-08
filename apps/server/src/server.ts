@@ -216,11 +216,24 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
     try {
       const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
+      let problemsMapped = true;
       if (deps?.balloonService) {
-        const problems = await client.getProblems(contestId).catch(() => []);
+        let problems: Awaited<ReturnType<typeof client.getProblems>>;
+        try {
+          problems = await client.getProblems(contestId);
+        } catch (err) {
+          // A silent failure here leaves balloon tasks with raw problem ids as
+          // labels; the response must tell the operator mapping did not happen.
+          problemsMapped = false;
+          console.error(
+            `team sync: could not fetch problems for contest ${contestId}, balloon tasks will fall back to raw ids:`,
+            err instanceof Error ? err.message : err,
+          );
+          problems = [];
+        }
         deps.balloonService.refresh(teamsStore.load(), problems);
       }
-      return c.json({ count });
+      return c.json({ count, problemsMapped });
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
     }

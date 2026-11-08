@@ -66,10 +66,24 @@ export class BalloonService {
     this.problems = deps.problems ?? [];
   }
 
-  /** Task 7 calls this after team sync to refresh label/name lookups. */
+  /**
+   * Task 7 calls this after team sync to refresh label/name lookups. Pending
+   * tasks created before problems were known (e.g. the first poll after a
+   * server restart, verified live against the demo) hold raw problem ids as
+   * labels; once problems arrive they are re-labeled.
+   */
   refresh(teams: DjTeam[], problems: Array<Pick<DjProblem, "id" | "label" | "name">>): void {
     this.teams = teams;
     this.problems = problems;
+    if (problems.length === 0) return;
+    const labelById = new Map(problems.map((p) => [p.id, p.label]));
+    this.store.update((cur) =>
+      cur.map((t) => {
+        if (t.status !== "pending") return t;
+        const label = labelById.get(t.problemLabel);
+        return label && label !== t.problemLabel ? { ...t, problemLabel: label } : t;
+      }),
+    );
   }
 
   start(): void {
@@ -103,12 +117,32 @@ export class BalloonService {
     return found;
   }
 
+  /**
+   * Problems are normally supplied via refresh() after a team sync, but a
+   * freshly restarted server polls before any sync ran (demo-verified: 1095
+   * tasks got raw-id labels that way). Fetch them lazily so the first poll
+   * can already map labels.
+   */
+  private async ensureProblems(): Promise<Array<Pick<DjProblem, "id" | "label" | "name">>> {
+    if (this.problems.length > 0) return this.problems;
+    try {
+      this.problems = await this.client.getProblems(this.contestId);
+    } catch (err) {
+      console.error(
+        `balloon service could not fetch problems for contest ${this.contestId}, falling back to raw ids:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    return this.problems;
+  }
+
   /** Fetch judgements once and enqueue balloons for new correct submissions. Returns the number created. */
   async pollOnce(): Promise<number> {
-    const [judgings, judgementTypes, submissions] = await Promise.all([
+    const [judgings, judgementTypes, submissions, problems] = await Promise.all([
       this.client.getJudgings(this.contestId),
       this.client.getJudgementTypes(this.contestId),
       this.client.getSubmissions(this.contestId),
+      this.ensureProblems(),
     ]);
 
     const correctTypeIds = new Set(
@@ -135,7 +169,7 @@ export class BalloonService {
         id: sub.id,
         contestId: this.contestId,
         problemLabel:
-          this.problems.find((p) => p.id === sub.problem)?.label ?? sub.problem,
+          problems.find((p) => p.id === sub.problem)?.label ?? sub.problem,
         teamName: this.teams.find((t) => t.id === sub.team)?.name ?? sub.team,
         location: this.teams.find((t) => t.id === sub.team)?.location?.description ?? null,
         status: "pending",

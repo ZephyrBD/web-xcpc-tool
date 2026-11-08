@@ -92,13 +92,22 @@ const judgings = [
 function makeFetch(overrides: {
   judgements?: DjJudging[];
   failJudgementsTimes?: number;
+  failProblemsTimes?: number;
 } = {}) {
   let failCount = overrides.failJudgementsTimes ?? 0;
+  let failProblems = overrides.failProblemsTimes ?? 0;
   return ((url: string | URL | Request): Promise<Response> => {
     const u = String(url);
     const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
     if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
     if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
+    if (u.startsWith(BASE + `contests/${CONTEST}/problems`)) {
+      if (failProblems > 0) {
+        failProblems--;
+        return Promise.reject(new Error("problems endpoint down"));
+      }
+      return body([{ id: "p1", label: "A", name: "Alpha" }]);
+    }
     if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) {
       if (failCount > 0) {
         failCount--;
@@ -113,6 +122,7 @@ function makeFetch(overrides: {
 function makeService(
   fetchImpl: typeof fetch,
   schedule?: (fn: () => void, ms: number) => void,
+  opts: { problems?: Array<{ id: string; label: string; name: string }> } = {},
 ) {
   const cfg = {
     baseUrl: "https://dj.example.com",
@@ -129,7 +139,7 @@ function makeService(
     contestId: CONTEST,
     pollIntervalSeconds: 10,
     teams: [{ id: "t1", name: "Team One" }],
-    problems: [{ id: "p1", label: "A", name: "Alpha" }],
+    problems: opts.problems ?? [{ id: "p1", label: "A", name: "Alpha" }],
     schedule,
   });
   return { svc, store, bus };
@@ -229,5 +239,38 @@ describe("BalloonService", () => {
     expect(svc.list("delivered")).toHaveLength(1);
     expect(svc.list("pending")).toHaveLength(0);
     expect(svc.ack("nope")).toBeNull();
+  });
+
+  // Demo-debugged regression: a restarted server polls before any team sync
+  // ran, and every balloon task got the raw problem id as its label.
+  test("pollOnce fetches problems itself when refresh never supplied them", async () => {
+    const { svc } = makeService(makeFetch(), undefined, { problems: [] });
+    const created = await svc.pollOnce();
+    expect(created).toBe(1);
+    expect(svc.list()[0].problemLabel).toBe("A");
+  });
+
+  test("pollOnce falls back to raw ids when its own problems fetch fails", async () => {
+    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
+    const created = await svc.pollOnce();
+    expect(created).toBe(1);
+    expect(svc.list()[0].problemLabel).toBe("p1");
+  });
+
+  test("refresh re-labels pending tasks that were created with raw ids", async () => {
+    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
+    await svc.pollOnce();
+    expect(svc.list()[0].problemLabel).toBe("p1");
+
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+    expect(svc.list()[0].problemLabel).toBe("A");
+  });
+
+  test("refresh leaves delivered tasks and already-labeled tasks untouched", async () => {
+    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
+    await svc.pollOnce();
+    svc.ack("s1");
+    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
+    expect(svc.list()[0].problemLabel).toBe("p1");
   });
 });
