@@ -99,3 +99,4 @@ xcpcio/.claude
 ### ts monorepo ###
 data/
 node_modules/
+apps/server/static/
