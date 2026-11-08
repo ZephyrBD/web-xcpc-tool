@@ -222,6 +222,31 @@ describe('TeamCodesPage', () => {
     expect(dialogButton(wrapper, '关闭')).toBeDefined()
   })
 
+  test('unmounting the page stops the loop after the in-flight request finishes', async () => {
+    teamCodeRows = [
+      { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },
+      { icpcId: 'icpc2', name: '队伍二', teamCode: 'bbbbbbbbbbbb', hasPassword: false },
+      { icpcId: 'icpc3', name: '队伍三', teamCode: 'cccccccccccc', hasPassword: false },
+    ]
+    unassignedCount = 0
+    provisionHandler = async (body) => {
+      if (body.icpcId === 'icpc2') await delay(150)
+      return new Response(JSON.stringify({ provisioned: 1, skipped: 0, errors: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const wrapper = await startProvision()
+    await waitFor(() => calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision').length >= 2)
+
+    wrapper.unmount()
+    await delay(300)
+
+    const posts = calls.filter((c) => c.method === 'POST' && c.path === '/admin/api/team-codes/provision')
+    // no further provision (or list-refresh) requests after the page is gone
+    expect(posts.length).toBe(2)
+    // GET count = mount-time load + provision-start refresh; the finally-block
+    // refresh must NOT run after unmount
+    expect(calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/team-codes').length).toBe(2)
+  })
+
   test('when every failure has the same reason a DOMjudge-permission hint is shown', async () => {
     teamCodeRows = [
       { icpcId: 'icpc1', name: '队伍一', teamCode: 'abcdefghjkmn', hasPassword: false },

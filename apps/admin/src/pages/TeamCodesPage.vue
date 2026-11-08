@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElButton, ElDialog, ElEmpty, ElMessage, ElMessageBox, ElPagination, ElProgress, ElTable, ElTableColumn, ElTabPane, ElTabs } from 'element-plus'
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
@@ -118,8 +118,14 @@ interface ProvisionResult {
 const provDialog = ref(false)
 const provRunning = ref(false)
 const provCancelled = ref(false)
+// 组件卸载（离开页面）后必须停止循环，避免无人值守的密码重置请求继续发出。
+const provDisposed = ref(false)
 const provTargets = ref<TeamCodeRow[]>([])
 const provResults = ref<ProvisionResult[]>([])
+
+onUnmounted(() => {
+  provDisposed.value = true
+})
 
 const provProgress = computed(() =>
   provTargets.value.length === 0 ? 0 : Math.round((provResults.value.length / provTargets.value.length) * 100),
@@ -128,9 +134,16 @@ const provOk = computed(() => provResults.value.filter((r) => r.status === 'ok')
 const provSkip = computed(() => provResults.value.filter((r) => r.status === 'skip').length)
 const provFail = computed(() => provResults.value.filter((r) => r.status === 'fail').length)
 const provCurrent = computed(() => provTargets.value[provResults.value.length] ?? null)
+const provStatus = computed(() => {
+  if (provRunning.value) return undefined
+  if (provFail.value > 0) return 'exception'
+  if (provCancelled.value || provDisposed.value) return 'warning'
+  return 'success'
+})
+// 仅当所有队伍都失败（且原因一致）时才提示权限问题，部分失败时该提示会误导。
 const allFailSameReason = computed(() => {
-  const fails = provResults.value.filter((r) => r.status === 'fail')
-  return fails.length > 0 && fails.every((f) => f.reason === fails[0].reason)
+  if (provResults.value.length === 0 || provFail.value !== provResults.value.length) return false
+  return provResults.value.every((f) => f.reason === provResults.value[0].reason)
 })
 
 function friendlyReason(reason: string): string {
@@ -157,7 +170,8 @@ async function provisionOne(row: TeamCodeRow): Promise<ProvisionResult> {
       status: skipped > 0 ? 'skip' : 'fail',
       reason: reason ? friendlyReason(reason) : '未知原因',
     }
-  } catch {
+  } catch (err) {
+    console.warn(`provision ${row.icpcId} failed:`, err instanceof Error ? err.message : String(err))
     return { icpcId: row.icpcId, name: row.name, status: 'fail', reason: '请求失败，请检查 DOMjudge 是否可用' }
   }
 }
@@ -190,12 +204,12 @@ async function onProvision(): Promise<void> {
   provDialog.value = true
   try {
     for (const t of targets) {
-      if (provCancelled.value) break
+      if (provCancelled.value || provDisposed.value) break
       provResults.value.push(await provisionOne(t))
     }
   } finally {
     provRunning.value = false
-    await refresh()
+    if (!provDisposed.value) await refresh()
   }
 }
 
@@ -300,7 +314,7 @@ onMounted(() => void refresh())
       :close-on-press-escape="!provRunning"
       :show-close="!provRunning"
     >
-      <ElProgress :percentage="provProgress" :status="provRunning ? undefined : 'success'" />
+      <ElProgress :percentage="provProgress" :status="provStatus" />
       <p class="prov-current">
         <template v-if="provRunning && provCurrent">
           正在配置：{{ provCurrent.icpcId }} / {{ provCurrent.name }}（第 {{ provResults.length + 1 }} / 共 {{ provTargets.length }} 支）
