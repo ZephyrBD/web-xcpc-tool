@@ -20,13 +20,10 @@ jobs:
           distribution: 'liberica'
           cache: gradle
 
-      - name: set Node.js 20 + 启用 pnpm
+      - name: set Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: install pnpm
-        run: corepack enable && corepack prepare pnpm@latest --activate
 
       # 构建 Vue 前端
       - name: build Vue
@@ -34,13 +31,6 @@ jobs:
         run: |
           npm install
           npm run build
-
-      # 构建 XCPCIO Board（现在 pnpm 可用）
-      - name: build Board
-        working-directory: ./xcpcio
-        run: |
-          pnpm install
-          pnpm run build
 
       # 给Gradle执行权限
       - name: chmod Gradle

@@ -1,0 +1,61 @@
+name: ts-ci
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install
+        working-directory: apps/server
+        run: bun install --frozen-lockfile
+
+      - name: test
+        working-directory: apps/server
+        run: bun test
+
+      - name: typecheck
+        working-directory: apps/server
+        run: bunx tsc --noEmit
+
+  admin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install
+        working-directory: apps/admin
+        run: bun install --frozen-lockfile
+
+      - name: test
+        working-directory: apps/admin
+        run: bun test
+
+      - name: build
+        working-directory: apps/admin
+        run: bun run build
+
+      - name: upload static artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-static
+          path: apps/server/static/
+          retention-days: 7

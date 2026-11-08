@@ -3,7 +3,7 @@
 一个用于简化代码打印和气球打印的XCPC工具，为CUIT的XCPC校赛开发。对接 DOMjudge，提供队伍认证、气球票据与代码打印（含 Chrome kiosk 自动打印）。
 
 > [!NOTE]
-> 外部榜单（xcpcio/board）功能已停止提供，仓库中的 `xcpcio/` 目录仅为 Java 版遗留构建依赖，将在 Plan 3 中移除。
+> 外部榜单（xcpcio/board）功能已停止提供，`xcpcio/` 目录已从仓库移除。
 
 > [!IMPORTANT]
 > 本项目正在用 **TypeScript + Bun** 重写（见 [重构设计](docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md)）。Java 版仍是当前可用的完整实现；新版已完成服务器核心，DOMjudge 集成与前端迁移见下方 [TypeScript 重写](#typescript-重写进行中)。
@@ -14,8 +14,8 @@
 |---|---|
 | `src/` + `build.gradle` | Java 21 / Spring Boot 4 后端（当前生产版本） |
 | `vue/` | 管理端前端（Vue 3 + Element Plus，vue-cli） |
-| `xcpcio/` | 已停止提供的外榜（xcpcio fork），仅为 Java 版遗留构建依赖 |
 | `apps/server/` | **新**：TypeScript/Bun 后端核心（重写中） |
+| `apps/admin/` | **新**：管理端前端（Vue 3 + Element Plus + Vite，构建产物输出到 `apps/server/static/`） |
 | `proxy/` | 独立的 DOMjudge 自动登录反代（Node） |
 | `script/` | 运维产物：nginx 配置示例、`print.sh`、队伍/组织 JSON 生成脚本 |
 | `docs/superpowers/` | 重写设计文档与实施计划 |
@@ -154,7 +154,19 @@ curl localhost:8080/cxtool/health   # => {"ok":true}
 | Plan 2 | DOMjudge API 客户端、全量反向代理、打印回调、气球任务、榜单数据路由 | ⏳ 待开始 |
 | Plan 3 | 管理端 Vue 重写（Vite）、部署脚本与 CI（不打包 exe，目标机安装 Bun） | ⏳ 待开始 |
 
-> 外部榜单功能已停止提供：Plan 2 不包含榜单数据路由，Plan 3 将从仓库移除 `xcpcio/`。
+> 外部榜单功能已停止提供：`xcpcio/` 已从仓库移除，TS 版不再包含榜单数据路由。
+
+### 新版部署
+
+新版使用 Bun 直接运行，无需打包：
+
+```bash
+cd apps/admin && bun install && bun run build   # 构建管理端到 apps/server/static
+cd ../server && bun install
+bun run src/index.ts                            # 或在仓库根目录 bun run server
+```
+
+完整部署步骤（Windows / Linux、settings.json 配置、systemd 单元示例）见 [script/deploy/deploy.md](script/deploy/deploy.md)。
 
 ## License
 

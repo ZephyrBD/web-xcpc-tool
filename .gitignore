@@ -71,27 +71,6 @@ out/
 /src/main/resources/static/**
 /settings.properties
 
-xcpcio/.cache
-xcpcio/.DS_Store
-xcpcio/.eslintcache
-
-xcpcio/node_modules/
-xcpcio/dist/
-xcpcio/coverage/
-xcpcio/lib-cov/
-xcpcio/logs/
-xcpcio/temp/
-
-xcpcio/*.less.d.ts
-
-xcpcio/*.log
-xcpcio/*.tgz
-
-xcpcio/.env.local
-
-xcpcio/.next
-xcpcio/out
-xcpcio/.claude
 ### superpowers worktrees ###
 .worktrees/
 .superpowers/
