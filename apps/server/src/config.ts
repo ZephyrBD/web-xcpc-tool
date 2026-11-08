@@ -21,7 +21,7 @@ const teamLoginSchema = z
 
 const configSchema = z.object({
   port: z.number().int().default(8080),
-  contextPath: z.string().default("/cxtool"),
+  contextPath: z.string().default("/wxt"),
   domjudge: z
     .object({
       baseUrl: z.string().default(""),

@@ -33,7 +33,7 @@ describe('LoginPage', () => {
     }) as unknown as typeof fetch
   })
 
-  test('submitting calls session.login which posts to /cxtool/admin/api/login and stores the token', async () => {
+  test('submitting calls session.login which posts to /wxt/admin/api/login and stores the token', async () => {
     const { pinia, router } = makeEnv()
     await router.push('/')
     await router.isReady()
@@ -59,7 +59,7 @@ describe('LoginPage', () => {
 
     expect(loginArgs).toEqual([['admin', 'secret-pw']])
     expect(fetchCalls.length).toBe(1)
-    expect(new URL(fetchCalls[0].url).pathname).toBe('/cxtool/admin/api/login')
+    expect(new URL(fetchCalls[0].url).pathname).toBe('/wxt/admin/api/login')
     expect(JSON.parse(String(fetchCalls[0].init.body))).toEqual({ username: 'admin', password: 'secret-pw' })
     expect(getToken()).toBe('jwt-123')
     expect(router.currentRoute.value.path).toBe('/')

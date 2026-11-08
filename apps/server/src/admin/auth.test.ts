@@ -71,10 +71,10 @@ describe("admin auth", () => {
   });
 
   test("cookie path follows the contextPath", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/cxtool" };
+    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
     const app = createApp(cfg, { dataDir });
     const res = await login(app, { username: "admin", password: PASSWORD });
-    expect(res.headers.get("set-cookie")).toContain("Path=/cxtool/");
+    expect(res.headers.get("set-cookie")).toContain("Path=/wxt/");
   });
 
   test("admin token is rejected by team-token verification and vice versa", async () => {
@@ -159,18 +159,18 @@ describe("admin auth", () => {
     controller.abort();
   });
 
-  test("401 applies through a /cxtool mount too", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/cxtool" };
-    const mounted = new Hono().route("/cxtool", createApp(cfg, { dataDir }));
-    const res = await mounted.request("/cxtool/admin/api/settings");
+  test("401 applies through a /wxt mount too", async () => {
+    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
+    const mounted = new Hono().route("/wxt", createApp(cfg, { dataDir }));
+    const res = await mounted.request("/wxt/admin/api/settings");
     expect(res.status).toBe(401);
-    const loginRes = await mounted.request("/cxtool/admin/api/login", {
+    const loginRes = await mounted.request("/wxt/admin/api/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "admin", password: PASSWORD }),
     });
     expect(loginRes.status).toBe(200);
-    expect(loginRes.headers.get("set-cookie")).toContain("Path=/cxtool/");
+    expect(loginRes.headers.get("set-cookie")).toContain("Path=/wxt/");
   });
 });
 

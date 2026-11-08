@@ -1,7 +1,7 @@
 # 部署指南（TypeScript 版）
 
 新版 CUIT XCPC TOOL 使用 **Bun** 直接运行，无需打包 exe，无需 nginx、数据库与 Java 环境。
-单个进程同时提供：`/cxtool` 管理端（静态页面 + API）与 `/cxtool/dj/*` DOMjudge 反向代理。
+单个进程同时提供：`/wxt` 管理端（静态页面 + API）与 `/wxt/dj/*` DOMjudge 反向代理。
 
 > Java 旧版部署方式不变（`java -jar`），见 README「Java 版使用」。
 
@@ -53,9 +53,9 @@ bun run server
 
 启动后：
 
-- 服务监听 `http://<host>:8080`，所有路由挂在 `/cxtool` 下。
-- 健康检查：`curl http://localhost:8080/cxtool/health` → `{"ok":true}`。
-- 管理端登录页：`http://localhost:8080/cxtool/`。
+- 服务监听 `http://<host>:8080`，所有路由挂在 `/wxt` 下。
+- 健康检查：`curl http://localhost:8080/wxt/health` → `{"ok":true}`。
+- 管理端登录页：`http://localhost:8080/wxt/`。
 - 首次启动自动生成 `apps/server/data/settings.json` 与 JWT 密钥。
 
 ## 配置（apps/server/data/settings.json）
@@ -65,7 +65,7 @@ bun run server
 | 字段 | 说明 |
 |---|---|
 | `port` | 监听端口，默认 `8080` |
-| `contextPath` | 上下文路径，默认 `/cxtool`，一般不改 |
+| `contextPath` | 上下文路径，默认 `/wxt`，一般不改 |
 | `domjudge.baseUrl` | DOMjudge 站点地址，例如 `https://domjudge.example.com` |
 | `domjudge.adminUser` / `domjudge.adminPassword` | DOMjudge 管理员账号，供代理与 API 拉取使用 |
 | `domjudge.timeoutSeconds` | DOMjudge API 请求超时秒数，默认 `10`；官方 demo 等慢站点建议调大（如 `65`） |
@@ -74,7 +74,7 @@ bun run server
 | `print.token` | DOMjudge 打印回调校验 token |
 | `balloon.contestId` | 气球服务监听的 DOMjudge 赛题 ID |
 
-> 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍/客户端访问本服务是通过 `http://<host>:<port>/cxtool`（OMS 客户端进站地址），两条链路不要混淆。
+> 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍/客户端访问本服务是通过 `http://<host>:<port>/wxt`（OMS 客户端进站地址），两条链路不要混淆。
 
 ### 生成管理端 passwordHash
 
@@ -136,10 +136,10 @@ powershell -File script/deploy/start.ps1   # Windows
 
 ## 现场核对清单
 
-1. `curl http://localhost:8080/cxtool/health` 返回 `{"ok":true}`。
-2. 浏览器打开 `http://<host>:8080/cxtool/`，用 `admin.username` + 明文密码登录成功。
-3. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/cxtool`（代理路径为 `/cxtool/dj/...`）。
-4. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/cxtool/dj/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
+1. `curl http://localhost:8080/wxt/health` 返回 `{"ok":true}`。
+2. 浏览器打开 `http://<host>:8080/wxt/`，用 `admin.username` + 明文密码登录成功。
+3. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/wxt`（代理路径为 `/wxt/dj/...`）。
+4. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/wxt/dj/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
 
 ## 安全说明
 

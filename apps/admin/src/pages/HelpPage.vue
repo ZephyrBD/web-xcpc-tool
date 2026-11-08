@@ -18,7 +18,7 @@ const sections: HelpSection[] = [
         note: 'DOMjudge 的打印脚本需要向下面这个地址发起 POST 请求，并在请求头中携带在「设置」页生成的令牌：',
         lines: [
           { text: '接口地址：' },
-          { code: 'POST http://<本工具地址>/cxtool/dj/print' },
+          { code: 'POST http://<本工具地址>/wxt/dj/print' },
           { text: '请求头：' },
           { code: 'org.domjudge.print-token: <在设置页生成的令牌>' },
           { text: 'multipart 表单字段（名称必须完全一致）：' },
@@ -28,14 +28,14 @@ const sections: HelpSection[] = [
       {
         note: '可以直接用 curl 验证回调是否打通（假数据，替换成实际地址和令牌即可）：',
         lines: [
-          { code: 'curl -X POST http://127.0.0.1:8080/cxtool/dj/print \\' },
+          { code: 'curl -X POST http://127.0.0.1:8080/wxt/dj/print \\' },
           { code: '  -H "org.domjudge.print-token: <你的令牌>" \\' },
           { code: '  -F "location=I1" -F "teamname=VILNIUS TECH 1" -F "teamid=111" \\' },
           { code: '  -F "original=main.c.pdf" -F "file=@main.c.pdf"' },
         ],
       },
       {
-        note: '兼容说明：script/print.sh 是发往旧 Java 版的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName。新工具的接口字段与旧版一致，只要把脚本里的 PRINT_API 指到本工具的 /cxtool/dj/print、API_TOKEN 填成设置页生成的令牌，即可直接对接。',
+        note: '兼容说明：script/print.sh 是发往旧 Java 版的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName。新工具的接口字段与旧版一致，只要把脚本里的 PRINT_API 指到本工具的 /wxt/dj/print、API_TOKEN 填成设置页生成的令牌，即可直接对接。',
         lines: [],
       },
     ],
@@ -59,11 +59,11 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-blue)',
     blocks: [
       {
-        note: '在「设置」页填写 DOMjudge 的 Base URL：指向 DOMjudge 本身的地址，不带 /api 后缀。拼接规则：本工具按 baseUrl + /api/v4/contests/... 调 DOMjudge API；队伍浏览器访问的 DOMjudge 页面则通过本工具的 /cxtool/dj/... 反代到 baseUrl + /...。',
+        note: '在「设置」页填写 DOMjudge 的 Base URL：指向 DOMjudge 本身的地址，不带 /api 后缀。拼接规则：本工具按 baseUrl + /api/v4/contests/... 调 DOMjudge API；队伍浏览器访问的 DOMjudge 页面则通过本工具的 /wxt/dj/... 反代到 baseUrl + /...。',
         lines: [],
       },
       {
-        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的 /cxtool 路径，这样队伍从队伍码登录入口进站后，所有 DOMjudge 页面链接都会经过本工具反代。',
+        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的 /wxt 路径，这样队伍从队伍码登录入口进站后，所有 DOMjudge 页面链接都会经过本工具反代。',
         lines: [],
       },
       {

@@ -33,7 +33,7 @@ export class ApiError extends Error {
 
 export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
   const { query, headers, skipAuthRedirect, blob, ...rest } = opts
-  const url = new URL(`/cxtool${path}`, window.location.origin)
+  const url = new URL(`/wxt${path}`, window.location.origin)
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value))
@@ -55,7 +55,7 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
   if (res.status === 401) {
     if (!skipAuthRedirect) {
       clearToken()
-      window.location.assign('/cxtool/login')
+      window.location.assign('/wxt/login')
     }
     throw new ApiError(401, await res.json().catch(() => null), '未登录或登录已过期')
   }

@@ -98,12 +98,12 @@ describe("DOMjudge reverse proxy", () => {
     expect(hits).toBe(0);
   });
 
-  test("missing cookie under a contextPath mount redirects to /cxtool/dj/verify", async () => {
-    const sub = createApp(makeCfg("/cxtool"));
-    const app = new Hono().route("/cxtool", sub);
-    const res = await app.request("/cxtool/dj/api/contests", { redirect: "manual" });
+  test("missing cookie under a contextPath mount redirects to /wxt/dj/verify", async () => {
+    const sub = createApp(makeCfg("/wxt"));
+    const app = new Hono().route("/wxt", sub);
+    const res = await app.request("/wxt/dj/api/contests", { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/cxtool/dj/verify");
+    expect(res.headers.get("location")).toBe("/wxt/dj/verify");
     expect(hits).toBe(0);
   });
 
@@ -228,7 +228,7 @@ describe("DOMjudge reverse proxy", () => {
     expect(proxyFilter(fakeCtx("/dj/"), cfg)).toBe("/");
     expect(proxyFilter(fakeCtx("/dj"), cfg)).toBe("/");
     expect(proxyFilter(fakeCtx("/djx/api"), cfg)).toBeNull();
-    expect(proxyFilter(fakeCtx("/cxtool/dj/api/contests"), makeCfg("/cxtool"))).toBe("/api/contests");
+    expect(proxyFilter(fakeCtx("/wxt/dj/api/contests"), makeCfg("/wxt"))).toBe("/api/contests");
     expect(resolveTarget(cfg, "/api/contests")).toBe(`http://127.0.0.1:${upstreamPort}/api/contests`);
     expect(resolveTarget(cfg, "api/x")).toBe(`http://127.0.0.1:${upstreamPort}/api/x`);
   });

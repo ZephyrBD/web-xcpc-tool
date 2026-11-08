@@ -139,12 +139,12 @@ cd vue && npm install && npm run build
 bun install          # 在 apps/server 下
 bun run test         # bun test，测试与源码同目录 *.test.ts
 bun run server       # 启动，首启自动生成 data/settings.json 与 JWT 密钥
-curl localhost:8080/cxtool/health   # => {"ok":true}
+curl localhost:8080/wxt/health   # => {"ok":true}
 ```
 
 - 运行时 Bun 1.x，HTTP 框架 Hono，校验 zod；禁用需要原生编译的依赖（现场离线）。
 - 无数据库：`data/` 下 JSON 文件存储，tmp+rename 原子写入；队伍密码字段经 AES-256-GCM 加密。
-- 所有 API 路由挂在 `/cxtool` 上下文路径下。
+- 所有 API 路由挂在 `/wxt` 上下文路径下。
 
 ### 现状与计划
 

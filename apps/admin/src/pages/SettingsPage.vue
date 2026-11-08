@@ -157,7 +157,7 @@ onMounted(() => void refresh())
           <span class="field-help">
             指向 <b>DOMjudge 本身</b>的地址，不带 <code>/api</code> 后缀。拼接规则：本工具按
             <code>baseUrl + /api/v4/contests/...</code> 调 DOMjudge API；队伍浏览器访问的
-            DOMjudge 页面则通过本工具的 <code>/cxtool/dj/...</code> 反代到
+            DOMjudge 页面则通过本工具的 <code>/wxt/dj/...</code> 反代到
             <code>baseUrl + /...</code>。
           </span>
         </label>

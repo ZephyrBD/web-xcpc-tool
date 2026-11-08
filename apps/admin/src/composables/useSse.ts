@@ -15,7 +15,7 @@ export function useSse(onEvent: SseHandler): void {
   const token = session.sseToken
   if (!token) return
 
-  const es = new EventSource(`/cxtool/admin/api/events?token=${encodeURIComponent(token)}`)
+  const es = new EventSource(`/wxt/admin/api/events?token=${encodeURIComponent(token)}`)
   const handle = (name: string) => (e: MessageEvent) => {
     let data: unknown = null
     try {

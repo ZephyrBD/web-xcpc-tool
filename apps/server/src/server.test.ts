@@ -150,20 +150,20 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].pdfPath).toBeUndefined();
   });
 
-  test("verify → proxy chain works through a /cxtool mount", async () => {
+  test("verify → proxy chain works through a /wxt mount", async () => {
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc2");
-    const cfg = { ...makeCfg(), contextPath: "/cxtool" };
-    const app = new Hono().route("/cxtool", createApp(cfg, { dataDir, teamStore }));
+    const cfg = { ...makeCfg(), contextPath: "/wxt" };
+    const app = new Hono().route("/wxt", createApp(cfg, { dataDir, teamStore }));
 
-    const verifyRes = await app.request(`/cxtool/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const verifyRes = await app.request(`/wxt/dj/verify?code=${teamCode}`, { redirect: "manual" });
     expect(verifyRes.status).toBe(302);
-    expect(verifyRes.headers.get("location")).toBe("/cxtool/dj/");
+    expect(verifyRes.headers.get("location")).toBe("/wxt/dj/");
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
-    expect(setCookie).toContain("Path=/cxtool/dj");
+    expect(setCookie).toContain("Path=/wxt/dj");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
 
-    const proxied = await app.request("/cxtool/dj/anything", {
+    const proxied = await app.request("/wxt/dj/anything", {
       headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
     });
     expect(proxied.status).toBe(200);
@@ -326,62 +326,62 @@ describe("static hosting", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const makeCfg = () => ({ ...loadConfigWithSecret(), contextPath: "/cxtool" });
-  const makeApp = () => new Hono().route("/cxtool", createApp(makeCfg(), { dataDir: mkdtempSync(join(tmpdir(), "static-data-")), staticDir }));
+  const makeCfg = () => ({ ...loadConfigWithSecret(), contextPath: "/wxt" });
+  const makeApp = () => new Hono().route("/wxt", createApp(makeCfg(), { dataDir: mkdtempSync(join(tmpdir(), "static-data-")), staticDir }));
 
-  test("GET /cxtool/ serves index.html as text/html", async () => {
-    const res = await makeApp().request("/cxtool/");
+  test("GET /wxt/ serves index.html as text/html", async () => {
+    const res = await makeApp().request("/wxt/");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("ADMIN-INDEX");
   });
 
   test("GET .js asset returns application/javascript", async () => {
-    const res = await makeApp().request("/cxtool/assets/app-H4SH.js");
+    const res = await makeApp().request("/wxt/assets/app-H4SH.js");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/javascript");
     expect(await res.text()).toContain("fixture-js");
   });
 
   test("GET .svg asset returns image/svg+xml", async () => {
-    const res = await makeApp().request("/cxtool/logo.svg");
+    const res = await makeApp().request("/wxt/logo.svg");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("image/svg+xml");
   });
 
   test.each([
-    "/cxtool/%2e%2e/secret.txt",
-    "/cxtool/assets/%2e%2e/%2e%2e/secret.txt",
-    "/cxtool/assets/..%2fsecret.txt",
-    "/cxtool/..%5csecret.txt",
+    "/wxt/%2e%2e/secret.txt",
+    "/wxt/assets/%2e%2e/%2e%2e/secret.txt",
+    "/wxt/assets/..%2fsecret.txt",
+    "/wxt/..%5csecret.txt",
   ])("GET %s never leaks files outside staticDir", async (path) => {
     const res = await makeApp().request(path);
     expect([403, 404]).toContain(res.status);
     expect(await res.text()).not.toContain("TOP-SECRET");
   });
 
-  test("deep link /cxtool/login falls back to index.html", async () => {
-    const res = await makeApp().request("/cxtool/login");
+  test("deep link /wxt/login falls back to index.html", async () => {
+    const res = await makeApp().request("/wxt/login");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("ADMIN-INDEX");
   });
 
   test("SPA fallback does not swallow /admin/api 404s", async () => {
-    const res = await makeApp().request("/cxtool/admin/api/no-such-route");
+    const res = await makeApp().request("/wxt/admin/api/no-such-route");
     expect(res.status).toBe(401);
     expect(res.headers.get("content-type")).toContain("application/json");
   });
 
   test("SPA fallback does not swallow /dj 404s", async () => {
-    const res = await makeApp().request("/cxtool/dj/no-such-route", { redirect: "manual" });
+    const res = await makeApp().request("/wxt/dj/no-such-route", { redirect: "manual" });
     // Team paths redirect humans to the type-in verify form.
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/cxtool/dj/verify");
+    expect(res.headers.get("location")).toBe("/wxt/dj/verify");
   });
 
   test("non-GET miss does not fall back to index.html", async () => {
-    const res = await makeApp().request("/cxtool/login", { method: "POST" });
+    const res = await makeApp().request("/wxt/login", { method: "POST" });
     expect(res.status).toBe(404);
   });
 });

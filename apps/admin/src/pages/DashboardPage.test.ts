@@ -18,7 +18,7 @@ function mockFetch() {
   originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
     const u = new URL(String(url))
-    const path = u.pathname.replace(/^\/cxtool/, '')
+    const path = u.pathname.replace(/^\/wxt/, '')
     getPaths.push(path + u.search)
     const body = (() => {
       if (path === '/admin/api/team-codes') return teamCodeRows

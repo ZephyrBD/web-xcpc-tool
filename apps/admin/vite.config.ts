@@ -7,7 +7,7 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 export default defineConfig({
-  base: '/cxtool/',
+  base: '/wxt/',
   plugins: [
     vue(),
     AutoImport({
@@ -25,7 +25,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/cxtool': {
+      '/wxt': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

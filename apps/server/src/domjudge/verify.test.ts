@@ -127,16 +127,16 @@ describe("GET /dj/verify route", () => {
     expect(payload?.sub).toBe("2025001");
   });
 
-  test("under /cxtool mount, redirect and cookie path carry the contextPath", async () => {
-    const cfg = { ...testCfg(), contextPath: "/cxtool" };
+  test("under /wxt mount, redirect and cookie path carry the contextPath", async () => {
+    const cfg = { ...testCfg(), contextPath: "/wxt" };
     const store = testStore();
     const code = store.setTeamCode("2025001");
     const sub = createApp(cfg, { teamStore: store });
-    const app = new Hono().route("/cxtool", sub);
-    const res = await app.request(`/cxtool/dj/verify?code=${code}`, { redirect: "manual" });
+    const app = new Hono().route("/wxt", sub);
+    const res = await app.request(`/wxt/dj/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/cxtool/dj/");
-    expect(res.headers.get("set-cookie")).toContain("Path=/cxtool/dj");
+    expect(res.headers.get("location")).toBe("/wxt/dj/");
+    expect(res.headers.get("set-cookie")).toContain("Path=/wxt/dj");
     const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
     expect((await verifyTeamToken(SECRET, token))?.sub).toBe("2025001");
   });
@@ -211,12 +211,12 @@ describe("GET /dj/verify route", () => {
     expect(text).not.toContain("<script>alert(1)</script>");
   });
 
-  test("window page renders under a /cxtool mount", async () => {
-    const cfg = { ...testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" }), contextPath: "/cxtool" };
+  test("window page renders under a /wxt mount", async () => {
+    const cfg = { ...testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" }), contextPath: "/wxt" };
     const store = testStore();
     const code = store.setTeamCode("t1");
-    const app = new Hono().route("/cxtool", createApp(cfg, { teamStore: store }));
-    const res = await app.request(`/cxtool/dj/verify?code=${code}`);
+    const app = new Hono().route("/wxt", createApp(cfg, { teamStore: store }));
+    const res = await app.request(`/wxt/dj/verify?code=${code}`);
     expect(res.status).toBe(403);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("当前不在允许登录的时段内");

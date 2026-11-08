@@ -9,7 +9,7 @@ describe("loadConfig", () => {
     const path = join(tmpdir(), "nonexistent-config-" + Date.now() + ".json");
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
-    expect(cfg.contextPath).toBe("/cxtool");
+    expect(cfg.contextPath).toBe("/wxt");
     expect(cfg.teamLogin).toEqual({ start: "", end: "" });
   });
 
@@ -42,7 +42,7 @@ describe("writeDefaultConfig", () => {
     writeDefaultConfig(path);
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
-    expect(cfg.contextPath).toBe("/cxtool");
+    expect(cfg.contextPath).toBe("/wxt");
     expect(cfg.domjudge).toEqual({ baseUrl: "", adminUser: "", adminPassword: "", timeoutSeconds: 10 });
     expect(cfg.jwt.ttlSeconds).toBeGreaterThan(0);
     expect(cfg.teamLogin).toEqual({ start: "", end: "" });

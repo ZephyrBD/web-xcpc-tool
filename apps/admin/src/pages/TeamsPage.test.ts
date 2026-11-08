@@ -25,7 +25,7 @@ const calls: Array<{ method: string; path: string; body: unknown; contentType?: 
 function mockFetch() {
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = new URL(String(url))
-    const path = u.pathname.replace(/^\/cxtool/, '')
+    const path = u.pathname.replace(/^\/wxt/, '')
     const method = init?.method ?? 'GET'
     let body: unknown = null
     let contentType: string | undefined

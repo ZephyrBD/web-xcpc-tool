@@ -9,7 +9,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const settingsView = {
   port: 8080,
-  contextPath: '/cxtool',
+  contextPath: '/wxt',
   domjudge: { baseUrl: 'http://dj.old', adminUser: 'djadmin', timeoutSeconds: 10 },
   balloon: { contestId: 'c1', pollIntervalSeconds: 30 },
   print: { tokenMasked: 'abcd***' },
@@ -23,7 +23,7 @@ let originalFetch: typeof fetch | null = null
 function mockFetch() {
   originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-    const path = new URL(String(url)).pathname.replace(/^\/cxtool/, '')
+    const path = new URL(String(url)).pathname.replace(/^\/wxt/, '')
     const method = init?.method ?? 'GET'
     if (method === 'GET' && path === '/admin/api/settings') {
       return new Response(JSON.stringify(settingsView), {

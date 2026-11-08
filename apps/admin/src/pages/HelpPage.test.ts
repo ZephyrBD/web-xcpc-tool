@@ -8,7 +8,7 @@ describe('HelpPage', () => {
     const wrapper = mount(HelpPage)
     const text = wrapper.text()
     expect(text).toContain('打印回调对接')
-    expect(text).toContain('/cxtool/dj/print')
+    expect(text).toContain('/wxt/dj/print')
     expect(text).toContain('org.domjudge.print-token')
     expect(text).toContain('location')
     expect(text).toContain('teamname')
