@@ -42,7 +42,9 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
   const res = await fetch(url, {
     ...rest,
     headers: {
-      ...(rest.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(rest.body !== undefined && !(rest.body instanceof FormData)
+        ? { 'Content-Type': 'application/json' }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
