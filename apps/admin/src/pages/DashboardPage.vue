@@ -2,11 +2,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiFetch } from '@/api'
 import { useSse } from '@/composables/useSse'
-import type { AuthTask } from '@/types'
+import type { AuthTask, BalloonTask, PrintTask } from '@/types'
 
-const pendingAuth = ref<number | null>(null)
-const pendingPrint = ref<number | null>(null)
-const pendingBalloon = ref<number | null>(null)
+const authTasks = ref<AuthTask[]>([])
+const printTasks = ref<PrintTask[]>([])
+const balloonTasks = ref<BalloonTask[]>([])
 const teamCount = ref<number | null>(null)
 const loaded = ref(false)
 
@@ -14,13 +14,13 @@ async function refresh(): Promise<void> {
   // 气球服务可能未启用（503）等：单项失败显示 “—” 而不是拖垮整页。
   const [auth, print, balloon, teams] = await Promise.allSettled([
     apiFetch<AuthTask[]>('/admin/api/auth-tasks', { query: { status: 'pending' } }),
-    apiFetch<unknown[]>('/admin/api/print-tasks', { query: { status: 'pending' } }),
-    apiFetch<unknown[]>('/admin/api/balloon-tasks', { query: { status: 'pending' } }),
+    apiFetch<PrintTask[]>('/admin/api/print-tasks', { query: { status: 'pending' } }),
+    apiFetch<BalloonTask[]>('/admin/api/balloon-tasks', { query: { status: 'pending' } }),
     apiFetch<unknown[]>('/admin/api/teams'),
   ])
-  pendingAuth.value = auth.status === 'fulfilled' ? auth.value.length : null
-  pendingPrint.value = print.status === 'fulfilled' ? print.value.length : null
-  pendingBalloon.value = balloon.status === 'fulfilled' ? balloon.value.length : null
+  authTasks.value = auth.status === 'fulfilled' && Array.isArray(auth.value) ? auth.value : []
+  printTasks.value = print.status === 'fulfilled' && Array.isArray(print.value) ? print.value : []
+  balloonTasks.value = balloon.status === 'fulfilled' && Array.isArray(balloon.value) ? balloon.value : []
   teamCount.value = teams.status === 'fulfilled' ? teams.value.length : null
   loaded.value = true
 }
@@ -38,19 +38,50 @@ function scheduleRefresh(): void {
 useSse(() => scheduleRefresh())
 
 const cards = computed(() => [
-  { label: '待审认证', value: pendingAuth.value, accent: 'var(--brand-purple)' },
-  { label: '待打任务', value: pendingPrint.value, accent: 'var(--brand-orange)' },
-  { label: '待发气球', value: pendingBalloon.value, accent: 'var(--brand-green)' },
-  { label: '队伍数', value: teamCount.value, accent: 'var(--brand-blue)' },
+  { label: '待审认证', value: authTasks.value.length, accent: 'var(--brand-purple)', to: '/auth-tasks' },
+  { label: '待打任务', value: printTasks.value.length, accent: 'var(--brand-orange)', to: '/jobs' },
+  { label: '待发气球', value: balloonTasks.value.length, accent: 'var(--brand-green)', to: '/jobs' },
+  { label: '队伍数', value: teamCount.value, accent: 'var(--brand-blue)', to: '/teams' },
 ])
+
+const pendingAuth = computed(() => authTasks.value.slice(0, 5))
+
+interface JobRow {
+  kind: 'print' | 'balloon'
+  title: string
+  teamName: string
+  createdAt: string
+}
+
+const pendingJobs = computed<JobRow[]>(() => {
+  const rows: JobRow[] = [
+    ...printTasks.value.map((t) => ({
+      kind: 'print' as const,
+      title: t.originalFilename,
+      teamName: t.teamName,
+      createdAt: t.createdAt,
+    })),
+    ...balloonTasks.value.map((t) => ({
+      kind: 'balloon' as const,
+      title: `题目 ${t.problemLabel}`,
+      teamName: t.teamName,
+      createdAt: t.createdAt,
+    })),
+  ]
+  return rows.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')).slice(0, 5)
+})
 
 const allClear = computed(
   () =>
     loaded.value &&
-    pendingAuth.value === 0 &&
-    pendingPrint.value === 0 &&
-    pendingBalloon.value === 0,
+    authTasks.value.length === 0 &&
+    printTasks.value.length === 0 &&
+    balloonTasks.value.length === 0,
 )
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString()
+}
 
 onMounted(() => void refresh())
 onUnmounted(() => {
@@ -62,16 +93,51 @@ onUnmounted(() => {
   <div class="dash">
     <p v-if="allClear" class="dash-clear">现在一切正常，没有待办事项 🎉</p>
     <div class="dash-grid">
-      <div
+      <RouterLink
         v-for="card in cards"
         :key="card.label"
+        :to="card.to"
         class="stat-card"
         :style="{ '--card-accent': card.accent }"
       >
         <span class="stat-dot" aria-hidden="true"></span>
         <span class="stat-value">{{ card.value ?? '—' }}</span>
         <span class="stat-label">{{ card.label }}</span>
-      </div>
+      </RouterLink>
+    </div>
+
+    <div class="dash-panels">
+      <section class="dash-panel">
+        <div class="panel-head">
+          <h2 class="panel-title">最新待审认证</h2>
+          <RouterLink to="/auth-tasks" class="panel-link">查看全部 →</RouterLink>
+        </div>
+        <ul v-if="pendingAuth.length" class="panel-list">
+          <li v-for="task in pendingAuth" :key="task.id" class="panel-row">
+            <span class="row-main">{{ task.examNum }}</span>
+            <span class="row-sub">{{ formatTime(task.createdAt) }}</span>
+          </li>
+        </ul>
+        <p v-else class="panel-empty">没有待审的认证申请，很清净 🙂</p>
+      </section>
+
+      <section class="dash-panel">
+        <div class="panel-head">
+          <h2 class="panel-title">最新任务</h2>
+          <RouterLink to="/jobs" class="panel-link">查看全部 →</RouterLink>
+        </div>
+        <ul v-if="pendingJobs.length" class="panel-list">
+          <li v-for="(job, i) in pendingJobs" :key="`${job.kind}-${i}`" class="panel-row">
+            <span class="job-pill" :class="job.kind === 'print' ? 'job-pill--print' : 'job-pill--balloon'">
+              {{ job.kind === 'print' ? '打印' : '气球' }}
+            </span>
+            <span class="row-main">{{ job.title }}</span>
+            <span class="row-team">{{ job.teamName }}</span>
+            <span class="row-sub">{{ formatTime(job.createdAt) }}</span>
+          </li>
+        </ul>
+        <p v-else class="panel-empty">打印和气球队列都空着，随时候命 🙂</p>
+      </section>
     </div>
   </div>
 </template>
@@ -98,6 +164,8 @@ onUnmounted(() => {
   border-top: 3px solid var(--card-accent);
   border-radius: var(--radius-card);
   background: var(--bg);
+  text-decoration: none;
+  color: inherit;
   transition: box-shadow 0.15s ease;
 }
 
@@ -125,9 +193,120 @@ onUnmounted(() => {
   color: var(--text-muted);
 }
 
+.dash-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.dash-panel {
+  padding: 20px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.panel-title {
+  font-size: var(--text-20);
+}
+
+.panel-link {
+  font-size: var(--text-13);
+  text-decoration: none;
+  color: var(--text-muted);
+}
+
+.panel-link:hover {
+  color: var(--accent);
+}
+
+.panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-15);
+}
+
+.panel-row:first-child {
+  border-top: none;
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-team {
+  color: var(--text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-sub {
+  color: var(--text-muted);
+  font-size: var(--text-13);
+  flex-shrink: 0;
+}
+
+.job-pill {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-13);
+  border: 1px solid transparent;
+}
+
+.job-pill--print {
+  color: var(--brand-orange);
+  border-color: color-mix(in srgb, var(--brand-orange) 35%, transparent);
+  background: color-mix(in srgb, var(--brand-orange) 12%, transparent);
+}
+
+.job-pill--balloon {
+  color: var(--brand-green);
+  border-color: color-mix(in srgb, var(--brand-green) 35%, transparent);
+  background: color-mix(in srgb, var(--brand-green) 12%, transparent);
+}
+
+.panel-empty {
+  margin: 0;
+  padding: 16px 0 4px;
+  font-size: var(--text-15);
+  color: var(--text-muted);
+}
+
 @media (max-width: 768px) {
   .dash-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .row-team {
+    display: none;
   }
 }
 </style>

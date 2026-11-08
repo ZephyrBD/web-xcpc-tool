@@ -37,7 +37,7 @@ async function onSubmit() {
 <template>
   <div class="login-page">
     <div class="login-card">
-      <h1 class="login-title">XCPC Tool 管理台</h1>
+      <h1 class="login-title">Web XCPC Tool 管理台</h1>
       <p class="login-subtitle">登录后继续操作</p>
       <form class="login-form" @submit.prevent="onSubmit">
         <label class="login-field">

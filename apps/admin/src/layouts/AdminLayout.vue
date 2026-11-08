@@ -42,7 +42,7 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
     <header class="layout-header">
       <div class="layout-header-inner">
         <span class="logo-dot" aria-hidden="true"></span>
-        <span class="app-title">XCPC Tool 管理台</span>
+        <span class="app-title">Web XCPC Tool 管理台</span>
         <nav class="layout-nav">
           <RouterLink
             v-for="item in navItems"
@@ -60,32 +60,38 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
       </div>
     </header>
     <main class="layout-main">
-      <div class="page-header">
-        <h1 class="page-title">{{ route.meta.title ?? '' }}</h1>
-        <p class="page-subtitle">有什么需要，这边都能帮你搞定。</p>
+      <div class="layout-scroll">
+        <div class="page-header">
+          <h1 class="page-title">{{ route.meta.title ?? '' }}</h1>
+          <p class="page-subtitle">有什么需要，这边都能帮你搞定。</p>
+        </div>
+        <router-view />
       </div>
-      <router-view />
     </main>
   </div>
 </template>
 
 <style scoped>
 .admin-layout {
-  min-height: 100vh;
+  /* 视口高度固定，页面级滚动一律走内部 .layout-scroll，外层不出现滚动条。 */
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
 }
 
 .layout-header {
+  flex-shrink: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
 
 .layout-header-inner {
-  max-width: 1280px;
+  max-width: 1720px;
   margin: 0 auto;
-  padding: 0 32px;
+  padding: 0 40px;
   height: 64px;
   display: flex;
   align-items: center;
@@ -163,15 +169,25 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
 
 .layout-main {
   flex: 1;
+  min-height: 0;
   width: 100%;
-  max-width: 1280px;
+  max-width: 1720px;
   margin: 0 auto;
-  padding: 32px;
+  padding: 24px 40px 32px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--section-tint);
 }
 
+.layout-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .page-header {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .page-title {
@@ -197,7 +213,6 @@ const accent = computed(() => accents[route.name as string] ?? 'var(--brand-purp
   .layout-main {
     padding: 16px;
   }
-
   .page-title {
     font-size: var(--text-32);
   }
