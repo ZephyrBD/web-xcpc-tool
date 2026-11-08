@@ -122,7 +122,12 @@ export function printViaIframe(html: string, timeoutMs = CONFIRM_TIMEOUT_MS): Pr
     const cleanup = () => {
       if (frame.parentNode) frame.parentNode.removeChild(frame)
     }
+    let started = false
     const start = () => {
+      // Three start paths (load event, readyState, fallback timer) can all
+      // land for one frame; guard so the print dialog opens exactly once.
+      if (started) return
+      started = true
       const win = frame.contentWindow
       if (!win) {
         resolve(false)
