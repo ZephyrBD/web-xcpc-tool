@@ -15,6 +15,7 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
 import { verifyTeamToken } from "./auth/token";
+import { LoginRequestStore } from "./auth/loginRequests";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
@@ -67,6 +68,102 @@ describe("createApp", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("login approval flow (outside the login window)", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-approval-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // end in the past → the window is permanently closed for these tests.
+  const makeCfg = () => ({
+    ...loadConfigWithSecret(),
+    contextPath: "",
+    teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
+  });
+
+  const setup = () => {
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const app = createApp(makeCfg(), { dataDir, teamStore, loginRequests });
+    return { app, teamCode, loginRequests };
+  };
+
+  test("correct code outside the window returns the waiting page and creates one pending request", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(res.status).toBe(200);
+    const pending = loginRequests.listPending();
+    expect(pending.length).toBe(1);
+    expect(pending[0].icpcId).toBe("icpc1");
+    expect(await res.text()).toContain(pending[0].id);
+    // resubmitting the same team code reuses the existing pending request
+    await app.request(`/dj/verify?code=${teamCode}`);
+    expect(loginRequests.listAll().length).toBe(1);
+  });
+
+  test("approved request claims a token exactly once; a replayed claim is 403", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const id = loginRequests.listPending()[0].id;
+
+    const statusRes = await app.request(`/dj/verify/status?req=${id}`);
+    expect(await statusRes.json()).toEqual({ status: "pending" });
+    expect(loginRequests.decide(id, "approved")?.status).toBe("approved");
+
+    const claim = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(claim.status).toBe(302);
+    expect(claim.headers.get("location")).toBe("/dj/");
+    const setCookie = claim.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("cxtool-token=");
+    expect(setCookie).toContain("Path=/; HttpOnly; SameSite=Lax");
+    const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    expect((await verifyTeamToken("test-secret", token))?.sub).toBe("icpc1");
+
+    const again = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(again.status).toBe(403);
+    expect(await again.text()).toContain("队伍登录");
+  });
+
+  test("a rejected request cannot claim and the status poll reports it", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const id = loginRequests.listPending()[0].id;
+    loginRequests.decide(id, "rejected");
+
+    const statusRes = await app.request(`/dj/verify/status?req=${id}`);
+    expect(await statusRes.json()).toEqual({ status: "rejected" });
+    const claim = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(claim.status).toBe(403);
+    expect(claim.headers.get("set-cookie")).toBeNull();
+  });
+
+  test("wrong code outside the window still returns the 403 miss page and creates no request", async () => {
+    const { app, loginRequests } = setup();
+    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("队伍码不正确");
+    expect(loginRequests.listAll().length).toBe(0);
+  });
+
+  test("inside the login window no approval request is ever created", async () => {
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
+    const app = createApp(cfg, { dataDir, teamStore, loginRequests });
+
+    const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(loginRequests.listAll().length).toBe(0);
   });
 });
 

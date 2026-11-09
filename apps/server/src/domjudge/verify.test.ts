@@ -9,6 +9,7 @@ import { createApp } from "../server";
 import { SecretBox } from "../store/secretbox";
 import { setDataDir } from "../store/store";
 import { TeamStore } from "../store/teams";
+import { LoginRequestStore } from "../auth/loginRequests";
 
 const SECRET = "test-secret";
 const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -193,16 +194,19 @@ describe("GET /dj/verify route", () => {
     expect(text).toContain("队伍码不正确");
   });
 
-  test("valid code outside the window returns 403 with the configured window", async () => {
+  test("valid code outside the window returns the waiting page and records a request", async () => {
     const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
     const store = testStore();
     const code = store.setTeamCode("t1");
-    const app = createApp(cfg, { teamStore: store });
+    const loginRequests = new LoginRequestStore(
+      join(tmpdir(), `verify-req-${crypto.randomUUID()}`, "login-requests.json"),
+    );
+    const app = createApp(cfg, { teamStore: store, loginRequests });
     const res = await app.request(`/dj/verify?code=${code}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("当前不在允许登录的时段内");
-    expect(text).toContain("允许登录时段");
+    expect(text).toContain("等待管理员审批");
+    expect(text).toContain(loginRequests.listPending()[0].id);
   });
 
   test("no restriction when the window is empty (default config)", async () => {
@@ -252,14 +256,17 @@ describe("GET /dj/verify route", () => {
     expect(text).not.toContain("<script>alert(1)</script>");
   });
 
-  test("window page renders under a /wxt mount", async () => {
+  test("waiting page renders under a /wxt mount", async () => {
     const cfg = { ...testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" }), contextPath: "/wxt" };
     const store = testStore();
     const code = store.setTeamCode("t1");
-    const app = new Hono().route("/wxt", createApp(cfg, { teamStore: store }));
+    const loginRequests = new LoginRequestStore(
+      join(tmpdir(), `verify-req-${crypto.randomUUID()}`, "login-requests.json"),
+    );
+    const app = new Hono().route("/wxt", createApp(cfg, { teamStore: store, loginRequests }));
     const res = await app.request(`/wxt/dj/verify?code=${code}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("当前不在允许登录的时段内");
+    expect(await res.text()).toContain("等待管理员审批");
   });
 });

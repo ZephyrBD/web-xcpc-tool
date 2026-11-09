@@ -19,7 +19,9 @@ import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { randomInt } from "node:crypto";import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
-import { verifyFormPage, verifyMissPage, verifyWindowPage } from "./pages/teamPages";
+import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPage } from "./pages/teamPages";
+import { signTeamToken } from "./auth/token";
+import { LoginRequestStore } from "./auth/loginRequests";
 
 export type Deps = {
   dataDir: string;
@@ -33,6 +35,8 @@ export type Deps = {
   server?: { requestIP(req: Request): { address: string } | null };
   /** Login history store. Defaults to <dataDir>/login-history.json with a 2000-entry cap. */
   loginHistory?: LoginHistoryStore;
+  /** Approval requests for logins outside the window. Defaults to <dataDir>/login-requests.json. */
+  loginRequests?: LoginRequestStore;
   /** Admin frontend build output directory. Defaults to apps/server/static. */
   staticDir?: string;
 };
@@ -76,6 +80,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   const teamsStore = deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
   const loginHistory = deps?.loginHistory ?? new LoginHistoryStore(join(dataDir, "login-history.json"));
+  const loginRequests = deps?.loginRequests ?? new LoginRequestStore(join(dataDir, "login-requests.json"));
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -103,11 +108,23 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
       return verifyFormPage(cfg.contextPath, hint, next, cfg.teamLogin);
     }
-    const result = await verifyTeamCode(raw.trim(), teamStore, cfg);
+    const result = await verifyTeamCode(raw.trim(), teamStore, cfg, new Date(), loginRequests, {
+      ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
+      teamNameOf: (icpcId) => {
+        const team = teamsStore.load().find((t) => teamAccountKey(t) === icpcId);
+        return team?.display_name?.trim() || team?.name || icpcId;
+      },
+    });
     if (!result.ok) {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
       // HTTP status codes keep their semantics (403 on both failures).
-      return result.reason === "bad-code" ? verifyMissPage() : verifyWindowPage(cfg.teamLogin);
+      if (result.reason === "waiting") {
+        return verifyWaitingPage(cfg.contextPath, result.request.id, next);
+      }
+      // With the approval flow wired, a closed window has already looked the
+      // code up: not-found lands here and shows the (unchanged) miss page,
+      // while a found code took the waiting branch above.
+      return verifyMissPage();
     }
     // Successful team-code logins are recorded (only who/when/from-where).
     const matched = teamStore.findByTeamCode(raw.trim());
@@ -122,6 +139,40 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       "Set-Cookie",
       `cxtool-token=${result.token}; Path=/; HttpOnly; SameSite=Lax`,
     );
+    return c.redirect(next ?? `${djRoot}/`, 302);
+  });
+
+  // Waiting page for an existing approval request (shared link / manual revisit).
+  app.get("/dj/verify/wait", (c) => {
+    const id = c.req.query("req") ?? "";
+    if (!loginRequests.get(id)) {
+      return verifyFormPage(cfg.contextPath, "登录请求不存在或已过期，请重新输入队伍码", null, cfg.teamLogin);
+    }
+    return verifyWaitingPage(cfg.contextPath, id, safeNext(c.req.query("next")));
+  });
+
+  // Polled by the waiting page's inline JS; id is a server-issued uuid.
+  app.get("/dj/verify/status", (c) => {
+    const req = loginRequests.get(c.req.query("req") ?? "");
+    if (!req) return c.json({ error: "login request not found" }, 404);
+    return c.json({ status: req.status });
+  });
+
+  // Approval is valid ONCE: consume turns approved → claimed, so a replayed
+  // claim link (or a pending/rejected request) always lands on the 403 page.
+  app.get("/dj/verify/claim", async (c) => {
+    const next = safeNext(c.req.query("next"));
+    const consumed = loginRequests.consume(c.req.query("req") ?? "");
+    if (!consumed) return verifyClaimDeniedPage();
+    const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, consumed.icpcId);
+    loginHistory.append({
+      icpcId: consumed.icpcId,
+      teamCode: consumed.teamCode,
+      at: new Date().toISOString(),
+      ip: consumed.ip ?? deps?.server?.requestIP(c.req.raw)?.address ?? null,
+    });
+    // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
+    c.header("Set-Cookie", `cxtool-token=${token}; Path=/; HttpOnly; SameSite=Lax`);
     return c.redirect(next ?? `${djRoot}/`, 302);
   });
 
