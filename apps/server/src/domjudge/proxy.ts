@@ -100,14 +100,195 @@ async function rewriteResponseCookies(res: Response): Promise<Response> {
   return new Response(body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/**
+ * Path prefix of the DOMjudge baseUrl, normalized (no trailing slash, "" when
+ * the base sits at the site root). DOMjudge deploys such as the official demo
+ * live under /demoweb and emit that prefix in every absolute URL it writes.
+ */
+export function basePathOf(baseUrl: string): string {
+  if (!baseUrl) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return "";
+  }
+  const path = parsed.pathname.replace(/\/+$/, "");
+  return path === "" || path === "/" ? "" : path;
+}
+
+/**
+ * Removes `prefix` from the start of a path, keeping the leading slash of the
+ * remainder. Returns null when the path is not under the prefix, so callers can
+ * leave foreign / unrelated values alone.
+ */
+function stripPrefixPath(path: string, prefix: string): string | null {
+  if (path === prefix) return "/";
+  if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length);
+  return null;
+}
+
+/** Escapes a literal string for use inside a RegExp. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Rewrites an upstream redirect target so the base-url prefix disappears:
+ * `{origin}{prefix}/x` and `{prefix}/x` both become `/x`, query/hash kept.
+ * Anything else (foreign origins, `mailto:`, unrelated paths) is untouched, as
+ * is everything when the baseUrl has no prefix.
+ */
+export function rewriteLocation(location: string, baseUrl: string): string {
+  const prefix = basePathOf(baseUrl);
+  if (!prefix) return location;
+
+  let absolute: URL | null = null;
+  try {
+    absolute = new URL(location);
+  } catch {
+    absolute = null;
+  }
+  if (absolute) {
+    let base: URL;
+    try {
+      base = new URL(baseUrl);
+    } catch {
+      return location;
+    }
+    // Only our own DOMjudge origin may be folded into a root path.
+    if (absolute.origin !== base.origin) return location;
+    const rest = stripPrefixPath(absolute.pathname, prefix);
+    if (rest === null) return location;
+    return `${rest}${absolute.search}${absolute.hash}`;
+  }
+
+  // Root-relative form: /demoweb/public?x=1#top
+  const split = location.search(/[?#]/);
+  const path = split === -1 ? location : location.slice(0, split);
+  const tail = split === -1 ? "" : location.slice(split);
+  const rest = stripPrefixPath(path, prefix);
+  return rest === null ? location : `${rest}${tail}`;
+}
+
+/** Content types whose bodies are plain text we may safely rewrite. */
+const REWRITABLE_TYPES = new Set([
+  "text/html",
+  "text/css",
+  "application/javascript",
+  "text/javascript",
+]);
+
+/** Characters that may precede a path reference in HTML/CSS/JS. */
+const REFERENCE_BOUNDARY = `(^|[\\s"'\`()=,;:])`;
+
+/**
+ * Strips the base-url prefix out of a text asset. DOMjudge emits it as a
+ * root-relative reference (`"/demoweb/js/x.js`, `url(/demoweb/img/a.png)`) or
+ * as an absolute URL on its own origin; both are rewritten to root paths so the
+ * browser asks us for `/js/x.js`, which the root proxy maps back to
+ * `{baseUrl}/js/x.js`.
+ */
+function rewriteTextPaths(text: string, prefix: string, origin: string | null): string {
+  const prefixed = escapeRegExp(prefix);
+  let out = text;
+  if (origin) {
+    const escapedOrigin = escapeRegExp(origin);
+    // https://host/demoweb/x -> /x
+    out = out.split(`${origin}${prefix}/`).join("/");
+    // https://host/demoweb (bare base root) -> /
+    out = out.replace(new RegExp(`${escapedOrigin}${prefixed}(?=$|[\\s"'\`)>?,;:])`, "g"), "/");
+  }
+  // Relative references at a token boundary. Repeats are collapsed in a loop so
+  // a stale /demoweb/demoweb/x can never survive as /demoweb/x.
+  const reference = new RegExp(`${REFERENCE_BOUNDARY}${prefixed}(?=/|$|[\\s"'\`)>?,;:])`, "g");
+  for (let i = 0; i < 10; i++) {
+    const next = out.replace(reference, "$1");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * Rewrites the body of text assets served by DOMjudge so their base-url prefix
+ * is gone. A prefix-free baseUrl and every non-text response stream through
+ * untouched, so binary payloads (PDFs, submissions, images) are never buffered.
+ *
+ * A response that still carries a content-encoding we cannot safely decode is
+ * skipped with one WARN rather than risking a corrupted body: the page will
+ * keep its upstream references and lose styling, but it stays valid.
+ */
+export async function rewriteUpstreamBody(
+  res: Response,
+  baseUrl: string,
+  url?: string,
+): Promise<Response> {
+  const prefix = basePathOf(baseUrl);
+  if (!prefix) return res;
+  const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!REWRITABLE_TYPES.has(type)) return res;
+  if (!res.body) return res; // 204/304 and HEAD replies have nothing to rewrite
+
+  const encoding = res.headers.get("content-encoding");
+  if (encoding && encoding.trim().toLowerCase() !== "identity") {
+    log.warn(
+      "proxy",
+      `skip base-path rewrite: undecodable content-encoding "${encoding}"${url ? ` for ${url}` : ""}`,
+    );
+    return res;
+  }
+
+  let origin: string | null = null;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    origin = null;
+  }
+
+  const text = await res.text();
+  const rewritten = rewriteTextPaths(text, prefix, origin);
+  const headers = new Headers(res.headers);
+  // The body changed length; a stale content-length would truncate or hang it.
+  headers.delete("content-length");
+  headers.set("content-length", String(Buffer.byteLength(rewritten)));
+  return new Response(rewritten, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** Applies rewriteLocation to a redirect response, preserving its other headers. */
+function rewriteRedirect(res: Response, baseUrl: string): Response {
+  const location = res.headers.get("location");
+  if (!location) return res;
+  const next = rewriteLocation(location, baseUrl);
+  if (next === location) return res;
+  const headers = new Headers(res.headers);
+  headers.set("location", next);
+  const body = res.status === 204 || res.status === 304 ? null : res.body;
+  return new Response(body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/**
+ * Removes a leading base-url prefix from an incoming request path. Browsers
+ * normally follow the rewritten root-relative links, but a cached page from
+ * before the fix still asks for /demoweb/js/x.js; folding that away keeps the
+ * forwarded target at exactly one prefix. Prefix-free baseUrls are untouched.
+ */
+export function stripRequestPrefix(path: string, baseUrl: string): string {
+  const prefix = basePathOf(baseUrl);
+  if (!prefix) return path;
+  const rest = stripPrefixPath(path, prefix);
+  return rest === null ? path : rest;
+}
+
 /** Shared upstream forwarding: headers, login injection, proxy call. */
 async function forwardToDj(
   req: Request,
   cfg: Config,
   teamStore: TeamStore | undefined,
   payload: { sub: string },
-  rest: string,
+  rawRest: string,
 ): Promise<Response> {
+  const rest = stripRequestPrefix(rawRest, cfg.domjudge.baseUrl);
   const target = resolveTarget(cfg, rest) + new URL(req.url).search;
   const headers: Record<string, string | undefined> = {};
   for (const [k, v] of req.headers.entries()) {
@@ -140,7 +321,17 @@ async function forwardToDj(
     // xheaders login replies 302 with the session cookie, which fetch would
     // otherwise swallow while following the redirect and drop the login.
     const res = await proxy(target, { raw: req, headers, redirect: "manual" });
-    return await rewriteResponseCookies(res);
+    const withCookies = await rewriteResponseCookies(res);
+    if (withCookies.status >= 300 && withCookies.status < 400) {
+      // A prefix-carrying Location (https://host/demoweb/public) would send the
+      // browser to a path we cannot serve; fold it back to a root path.
+      return rewriteRedirect(withCookies, cfg.domjudge.baseUrl);
+    }
+    // Only successful text replies are buffered; binaries keep streaming.
+    if (withCookies.status >= 200 && withCookies.status < 300) {
+      return await rewriteUpstreamBody(withCookies, cfg.domjudge.baseUrl, target);
+    }
+    return withCookies;
   } catch (err) {
     log.error("proxy", `upstream error: ${target}`, err instanceof Error ? err.message : err);
     // Browsers navigating here are humans: show a friendly retry page instead

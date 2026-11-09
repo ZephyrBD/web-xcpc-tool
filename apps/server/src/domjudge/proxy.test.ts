@@ -6,8 +6,16 @@ import { join } from "node:path";
 import { CONTEXT_PATH, loadConfig } from "../config";
 import { signAdminToken, signTeamToken } from "../auth/token";
 import { createApp } from "../server";
-import { handleRootDjProxy, makeRootDispatch, resolveTarget } from "./proxy";
+import {
+  basePathOf,
+  handleRootDjProxy,
+  makeRootDispatch,
+  resolveTarget,
+  rewriteLocation,
+  rewriteUpstreamBody,
+} from "./proxy";
 import { SecretBox } from "../store/secretbox";
+import { initLogger } from "../log/logger";
 import { setDataDir } from "../store/store";
 import { TeamStore } from "../store/teams";
 
@@ -25,6 +33,10 @@ let upstreamPort = 0;
 
 let upstreamSetCookie: string[] | null = null;
 let upstreamRedirect: string | null = null;
+/** When set, the mock serves this literal body instead of the JSON echo. */
+let upstreamBody: string | null = null;
+let upstreamContentType = "text/html";
+let upstreamExtraHeaders: Record<string, string> = {};
 
 const upstream = Bun.serve({
   port: 0,
@@ -50,6 +62,11 @@ const upstream = Bun.serve({
     if (upstreamSetCookie) {
       for (const cookie of upstreamSetCookie) headers.append("set-cookie", cookie);
     }
+    if (upstreamBody !== null) {
+      headers.set("content-type", upstreamContentType);
+      for (const [k, v] of Object.entries(upstreamExtraHeaders)) headers.set(k, v);
+      return new Response(upstreamBody, { status: 200, headers });
+    }
     return new Response(JSON.stringify({ echo: "upstream-ok" }), { status: 200, headers });
   },
 });
@@ -62,6 +79,9 @@ describe("DOMjudge root reverse proxy", () => {
     lastReq = null;
     upstreamSetCookie = null;
     upstreamRedirect = null;
+    upstreamBody = null;
+    upstreamContentType = "text/html";
+    upstreamExtraHeaders = {};
   });
 
   const makeCfg = () => ({
@@ -437,5 +457,294 @@ describe("DOMjudge root reverse proxy", () => {
     const cfg = makeCfg();
     expect(resolveTarget(cfg, "/api/contests")).toBe(`http://127.0.0.1:${upstreamPort}/api/contests`);
     expect(resolveTarget(cfg, "api/x")).toBe(`http://127.0.0.1:${upstreamPort}/api/x`);
+  });
+});
+
+/**
+ * DOMjudge emits absolute paths carrying its own base-url prefix (the official
+ * demo deploys at /demoweb). The tool owns only /wxt, so the prefix has to be
+ * stripped from redirects and from HTML/CSS/JS references: DOMjudge then looks
+ * like it lives at the site root, and the root proxy re-adds the prefix once on
+ * every forward.
+ */
+describe("DOMjudge base path prefix rewriting", () => {
+  const PREFIXED = `http://127.0.0.1:${upstreamPort}/demoweb`;
+  const makePrefixedCfg = () => ({
+    ...loadConfig("/nonexistent/settings.json"),
+    jwt: { secret: SECRET, ttlSeconds: 3600 },
+    domjudge: { baseUrl: PREFIXED, adminUser: "", adminPassword: "", timeoutSeconds: 10 },
+  });
+  const proxyPrefixed = (path: string, init: RequestInit = {}, store?: TeamStore) =>
+    handleRootDjProxy(
+      new Request(`http://127.0.0.1:${upstreamPort}${path}`, init),
+      makePrefixedCfg(),
+      store,
+    );
+
+  afterEach(() => {
+    hits = 0;
+    lastReq = null;
+    upstreamSetCookie = null;
+    upstreamRedirect = null;
+    upstreamBody = null;
+    upstreamContentType = "text/html";
+    upstreamExtraHeaders = {};
+  });
+
+  test("basePathOf extracts and normalizes the base-url path prefix", () => {
+    expect(basePathOf("https://www.domjudge.org/demoweb")).toBe("/demoweb");
+    expect(basePathOf("https://www.domjudge.org/demoweb/")).toBe("/demoweb");
+    expect(basePathOf("https://www.domjudge.org/")).toBe("");
+    expect(basePathOf("https://www.domjudge.org")).toBe("");
+    expect(basePathOf("http://127.0.0.1:1234/a/b/")).toBe("/a/b");
+    expect(basePathOf("")).toBe("");
+    expect(basePathOf("not a url")).toBe("");
+  });
+
+  test("rewriteLocation turns absolute and prefix-relative Locations into root paths", () => {
+    const base = "https://www.domjudge.org/demoweb";
+    expect(rewriteLocation("https://www.domjudge.org/demoweb/public", base)).toBe("/public");
+    expect(rewriteLocation("/demoweb/public", base)).toBe("/public");
+    expect(rewriteLocation("/demoweb/public?x=1#top", base)).toBe("/public?x=1#top");
+    // foreign origins and non-prefixed paths stay untouched
+    expect(rewriteLocation("https://elsewhere.example/demoweb/x", base)).toBe(
+      "https://elsewhere.example/demoweb/x",
+    );
+    expect(rewriteLocation("/demoweb2/x", base)).toBe("/demoweb2/x");
+    expect(rewriteLocation("mailto:judge@example.com", base)).toBe("mailto:judge@example.com");
+    // no prefix configured: nothing changes
+    expect(rewriteLocation("https://www.domjudge.org/public", "https://www.domjudge.org")).toBe(
+      "https://www.domjudge.org/public",
+    );
+  });
+
+  test("302 Location under the prefix is rewritten to /public", async () => {
+    // DOMjudge emits its own origin in Location, which is exactly the configured baseUrl.
+    upstreamRedirect = `${PREFIXED}/public`;
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/public");
+    expect(hits).toBe(1);
+  });
+
+  test("a Location on a foreign origin is never rewritten", async () => {
+    upstreamRedirect = "https://elsewhere.example/demoweb/public";
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.headers.get("location")).toBe("https://elsewhere.example/demoweb/public");
+  });
+
+  test("302 Location without an origin but with the prefix is rewritten too", async () => {
+    upstreamRedirect = "/demoweb/public";
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/public");
+  });
+
+  test("HTML body has the prefixed asset paths stripped", async () => {
+    upstreamBody =
+      '<html><head><link href="/demoweb/css/x.css"><script src="/demoweb/js/x.js"></script></head></html>';
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/public", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("/js/x.js");
+    expect(html).toContain("/css/x.css");
+    expect(html).not.toContain("/demoweb/");
+  });
+
+  test("CSS url() references lose the prefix", async () => {
+    upstreamContentType = "text/css";
+    upstreamBody = "body{background:url(/demoweb/img/a.png)}";
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/css/x.css", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(res.headers.get("content-type")).toContain("text/css");
+    expect(await res.text()).toBe("body{background:url(/img/a.png)}");
+  });
+
+  test("absolute asset URLs pointing at the base origin lose the prefix", async () => {
+    upstreamBody = `<script src="${PREFIXED}/js/y.js"></script><a href="/demoweb/public">p</a>`;
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    const html = await res.text();
+    expect(html).toContain('src="/js/y.js"');
+    expect(html).toContain('href="/public"');
+    expect(html).not.toContain("demoweb");
+  });
+
+  test("absolute URLs on a foreign origin keep their prefix", async () => {
+    upstreamBody = '<a href="https://elsewhere.example/demoweb/x">x</a>';
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(await res.text()).toBe(upstreamBody);
+  });
+
+  test("content-length matches the rewritten body", async () => {
+    upstreamBody = '<html><script src="/demoweb/js/long-name.js"></script></html>';
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    const html = await res.text();
+    expect(html).not.toContain("/demoweb/");
+    const declared = res.headers.get("content-length");
+    if (declared !== null) expect(Number(declared)).toBe(Buffer.byteLength(html));
+  });
+
+  test("/js/x.js forwards to {baseUrl}/js/x.js with exactly one prefix", async () => {
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await proxyPrefixed("/js/x.js", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.path).toBe("/demoweb/js/x.js");
+  });
+
+  test("a stale prefixed request path does not double the prefix upstream", async () => {
+    // A cached page from before the fix still links /demoweb/js/x.js; that must
+    // land on {baseUrl}/js/x.js, never {baseUrl}/demoweb/js/x.js.
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    await proxyPrefixed("/demoweb/js/x.js", { headers: { cookie: `cxtool-token=${token}` } });
+    expect(lastReq?.path).toBe("/demoweb/js/x.js");
+    expect(lastReq?.path).not.toContain("/demoweb/demoweb/");
+  });
+
+  test("rewriting the body never produces a doubled prefix", async () => {
+    upstreamBody = '<a href="/demoweb/x">x</a>';
+    const token = await signTeamToken(SECRET, 3600, "2025001");
+    const res = await proxyPrefixed("/", { headers: { cookie: `cxtool-token=${token}` } });
+    const html = await res.text();
+    expect(html).toBe('<a href="/x">x</a>');
+    expect(html).not.toContain("/demoweb/demoweb/");
+  });
+
+  test("gzip-encoded responses are left untouched and warn once", async () => {
+    const gzipped = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03]);
+    const res = new Response(gzipped, {
+      headers: {
+        "content-type": "text/html",
+        "content-encoding": "gzip",
+        "content-length": String(gzipped.length),
+      },
+    });
+    const chunks: string[] = [];
+    const stream = {
+      isTTY: false,
+      write: (s: string) => {
+        chunks.push(String(s));
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+    initLogger({ logFilePath: false, stream, color: false });
+    try {
+      const out = await rewriteUpstreamBody(res, PREFIXED, `${PREFIXED}/public`);
+      expect(new Uint8Array(await out.arrayBuffer())).toEqual(gzipped);
+      expect(out.headers.get("content-encoding")).toBe("gzip");
+      const warns = chunks
+        .join("")
+        .split("\n")
+        .filter((l) => l.includes("[W]") && l.includes("content-encoding"));
+      expect(warns.length).toBe(1);
+      expect(warns[0]).toContain("proxy");
+      expect(warns[0]).toContain("/public");
+    } finally {
+      initLogger({ logFilePath: false });
+    }
+  });
+
+  test("binary responses under a prefixed baseUrl are streamed untouched", async () => {
+    const payload = new Uint8Array(64 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
+    const bin = Bun.serve({
+      port: 0,
+      fetch: () => new Response(payload, { headers: { "content-type": "application/pdf" } }),
+    });
+    try {
+      const cfg = {
+        ...makePrefixedCfg(),
+        domjudge: { ...makePrefixedCfg().domjudge, baseUrl: `http://127.0.0.1:${bin.port}/demoweb` },
+      };
+      const token = await signTeamToken(SECRET, 3600, "2025001");
+      const res = await handleRootDjProxy(
+        new Request(`http://127.0.0.1:${bin.port}/pdf/x.pdf`, {
+          headers: { cookie: `cxtool-token=${token}` },
+        }),
+        cfg,
+      );
+      const got = new Uint8Array(await res.arrayBuffer());
+      expect(got.length).toBe(payload.length);
+      expect(got.every((b, i) => b === payload[i])).toBe(true);
+    } finally {
+      bin.stop(true);
+    }
+  });
+
+  describe("regression: baseUrl without a path prefix is untouched", () => {
+    const unprefixedCfg = () => ({
+      ...loadConfig("/nonexistent/settings.json"),
+      jwt: { secret: SECRET, ttlSeconds: 3600 },
+      domjudge: {
+        baseUrl: `http://127.0.0.1:${upstreamPort}`,
+        adminUser: "",
+        adminPassword: "",
+        timeoutSeconds: 10,
+      },
+    });
+
+    test("HTML body passes through byte-for-byte", async () => {
+      upstreamBody = '<html><script src="/js/x.js"></script><a href="/demoweb/x">x</a></html>';
+      const token = await signTeamToken(SECRET, 3600, "2025001");
+      const res = await handleRootDjProxy(
+        new Request(`http://127.0.0.1:${upstreamPort}/`, {
+          headers: { cookie: `cxtool-token=${token}` },
+        }),
+        unprefixedCfg(),
+      );
+      expect(await res.text()).toBe(upstreamBody);
+    });
+
+    test("Location passes through verbatim", async () => {
+      upstreamRedirect = "https://www.domjudge.org/demoweb/public";
+      const token = await signTeamToken(SECRET, 3600, "2025001");
+      const res = await handleRootDjProxy(
+        new Request(`http://127.0.0.1:${upstreamPort}/`, {
+          headers: { cookie: `cxtool-token=${token}` },
+        }),
+        unprefixedCfg(),
+      );
+      expect(res.headers.get("location")).toBe("https://www.domjudge.org/demoweb/public");
+    });
+  });
+
+  describe("rewriteUpstreamBody unit behaviour", () => {
+    test("is a no-op for a prefix-free baseUrl even when the body looks prefixed", async () => {
+      const res = new Response('<a href="/demoweb/x">x</a>', {
+        headers: { "content-type": "text/html" },
+      });
+      const out = await rewriteUpstreamBody(res, "https://www.domjudge.org");
+      expect(await out.text()).toBe('<a href="/demoweb/x">x</a>');
+    });
+
+    test("skips non-text content types", async () => {
+      const res = new Response("binary", { headers: { "content-type": "application/pdf" } });
+      const out = await rewriteUpstreamBody(res, "https://www.domjudge.org/demoweb");
+      expect(await out.text()).toBe("binary");
+    });
+
+    test("preserves status and other headers while fixing content-length", async () => {
+      const body = '<a href="/demoweb/x">x</a>';
+      const res = new Response(body, {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "x-extra": "keep",
+          "content-length": String(body.length),
+        },
+      });
+      const out = await rewriteUpstreamBody(res, "https://www.domjudge.org/demoweb");
+      const text = await out.text();
+      expect(out.status).toBe(200);
+      expect(out.headers.get("x-extra")).toBe("keep");
+      expect(text).toBe('<a href="/x">x</a>');
+      const declared = out.headers.get("content-length");
+      if (declared !== null) expect(Number(declared)).toBe(Buffer.byteLength(text));
+    });
   });
 });
