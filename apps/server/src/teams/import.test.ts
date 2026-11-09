@@ -181,7 +181,7 @@ describe("team routes", () => {
       body: JSON.stringify({ contestId: "demo" }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ count: 2, problemsMapped: true });
+    expect(await res.json()).toEqual({ count: 2 });
   });
 
   test("GET /admin/api/teams returns teams with no password anywhere in the response", async () => {

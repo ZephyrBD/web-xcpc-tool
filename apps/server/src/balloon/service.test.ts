@@ -1,14 +1,15 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DjClient, type DjJudging, type DjJudgementType, type DjSubmission } from "../domjudge/client";
+import { DjClient, type DjBalloon } from "../domjudge/client";
 import { SseBus } from "../sse/bus";
 import { JsonStore, setDataDir } from "../store/store";
 import { BalloonService, type BalloonTask } from "./service";
 
 const CONTEST = "c1";
 const BASE = "https://dj.example.com/api/v4/";
+const BALLOONS_URL = `${BASE}contests/${CONTEST}/balloons`;
 
 let tmpDir: string;
 
@@ -21,521 +22,487 @@ beforeEach(() => {
   setDataDir(tmpDir);
 });
 
-// Mirrors the REAL DOMjudge external contest API shape (verified live against
-// https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/judgement-types):
-// ids are verdict codes like "AC"/"WA", no sorting_key, correctness via `solved`.
-const judgementTypes: DjJudgementType[] = [
-  { id: "CE", name: "compiler error", penalty: false, solved: false },
-  { id: "AC", name: "accepted", penalty: false, solved: true },
-  { id: "WA", name: "wrong answer", penalty: true, solved: false },
+/**
+ * Real DOMjudge balloon entries (GET /contests/{cid}/balloons): the problem
+ * label lives on `contestproblem.label`, times are either absolute (`time`) or
+ * clock-relative (`contesttime`), and `done` is DOMjudge's delivery flag.
+ */
+const balloonsWithOneDone: DjBalloon[] = [
+  {
+    balloonid: "7",
+    teamid: "t1",
+    problem: "p1",
+    contestproblem: { id: "p1", label: "A", name: "Alpha" },
+    time: "2026-11-07T10:00:05+00:00",
+    contesttime: "+00:05:00",
+    done: false,
+  },
+  {
+    balloonid: "9",
+    teamid: "t2",
+    problem: "p2",
+    contestproblem: { id: "p2", label: "B", name: "Beta" },
+    contesttime: "+00:12:30",
+    done: true,
+  },
 ];
 
-// Mirrors the REAL DOMjudge external contest API shape (verified live against
-// https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/submissions and
-// /judgements): CLICS field names `problem_id`/`team_id`/`language_id` and
-// `submission_id` — the client normalizes them to `problem`/`team`/`language`
-// and `submission`.
-const submissions = [
-  {
-    language_id: "cpp",
-    time: "2026-11-07T10:00:00+00:00",
-    contest_time: "+00:05:00",
-    team_id: "t1",
-    account_id: "team-one",
-    problem_id: "p1",
-    files: [{ href: "https://dj.example.com/source", mime: "text/plain" }],
-    id: "s1",
-    entry_point: null,
-    import_error: null,
-  },
-  {
-    language_id: "cpp",
-    time: "2026-11-07T10:05:00+00:00",
-    contest_time: "+00:10:00",
-    team_id: "t2",
-    account_id: "team-two",
-    problem_id: "p1",
-    files: [{ href: "https://dj.example.com/source", mime: "text/plain" }],
-    id: "s2",
-    entry_point: null,
-    import_error: null,
-  },
-] as DjSubmission[];
+type FetchCall = { method: string; url: string };
 
-const judgings = [
-  {
-    start_time: "2026-11-07T10:00:01+00:00",
-    end_time: "2026-11-07T10:00:04+00:00",
-    submission_id: "s1",
-    current: true,
-    max_run_time: 2.994,
-    id: "j1",
-    valid: true,
-    score: "0.000000000",
-    judgement_type_id: "AC",
-    simplified_judgement_type_id: "AC",
-  },
-  {
-    start_time: "2026-11-07T10:05:01+00:00",
-    end_time: "2026-11-07T10:05:03+00:00",
-    submission_id: "s2",
-    current: true,
-    max_run_time: 1.5,
-    id: "j2",
-    valid: true,
-    score: "0.000000000",
-    judgement_type_id: "WA",
-    simplified_judgement_type_id: "WA",
-  },
-] as DjJudging[];
-
-function makeFetch(overrides: {
-  judgements?: DjJudging[];
-  failJudgementsTimes?: number;
-  failProblemsTimes?: number;
-  balloons?: Array<{ balloonid: string; teamid: string; problem?: string; contestproblem?: { label?: string }; done?: boolean }>;
-} = {}) {
-  let failCount = overrides.failJudgementsTimes ?? 0;
-  let failProblems = overrides.failProblemsTimes ?? 0;
-  return ((url: string | URL | Request): Promise<Response> => {
+/**
+ * Controllable DOMjudge fake: `balloons` is read at request time, so a test can
+ * change what the next poll sees (done flips, removals). Every request is
+ * recorded so the "balloons API only" rule can be asserted directly.
+ */
+function makeFetch(initial: DjBalloon[] = []) {
+  let balloons = initial;
+  const calls: FetchCall[] = [];
+  let balloonsStatus: number | null = null;
+  const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const u = String(url);
+    const method = init?.method ?? "GET";
+    calls.push({ method, url: u });
     const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-    if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-    if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-    if (u.startsWith(BASE + `contests/${CONTEST}/problems`)) {
-      if (failProblems > 0) {
-        failProblems--;
-        return Promise.reject(new Error("problems endpoint down"));
-      }
-      return body([{ id: "p1", label: "A", name: "Alpha" }]);
-    }
-    if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) return body(overrides.balloons ?? []);
-    if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) {
-      if (failCount > 0) {
-        failCount--;
-        return Promise.reject(new Error("network down"));
-      }
-      return body(overrides.judgements ?? judgings);
+    if (u.startsWith(BALLOONS_URL) && method === "POST") return body({ ok: true });
+    if (u.startsWith(BALLOONS_URL) && method === "GET") {
+      if (balloonsStatus !== null) return Promise.resolve(new Response("nope", { status: balloonsStatus }));
+      return body(balloons);
     }
     return Promise.resolve(new Response("not found", { status: 404 }));
   }) as unknown as typeof fetch;
+  return {
+    fetchImpl,
+    calls,
+    setBalLoons: (next: DjBalloon[]) => {
+      balloons = next;
+    },
+    failBalloonsWith: (status: number | null) => {
+      balloonsStatus = status;
+    },
+    gets: () => calls.filter((c) => c.method === "GET").map((c) => c.url),
+    posts: () => calls.filter((c) => c.method === "POST").map((c) => c.url),
+  };
+}
+
+const TEAMS = [
+  { id: "t1", name: "Team One", location: { description: "A-101" } },
+  { id: "t2", name: "Team Two", location: { description: "B-202" } },
+];
+
+function makeClient(fetchImpl: typeof fetch) {
+  return new DjClient(
+    { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
+    fetchImpl,
+  );
+}
+
+/** In-memory stand-in for the JSON store file (real disk writes add nothing here). */
+function memoryStore(): JsonStore<BalloonTask[]> {
+  const tasks: BalloonTask[] = [];
+  return {
+    load: () => tasks.slice(),
+    save: (next: BalloonTask[]) => {
+      tasks.splice(0, tasks.length, ...next);
+    },
+    update: (fn: (cur: BalloonTask[]) => BalloonTask[]) => {
+      const next = fn(tasks.slice());
+      tasks.splice(0, tasks.length, ...next);
+      return tasks.slice();
+    },
+  } as unknown as JsonStore<BalloonTask[]>;
 }
 
 function makeService(
   fetchImpl: typeof fetch,
   schedule?: (fn: () => void, ms: number) => void,
-  opts: { problems?: Array<{ id: string; label: string; name: string }> } = {},
+  opts: { teams?: typeof TEAMS; contestId?: string } = {},
 ) {
-  const cfg = {
-    baseUrl: "https://dj.example.com",
-    adminUser: "admin",
-    adminPassword: "pw", timeoutSeconds: 10,
-  };
-  const client = new DjClient(cfg, fetchImpl);
-  const store = new JsonStore<BalloonTask[]>("balloon-tasks.json", []);
+  const client = makeClient(fetchImpl);
+  const store = memoryStore();
   const bus = new SseBus();
   const svc = new BalloonService({
     client,
     store,
     bus,
-    contestId: CONTEST,
+    contestId: opts.contestId ?? CONTEST,
     pollIntervalSeconds: 10,
-    teams: [{ id: "t1", name: "Team One" }],
-    problems: opts.problems ?? [{ id: "p1", label: "A", name: "Alpha" }],
+    teams: opts.teams ?? TEAMS,
     schedule,
   });
   return { svc, store, bus };
 }
 
-describe("BalloonService", () => {
-  test("pollOnce creates one task for the correct judging and publishes SSE", async () => {
-    const { svc, bus } = makeService(makeFetch());
+describe("BalloonService reads DOMjudge balloons", () => {
+  test("two balloons (one done) become two tasks with the right status", async () => {
+    const fake = makeFetch(balloonsWithOneDone);
+    const { svc, bus } = makeService(fake.fetchImpl);
     const events: Array<{ event: string; data: unknown }> = [];
     bus.subscribe("admin", (e) => events.push(e));
 
-    const created = await svc.pollOnce();
-    expect(created).toBe(1);
+    const changed = await svc.pollOnce();
+    expect(changed).toBe(2);
+
     const tasks = svc.list();
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({
-      id: "s1",
+    expect(tasks).toHaveLength(2);
+    expect(tasks.find((t) => t.id === "7")).toMatchObject({
+      id: "7",
+      balloonId: 7,
       contestId: CONTEST,
       problemLabel: "A",
       teamName: "Team One",
-      location: null,
+      location: "A-101",
       status: "pending",
+      createdAt: "2026-11-07T10:00:05.000Z",
     });
-    expect(typeof tasks[0].createdAt).toBe("string");
-    expect(events).toHaveLength(1);
-    expect(events[0].event).toBe("balloon-task");
-    expect(events[0].data).toMatchObject({ id: "s1" });
+    expect(tasks.find((t) => t.id === "9")).toMatchObject({
+      id: "9",
+      problemLabel: "B",
+      teamName: "Team Two",
+      location: "B-202",
+      status: "delivered",
+    });
+    expect(svc.list("pending").map((t) => t.id)).toEqual(["7"]);
+
+    // Both new rows are announced so the UI can auto-deliver.
+    expect(events.map((e) => e.event)).toEqual(["balloon-task", "balloon-task"]);
   });
 
-  test("pollOnce uses the solved flag when no sorting_key is present", async () => {
-    // Explicit demo-shape guard: AC (solved: true) creates a balloon, WA does not.
-    const { svc } = makeService(makeFetch());
-    const created = await svc.pollOnce();
-    expect(created).toBe(1);
-    const tasks = svc.list();
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].id).toBe("s1");
-  });
-
-  test("pollOnce still matches the internal-API 'correct' shape", async () => {
-    const internalTypes: DjJudgementType[] = [
-      { id: "AC", sorting_key: "correct" },
-      { id: "WA", sorting_key: "" },
-    ];
-    const fetchImpl = ((url: string | URL | Request): Promise<Response> => {
-      const u = String(url);
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(internalTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc } = makeService(fetchImpl);
-    const created = await svc.pollOnce();
-    expect(created).toBe(1);
-    expect(svc.list()[0].id).toBe("s1");
-  });
-
-  test("re-polling the same submission does not duplicate tasks", async () => {
-    const { svc } = makeService(makeFetch());
+  test("the ballonid is the task id and only the balloons endpoint is called", async () => {
+    const fake = makeFetch(balloonsWithOneDone);
+    const { svc } = makeService(fake.fetchImpl);
     await svc.pollOnce();
-    const again = await svc.pollOnce();
-    expect(again).toBe(0);
-    expect(svc.list()).toHaveLength(1);
+    expect(svc.list().map((t) => t.id).sort()).toEqual(["7", "9"]);
+    expect(fake.gets()).toEqual([BALLOONS_URL]);
   });
 
-  test("consecutive failures double the poll interval, success recovers", async () => {
-    const scheduled: Array<{ fn: () => void; ms: number }> = [];
-    const schedule = (fn: () => void, ms: number) => {
-      scheduled.push({ fn, ms });
+  test("judgements/submissions/judgement-types are never requested", async () => {
+    const judgingCalls: string[] = [];
+    const balloonClient = {
+      getBalloons: async () => balloonsWithOneDone,
+      getJudgings: async () => {
+        judgingCalls.push("getJudgings");
+        return [];
+      },
+      getSubmissions: async () => {
+        judgingCalls.push("getSubmissions");
+        return [];
+      },
+      getJudgementTypes: async () => {
+        judgingCalls.push("getJudgementTypes");
+        return [];
+      },
+      getProblems: async () => {
+        judgingCalls.push("getProblems");
+        return [];
+      },
+      markBalloonDone: async () => ({ ok: true }),
     };
-    const { svc } = makeService(makeFetch({ failJudgementsTimes: 2 }), schedule);
-    svc.start();
-
-    // initial poll scheduled immediately
-    expect(scheduled[0].ms).toBe(0);
-    const flush = () => new Promise((r) => setTimeout(r, 0));
-    scheduled[0].fn(); // poll 1 fails -> next delay should be 2x
-    await flush();
-    scheduled[1].fn(); // poll 2 fails -> next delay should be 4x (>= 2x config)
-    await flush();
-    scheduled[2].fn(); // poll 3 succeeds -> next delay back to base
-    await flush();
-    svc.stop();
-
-    expect(scheduled[1].ms).toBe(20_000);
-    expect(scheduled[2].ms).toBe(40_000);
-    expect(scheduled[2].ms).toBeGreaterThanOrEqual(20_000);
-    expect(scheduled[3].ms).toBe(10_000);
+    const svc = new BalloonService({
+      client: balloonClient as never,
+      store: memoryStore(),
+      bus: new SseBus(),
+      contestId: CONTEST,
+      pollIntervalSeconds: 10,
+      teams: TEAMS,
+    });
+    expect(await svc.pollOnce()).toBe(2);
+    expect(judgingCalls).toEqual([]);
   });
 
-  test("pollOnce stores the matching balloonId on the new task", async () => {
-    const { svc } = makeService(makeFetch({
-      balloons: [
-        { balloonid: "11", teamid: "t2", problem: "p1", done: false },
-        { balloonid: "5", teamid: "t1", problem: "p1", done: true }, // already done — skipped
-        { balloonid: "7", teamid: "t1", problem: "p1", done: false },
-      ],
-    }));
-    await svc.pollOnce();
-    expect(svc.list()[0]).toMatchObject({ id: "s1", balloonId: 7 });
-  });
-
-  test("pollOnce stores null balloonId when no balloon matches", async () => {
-    const { svc } = makeService(makeFetch({ balloons: [] }));
-    await svc.pollOnce();
-    expect(svc.list()[0].balloonId).toBeNull();
-  });
-
-  test("tasks stored without a balloonId are backfilled on the next poll", async () => {
-    const { svc, store } = makeService(makeFetch({
-      balloons: [{ balloonid: "7", teamid: "t1", problem: "p1", done: false }],
-    }));
-    store.update((cur) => [
-      ...cur,
-      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString() },
+  test("label falls back to the raw problem id when contestproblem is absent", async () => {
+    const fake = makeFetch([
+      { balloonid: "11", teamid: "t1", problemid: "p9", done: false },
+      { balloonid: "12", teamid: "t1", done: false },
     ]);
+    const { svc } = makeService(fake.fetchImpl);
     await svc.pollOnce();
-    const s9 = svc.list().find((t) => t.id === "s9");
-    expect(s9?.balloonId).toBe(7);
+    expect(svc.list().find((t) => t.id === "11")?.problemLabel).toBe("p9");
+    expect(svc.list().find((t) => t.id === "12")?.problemLabel).toBe("");
   });
 
-  test("backfill skips delivered tasks and tasks that already carry a balloonId", async () => {
-    const { svc, store } = makeService(makeFetch({
-      balloons: [{ balloonid: "7", teamid: "t1", problem: "p1", done: false }],
-    }));
-    store.update((cur) => [
-      ...cur,
-      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "delivered", createdAt: new Date().toISOString() },
-      { id: "s8", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString(), balloonId: 3 },
+  test("an unknown team keeps the raw team id as name and a null location", async () => {
+    const fake = makeFetch([{ balloonid: "5", teamid: "ghost", contestproblem: { label: "C" }, done: false }]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    expect(svc.list()[0]).toMatchObject({ teamName: "ghost", location: null, problemLabel: "C" });
+  });
+
+  test("re-polling unchanged balloons writes nothing and emits nothing", async () => {
+    const fake = makeFetch(balloonsWithOneDone);
+    const { svc, bus } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    const events: unknown[] = [];
+    bus.subscribe("admin", (e) => events.push(e));
+    expect(await svc.pollOnce()).toBe(0);
+    expect(events).toHaveLength(0);
+    expect(svc.list()).toHaveLength(2);
+  });
+
+  test("refresh() applies a late team sync to existing rows still holding raw team ids", async () => {
+    // A task created before the team table was known keeps the raw team id.
+    const { svc, store } = makeService(makeFetch().fetchImpl);
+    store.save([
+      { id: "3", contestId: CONTEST, problemLabel: "D", teamName: "t9", location: null, status: "pending", createdAt: "x" },
     ]);
-    await svc.pollOnce();
-    expect(svc.list().find((t) => t.id === "s9")?.balloonId).toBeUndefined();
-    expect(svc.list().find((t) => t.id === "s8")?.balloonId).toBe(3);
+
+    svc.refresh([{ id: "t9", name: "Real Name", location: { description: "C-303" } }]);
+    expect(svc.list()[0]).toMatchObject({ teamName: "Real Name", location: "C-303" });
   });
 
-  test("ack uses the stored balloonId directly without ad-hoc balloon matching", async () => {
-    const gets: string[] = [];
-    const posts: string[] = [];
-    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const u = String(url);
-      const method = init?.method ?? "GET";
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (method === "GET") gets.push(u);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && method === "POST") {
-        posts.push(u);
-        return body({ ok: true });
-      }
-      // Deliberately WRONG data: ad-hoc matching would pick balloon 99, not 7.
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "99", teamid: "t1", problem: "p1", done: false }]);
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc, store } = makeService(fetchImpl);
-    store.update((cur) => [
-      ...cur,
-      { id: "s1", contestId: CONTEST, problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: new Date().toISOString(), balloonId: 7 },
-    ]);
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
-    expect(gets.some((u) => u.includes("/balloons"))).toBe(false);
+  test("a team rename arrives with the next poll", async () => {
+    const fake = makeFetch(balloonsWithOneDone);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    expect(svc.list().find((t) => t.id === "7")?.teamName).toBe("Team One");
+
+    // pollOnce resolves names from the current team table, so a rename lands
+    // on the next poll (refresh() only relabels raw-id rows).
+    svc.refresh([{ id: "t1", name: "Renamed One", location: { description: "A-101" } }, TEAMS[1]]);
+    expect(await svc.pollOnce()).toBe(1);
+    expect(svc.list().find((t) => t.id === "7")?.teamName).toBe("Renamed One");
+  });
+});
+
+describe("BalloonService reconciles status from DOMjudge done", () => {
+  test("a later poll flipping done→true marks the task delivered", async () => {
+    const fake = makeFetch([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    expect(svc.list()[0].status).toBe("pending");
+
+    fake.setBalLoons([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: true }]);
+    expect(await svc.pollOnce()).toBe(1);
+    expect(svc.list()[0].status).toBe("delivered");
   });
 
-  test("ack transitions pending task to delivered; unknown id returns null", async () => {
-    const { svc } = makeService(makeFetch());
+  test("a DOMjudge-side revert (done true→false) flips a delivered task back to pending", async () => {
+    const fake = makeFetch([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: true }]);
+    const { svc, store } = makeService(fake.fetchImpl);
     await svc.pollOnce();
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(svc.list("delivered")).toHaveLength(1);
-    expect(svc.list("pending")).toHaveLength(0);
+    expect(svc.list()[0].status).toBe("delivered");
+
+    // The operator reopened/undid the balloon in DOMjudge: DOMjudge wins.
+    fake.setBalLoons([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    expect(await svc.pollOnce()).toBe(1);
+    expect(svc.list()[0].status).toBe("pending");
+
+    // A row acked locally (delivered) also reverts with no ack in flight.
+    store.update((cur) => cur.map((t) => ({ ...t, status: "delivered" })));
+    await svc.pollOnce();
+    expect(svc.list()[0].status).toBe("pending");
+  });
+
+  test("ack POSTs /balloons/{id}/done and does not optimistically mark it delivered", async () => {
+    const fake = makeFetch([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+
+    const acked = await svc.ack("7");
+    expect(acked).not.toBeNull();
+    expect(fake.posts()).toEqual([`${BALLOONS_URL}/7/done`]);
+    // No local write from ack(): the row is only delivered once DOMjudge says so.
+    expect(svc.list()[0].status).toBe("pending");
+  });
+
+  test("ack followed by a still-false poll does not mark the task delivered", async () => {
+    const fake = makeFetch([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    await svc.ack("7");
+
+    // DOMjudge never flipped `done` (rejected silently / different contest
+    // state): the ack must not leave a phantom delivered row behind.
+    expect(await svc.pollOnce()).toBe(0);
+    expect(svc.list()[0].status).toBe("pending");
+
+    // …and once DOMjudge does report done, the same ack lands.
+    fake.setBalLoons([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: true }]);
+    await svc.pollOnce();
+    expect(svc.list()[0].status).toBe("delivered");
+  });
+
+  test("ack for an unknown id returns null and POSTs nothing", async () => {
+    const fake = makeFetch([]);
+    const { svc } = makeService(fake.fetchImpl);
     expect(await svc.ack("nope")).toBeNull();
+    expect(fake.posts()).toEqual([]);
   });
 
-  test("ack with delivered status POSTs done to the matching domjudge balloon", async () => {
+  test("a poll whose snapshot predates the ack POST does not revert a delivered row", async () => {
+    // The UI reload can overlap the next scheduled poll. The `done: false`
+    // snapshot such a poll fetched was produced before the POST landed, so it
+    // must not undo the delivery; the *next* poll (after the POST) decides.
+    const fake = makeFetch([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    const { svc, store } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+
+    let releasePost: (() => void) | null = null;
+    const postGate = new Promise<void>((r) => {
+      releasePost = r;
+    });
+    const gated = ((url: string | URL | Request, init?: RequestInit) =>
+      init?.method === "POST"
+        ? postGate.then(() => new Response(JSON.stringify({ ok: true })))
+        : fake.fetchImpl(url, init)) as unknown as typeof fetch;
+    const gatedSvc = new BalloonService({
+      client: makeClient(gated),
+      store,
+      bus: new SseBus(),
+      contestId: CONTEST,
+      pollIntervalSeconds: 10,
+      teams: TEAMS,
+    });
+
+    const ackPromise = gatedSvc.ack("7");
+    // The row is what DOMjudge reports after the POST; simulate it arriving
+    // while the POST is still in flight by marking it delivered through a poll
+    // that saw `done: true`.
+    fake.setBalLoons([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: true }]);
+    await gatedSvc.pollOnce(); // snapshot reads done:true → delivered
+    expect(gatedSvc.list()[0].status).toBe("delivered");
+
+    (releasePost as unknown as () => void)();
+    await ackPromise;
+
+    // DOMjudge still says done:true afterwards: the delivery stands.
+    await gatedSvc.pollOnce();
+    expect(gatedSvc.list()[0].status).toBe("delivered");
+  });
+
+  test("a POST failure is logged and the next done:false poll still lands the delivery", async () => {
     const posts: string[] = [];
     const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const u = String(url);
       const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
+      if (u.startsWith(BALLOONS_URL) && init?.method === "POST") {
         posts.push(u);
-        return body({ ok: true });
-      }
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: false }]);
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc } = makeService(fetchImpl);
-    await svc.pollOnce();
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
-  });
-
-  test("ack with two balloons for the same team POSTs only the matching problem", async () => {
-    const posts: string[] = [];
-    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const u = String(url);
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
-        posts.push(u);
-        return body({ ok: true });
-      }
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        // Same team, two problems: only problem A (id p1) may be marked done.
-        return body([
-          { balloonid: "11", teamid: "t1", problem: "p2", contestproblem: { label: "B" }, done: false },
-          { balloonid: "7", teamid: "t1", problem: "p1", contestproblem: { label: "A" }, done: false },
-        ]);
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc } = makeService(fetchImpl);
-    await svc.pollOnce();
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(posts).toEqual([BASE + `contests/${CONTEST}/balloons/7/done`]);
-  });
-
-  test("ack skips already-done balloons (no re-POST)", async () => {
-    const posts: string[] = [];
-    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const u = String(url);
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
-        posts.push(u);
-        return body({ ok: true });
-      }
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: true }]);
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc } = makeService(fetchImpl);
-    await svc.pollOnce();
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(posts).toHaveLength(0);
-    expect(svc.list("delivered")).toHaveLength(1);
-  });
-
-  test("ack without a matching balloon only updates local status", async () => {
-    const posts: string[] = [];
-    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const u = String(url);
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
-        posts.push(u);
-        return body({ ok: true });
-      }
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "9", teamid: "t-other", problem: "p1", done: false }]);
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    }) as unknown as typeof fetch;
-    const { svc } = makeService(fetchImpl);
-    await svc.pollOnce();
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(posts).toHaveLength(0);
-    expect(svc.list("delivered")).toHaveLength(1);
-  });
-
-  test("balloon done POST failure is logged and the local ack still lands", async () => {
-    const fetchImpl = ((url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const u = String(url);
-      const body = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data)));
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgement-types`)) return body(judgementTypes);
-      if (u.startsWith(BASE + `contests/${CONTEST}/submissions`)) return body(submissions);
-      if (u.startsWith(BASE + `contests/${CONTEST}/judgements`)) return body(judgings);
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`) && (init?.method ?? "GET") === "POST") {
         return Promise.resolve(new Response("boom", { status: 500 }));
       }
-      if (u.startsWith(BASE + `contests/${CONTEST}/balloons`)) {
-        return body([{ balloonid: "7", teamid: "t1", problem: "p1", done: false }]);
+      if (u.startsWith(BALLOONS_URL)) {
+        return body([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
       }
       return Promise.resolve(new Response("not found", { status: 404 }));
     }) as unknown as typeof fetch;
     const { svc } = makeService(fetchImpl);
     await svc.pollOnce();
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
 
-    const acked = await svc.ack("s1");
-    expect(acked?.status).toBe("delivered");
-    expect(svc.list("delivered")).toHaveLength(1);
-  });
+    const acked = await svc.ack("7");
+    expect(acked).not.toBeNull();
+    expect(posts).toEqual([`${BALLOONS_URL}/7/done`]);
+    expect(svc.list()[0].status).toBe("pending");
 
-  // Demo-debugged regression: a restarted server polls before any team sync
-  // ran, and every balloon task got the raw problem id as its label.
-  test("pollOnce fetches problems itself when refresh never supplied them", async () => {
-    const { svc } = makeService(makeFetch(), undefined, { problems: [] });
-    const created = await svc.pollOnce();
-    expect(created).toBe(1);
-    expect(svc.list()[0].problemLabel).toBe("A");
-  });
-
-  test("pollOnce falls back to raw ids when its own problems fetch fails", async () => {
-    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
-    const created = await svc.pollOnce();
-    expect(created).toBe(1);
-    expect(svc.list()[0].problemLabel).toBe("p1");
-  });
-
-  test("refresh re-labels pending tasks that were created with raw ids", async () => {
-    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
+    // DOMjudge can never flip done after a failed POST, so the next poll that
+    // still sees done:false treats the delivery as local-only.
     await svc.pollOnce();
-    expect(svc.list()[0].problemLabel).toBe("p1");
-
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-    expect(svc.list()[0].problemLabel).toBe("A");
+    expect(svc.list()[0].status).toBe("delivered");
   });
+});
 
-  test("refresh leaves delivered tasks and already-labeled tasks untouched", async () => {
-    const { svc } = makeService(makeFetch({ failProblemsTimes: 1 }), undefined, { problems: [] });
+describe("BalloonService stale balloons (gone from the API)", () => {
+  test("a task whose balloonid disappears is kept, marked delivered, and hidden from pending", async () => {
+    const fake = makeFetch([
+      { balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false },
+      { balloonid: "8", teamid: "t2", contestproblem: { label: "B" }, done: false },
+    ]);
+    const { svc } = makeService(fake.fetchImpl);
     await svc.pollOnce();
-    await svc.ack("s1");
-    svc.refresh([{ id: "t1", name: "Team One" }], [{ id: "p1", label: "A", name: "Alpha" }]);
-    expect(svc.list()[0].problemLabel).toBe("p1");
+    expect(svc.list("pending")).toHaveLength(2);
+
+    // Balloon 8 removed in DOMjudge (cancelled/reset). 7 stays pending.
+    fake.setBalLoons([{ balloonid: "7", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    expect(await svc.pollOnce()).toBe(1);
+
+    const tasks = svc.list();
+    expect(tasks.map((t) => t.id).sort()).toEqual(["7", "8"]);
+    expect(tasks.find((t) => t.id === "8")?.status).toBe("delivered");
+    expect(svc.list("pending").map((t) => t.id)).toEqual(["7"]);
   });
 
-  // Live-debugged gap: tasks created by a poll before team sync keep the raw
-  // team id as teamName and null location; refresh must re-label those too.
-  test("refresh re-labels teamName/location on pending tasks holding raw team ids", async () => {
-    const { svc, store } = makeService(makeFetch());
-    store.update((cur) => [
-      ...cur,
-      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "111", location: null, status: "pending", createdAt: new Date().toISOString() },
-    ]);
-
-    svc.refresh(
-      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
-      [{ id: "p1", label: "A", name: "Alpha" }],
-    );
-    expect(svc.list().find((t) => t.id === "s9")).toMatchObject({
-      teamName: "VILNIUS TECH 1",
-      location: "I1",
-    });
+  test("a delivered task whose balloon disappears is left untouched", async () => {
+    const fake = makeFetch([{ balloonid: "8", teamid: "t2", contestproblem: { label: "B" }, done: true }]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    fake.setBalLoons([]);
+    expect(await svc.pollOnce()).toBe(0);
+    expect(svc.list()[0]).toMatchObject({ id: "8", status: "delivered" });
   });
 
-  test("refresh leaves tasks whose teamName is already a real name untouched", async () => {
-    const { svc, store } = makeService(makeFetch());
+  test("tasks from another contest are never reconciled away", async () => {
+    const fake = makeFetch([]);
+    const { svc, store } = makeService(fake.fetchImpl);
     store.update((cur) => [
       ...cur,
-      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "Already A Name", location: null, status: "pending", createdAt: new Date().toISOString() },
+      {
+        id: "old",
+        contestId: "previous-contest",
+        problemLabel: "Z",
+        teamName: "Ghost",
+        location: null,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      },
     ]);
+    await svc.pollOnce();
+    expect(svc.list()).toHaveLength(1);
+    expect(svc.list()[0].status).toBe("pending");
+  });
+});
 
-    svc.refresh(
-      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
-      [{ id: "p1", label: "A", name: "Alpha" }],
-    );
-    const task = svc.list().find((t) => t.id === "s9")!;
-    expect(task.teamName).toBe("Already A Name");
-    expect(task.location).toBeNull();
+describe("BalloonService empty-list warning", () => {
+  let warn: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    warn = spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
   });
 
-  test("refresh re-labels only pending tasks; delivered tasks keep raw ids", async () => {
-    const { svc, store } = makeService(makeFetch());
-    store.update((cur) => [
-      ...cur,
-      { id: "s9", contestId: CONTEST, problemLabel: "A", teamName: "111", location: null, status: "delivered", createdAt: new Date().toISOString() },
-    ]);
+  const emptyWarnings = () =>
+    warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes("气球列表为空：DOMjudge 可能未启用气球功能")).length;
 
-    svc.refresh(
-      [{ id: "111", name: "VILNIUS TECH 1", location: { description: "I1" } }],
-      [{ id: "p1", label: "A", name: "Alpha" }],
-    );
-    const task = svc.list().find((t) => t.id === "s9")!;
-    expect(task.teamName).toBe("111");
-    expect(task.location).toBeNull();
+  test("warns once on the 3rd consecutive empty poll, not before", async () => {
+    const fake = makeFetch([]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(0);
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(1);
+    // Once per streak: further empty polls stay quiet.
+    await svc.pollOnce();
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(1);
+  });
+
+  test("a non-empty poll resets the streak so a later streak warns again", async () => {
+    const fake = makeFetch([]);
+    const { svc } = makeService(fake.fetchImpl);
+    await svc.pollOnce();
+    await svc.pollOnce();
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(1);
+
+    fake.setBalLoons([{ balloonid: "1", teamid: "t1", contestproblem: { label: "A" }, done: false }]);
+    await svc.pollOnce();
+    fake.setBalLoons([]);
+    await svc.pollOnce();
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(1);
+    await svc.pollOnce();
+    expect(emptyWarnings()).toBe(2);
+  });
+
+  test("an empty contestId never schedules a poll and never warns", () => {
+    const fake = makeFetch([]);
+    const scheduled: Array<() => void> = [];
+    const { svc } = makeService(fake.fetchImpl, (fn) => {
+      scheduled.push(fn);
+    }, { contestId: "" });
+    svc.start();
+    expect(scheduled).toHaveLength(0);
+    expect(fake.calls).toHaveLength(0);
+    expect(warn.mock.calls).toHaveLength(0);
   });
 });
 
@@ -548,13 +515,9 @@ describe("BalloonService start guard", () => {
     const fetchImpl = (() => {
       throw new Error("balloon must not poll without a contest id");
     }) as unknown as typeof fetch;
-    const client = new DjClient(
-      { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
-      fetchImpl,
-    );
     const svc = new BalloonService({
-      client,
-      store: new JsonStore<BalloonTask[]>("balloon-tasks.json", []),
+      client: makeClient(fetchImpl),
+      store: memoryStore(),
       bus: new SseBus(),
       contestId: "",
       pollIntervalSeconds: 10,
@@ -566,13 +529,41 @@ describe("BalloonService start guard", () => {
 
   test("start() with a contestId still schedules the first poll immediately", () => {
     const scheduled: Array<{ fn: () => void; ms: number }> = [];
-    const { svc } = makeService(makeFetch(), (fn, ms) => {
+    const { svc } = makeService(makeFetch().fetchImpl, (fn, ms) => {
       scheduled.push({ fn, ms });
     });
     svc.start();
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0].ms).toBe(0);
     svc.stop();
+  });
+
+  test("consecutive poll failures double the interval, success recovers", async () => {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const fake = makeFetch([]);
+    fake.failBalloonsWith(500);
+    const { svc } = makeService(fake.fetchImpl, (fn, ms) => {
+      scheduled.push({ fn, ms });
+    });
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      svc.start();
+      const flush = () => new Promise((r) => setTimeout(r, 0));
+      scheduled[0].fn(); // poll 1 fails -> 2x
+      await flush();
+      scheduled[1].fn(); // poll 2 fails -> 4x
+      await flush();
+      fake.failBalloonsWith(null); // recover
+      scheduled[2].fn(); // poll 3 succeeds -> base interval
+      await flush();
+      svc.stop();
+
+      expect(scheduled[1].ms).toBe(20_000);
+      expect(scheduled[2].ms).toBe(40_000);
+      expect(scheduled[3].ms).toBe(10_000);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
@@ -585,12 +576,8 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
   function reconfService(contestId: string, fetchImpl: typeof fetch = noPollFetch) {
     const scheduled: Array<{ fn: () => void; ms: number }> = [];
     const dir = mkdtempSync(join(tmpdir(), "balloon-reconf-"));
-    const client = new DjClient(
-      { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
-      fetchImpl,
-    );
     const svc = new BalloonService({
-      client,
+      client: makeClient(fetchImpl),
       store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
       bus: new SseBus(),
       contestId,
@@ -643,7 +630,7 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
   });
 
   test("reconfigure that only changes the interval keeps running with the new cadence", async () => {
-    const { svc, scheduled, cleanup } = reconfService("c1", makeFetch());
+    const { svc, scheduled, cleanup } = reconfService("c1", makeFetch().fetchImpl);
     svc.start();
     svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
     expect(scheduled).toHaveLength(2);

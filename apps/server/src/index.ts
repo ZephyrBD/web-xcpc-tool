@@ -70,7 +70,6 @@ const balloonService = new BalloonService({
   contestId: cfg.balloon.contestId,
   pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
   teams: [],
-  problems: [],
 });
 
 // Settings hot reload for the balloon poller: contestId/pollIntervalSeconds are

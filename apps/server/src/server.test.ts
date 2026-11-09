@@ -575,9 +575,15 @@ const TEAMS_JSON = [
   { id: "t1", icpc_id: "icpc1", name: "Team X", location: { description: "A-101" } },
 ];
 const PROBLEMS_JSON = [{ id: "p1", label: "A", name: "Alpha" }];
+const BALLOONS_JSON = [
+  { balloonid: "b1", teamid: "t1", problem: "p1", contestproblem: { id: "p1", label: "A" }, done: false },
+];
 const CONTEST_API: Record<string, unknown> = {
   "/api/v4/contests/C1/teams": TEAMS_JSON,
   "/api/v4/contests/C1/problems": PROBLEMS_JSON,
+  // Balloon tasks come from this endpoint only (Task 4); the judgements /
+  // submissions entries stay so any accidental synthesis would still show.
+  "/api/v4/contests/C1/balloons": BALLOONS_JSON,
   "/api/v4/contests/C1/judgements": [
     { id: "j1", submission: "s1", judgement_type_id: "correct" },
   ],
@@ -736,7 +742,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(await res.json()).toEqual({ ok: false, reason: "invalid excel file" });
   });
 
-  test("team sync refreshes the balloon service label/name lookups", async () => {
+  test("team sync refreshes the balloon service team lookups", async () => {
     const cfg = makeCfg();
     const client = new DjClient(cfg.domjudge);
     const bus = new SseBus();
@@ -761,32 +767,43 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       body: JSON.stringify({ contestId: "C1" }),
     });
     expect(syncRes.status).toBe(200);
-    expect(await syncRes.json()).toEqual({ count: 1, problemsMapped: true });
+    expect(await syncRes.json()).toEqual({ count: 1 });
 
-    // balloon service must resolve team/problem ids via refreshed lookups
+    // pollOnce reads the balloons API and resolves team name/location plus the
+    // contestproblem label from the local team table.
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
     const tasks = await (await app.request("/admin/api/balloon-tasks", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
-    expect(tasks[0].teamName).toBe("Team X");
-    expect(tasks[0].problemLabel).toBe("A");
-    expect(tasks[0].location).toBe("A-101");
+    expect(tasks[0]).toMatchObject({
+      id: "b1",
+      teamName: "Team X",
+      problemLabel: "A",
+      location: "A-101",
+      status: "pending",
+    });
   });
 
-  // Demo-debugged regression: a silently swallowed getProblems failure left
-  // balloon tasks with raw problem ids as labels (1095 demo tasks).
-  test("team sync still returns teams count with problemsMapped=false when the problems fetch fails", async () => {
+  // Old behaviour synthesized tasks from AC judgements; Task 4 reads DOMjudge's
+  // balloons API instead, so a problems-endpoint failure cannot affect them
+  // (there is no label mapping left to silently skip) and the failed endpoint
+  // is simply never called.
+  test("team sync tolerates a problems endpoint failure without touching balloon tasks", async () => {
     const cfg = makeCfg();
-    let problemsFail = true;
+    let problemsCalled = 0;
     const client = {
       getTeams: async () => TEAMS_JSON,
       getProblems: async () => {
-        if (problemsFail) throw new Error("problems endpoint down");
-        return PROBLEMS_JSON;
+        problemsCalled++;
+        throw new Error("problems endpoint down");
       },
-      getJudgementTypes: async () => CONTEST_API["/api/v4/contests/C1/judgement-types"],
-      getJudgings: async () => CONTEST_API["/api/v4/contests/C1/judgements"],
-      getSubmissions: async () => CONTEST_API["/api/v4/contests/C1/submissions"],
+      getBalloons: async () => BALLOONS_JSON,
+      getJudgements: async () => {
+        throw new Error("balloon tasks must not be synthesized from judgements");
+      },
+      getSubmissions: async () => {
+        throw new Error("balloon tasks must not be synthesized from submissions");
+      },
     } as unknown as DjClient;
     const bus = new SseBus();
     const balloonService = new BalloonService({
@@ -810,24 +827,12 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       body: JSON.stringify({ contestId: "C1" }),
     });
     expect(syncRes.status).toBe(200);
-    expect(await syncRes.json()).toEqual({ count: 1, problemsMapped: false });
+    expect(await syncRes.json()).toEqual({ count: 1 });
+    expect(problemsCalled).toBe(0);
 
-    // The balloon service must have received EMPTY problems: a subsequent
-    // poll falls back to the raw problem id (and logs, not silently maps).
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
-    expect(balloonService.list()[0].problemLabel).toBe("p1");
-
-    // A later successful sync re-labels the pending task to the real label.
-    problemsFail = false;
-    const retryRes = await app.request("/admin/api/teams/sync", {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
-      body: JSON.stringify({ contestId: "C1" }),
-    });
-    expect(retryRes.status).toBe(200);
-    expect(await retryRes.json()).toEqual({ count: 1, problemsMapped: true });
-    expect(balloonService.list()[0].problemLabel).toBe("A");
+    expect(balloonService.list()[0]).toMatchObject({ id: "b1", problemLabel: "A", teamName: "Team X" });
   });
 });
 

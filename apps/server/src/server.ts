@@ -305,24 +305,12 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     }
     try {
       const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
-      let problemsMapped = true;
-      if (deps?.balloonService) {
-        let problems: Awaited<ReturnType<typeof client.getProblems>>;
-        try {
-          problems = await client.getProblems(contestId);
-        } catch (err) {
-          // A silent failure here leaves balloon tasks with raw problem ids as
-          // labels; the response must tell the operator mapping did not happen.
-          problemsMapped = false;
-          console.error(
-            `team sync: could not fetch problems for contest ${contestId}, balloon tasks will fall back to raw ids:`,
-            err instanceof Error ? err.message : err,
-          );
-          problems = [];
-        }
-        deps.balloonService.refresh(teamsStore.load(), problems);
-      }
-      return c.json({ count, problemsMapped });
+      // Balloon tasks are read straight from DOMjudge's balloons API, whose
+      // contestproblem.label is the display label — no problems fetch (and no
+      // problemsMapped flag) is involved any more. The refreshed team table is
+      // all pollOnce() needs for names and locations.
+      deps?.balloonService?.refresh(teamsStore.load());
+      return c.json({ count });
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
     }
