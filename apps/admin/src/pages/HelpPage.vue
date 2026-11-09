@@ -63,7 +63,7 @@ const sections: HelpSection[] = [
         lines: [],
       },
       {
-        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的 /wxt 路径，这样队伍从队伍码登录入口进站后，所有 DOMjudge 页面链接都会经过本工具反代。如果前面还有 nginx 等反向代理，必须转发 Host 与 X-Forwarded-Proto 请求头，否则重定向与同源校验都会失败。',
+        note: '部署约定：生产环境中 DOMjudge 侧的「外部 BaseURL」应指向本工具的站点根路径（`http://<host>:<port>/`），因为除 /wxt 外的所有路径都会反代到 DOMjudge，这样 DOMjudge 生成的页面链接才会经过本工具反代。如果前面还有 nginx 等反向代理，必须转发 Host 与 X-Forwarded-Proto 请求头，否则重定向与同源校验都会失败。',
         lines: [],
       },
       {

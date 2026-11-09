@@ -92,7 +92,7 @@ bun run server
 
 修改这两项后重启服务并重新登录。
 
-> 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍/客户端访问本服务是通过 `http://<host>:<port>/wxt`（OMS 客户端进站地址），两条链路不要混淆。
+> 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍访问本服务是从站点根路径 `http://<host>:<port>/`（反代到 DOMjudge）进站，队伍码登录入口为 `/wxt/public/verify`；管理端在 `/wxt/admin`。两条链路不要混淆。
 
 ### DOMjudge 免密登录（X-Headers）前置条件
 
@@ -195,7 +195,7 @@ powershell -File script/deploy/start.ps1   # Windows
 2. 浏览器打开 `http://<host>:8080/wxt/`，用 `admin.username` + 明文密码登录成功。
 3. 打开「设置 → 比赛设置」：填写本场比赛的比赛 ID 与气球轮询间隔（保存即锁定），按需设置登录时段；保存后 `data/logs/latest.log` 里应出现 `balloon` 模块的轮询记录。
 4. 升级安装（沿用旧的 `data/`）先点「清空数据」，再填写比赛 ID。
-5. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/wxt`（DOMjudge 页面流量走站点根路径 `/` 反代）。
+5. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向本工具的站点根路径 `http://<host>:<port>/`（除 /wxt 外的路径都反代到 DOMjudge，页面流量走站点根路径）。
 6. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/wxt/public/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
 
 ## 安全说明
