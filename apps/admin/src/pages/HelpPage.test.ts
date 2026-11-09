@@ -36,4 +36,29 @@ describe('HelpPage', () => {
     expect(text).toContain('气球流程')
     expect(text).toContain('SSE')
   })
+
+  test('documents the contest lock, restart-only fields, log file and proxy headers', () => {
+    const wrapper = mount(HelpPage)
+    const text = wrapper.text()
+    // 比赛 ID 锁定 + 唯一解锁 = 清空数据
+    expect(text).toContain('比赛 ID 写一次即锁定')
+    expect(text).toContain('输入确认词「清空」')
+    expect(text).toContain('secret.key 保留')
+    // 气球数据源与 stale 语义
+    expect(text).toContain('/contests/{id}/balloons')
+    expect(text).toContain('已隐藏')
+    expect(text).toContain('balloon not found')
+    expect(text).toContain('从旧数据目录升级')
+    // 重启项只有端口 / 前缀 / JWT
+    expect(text).toContain('需要重启并重新登录的只有三项')
+    // 日志位置、格式与脱敏
+    expect(text).toContain('data/logs/latest.log')
+    expect(text).toContain('[I]')
+    expect(text).toContain('********')
+    // nginx 必须转发 Host 与 X-Forwarded-Proto
+    expect(text).toContain('X-Forwarded-Proto')
+    expect(text).toContain('cross-origin forbidden')
+    // 不再引用旧实现
+    expect(text).not.toContain('旧 Java')
+  })
 })

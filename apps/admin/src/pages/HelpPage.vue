@@ -35,7 +35,7 @@ const sections: HelpSection[] = [
         ],
       },
       {
-        note: '兼容说明：script/print.sh 是发往旧 Java 版的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName。新工具的接口字段与旧版一致，只要把脚本里的 PRINT_API 指到本工具的 /wxt/dj/print、API_TOKEN 填成设置页生成的令牌，即可直接对接。',
+        note: '兼容说明：script/print.sh 是发给本工具打印回调的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName。只要把脚本里的 PRINT_API 指向本工具的 /wxt/dj/print、API_TOKEN 填成设置页生成的令牌，即可直接对接。',
         lines: [],
       },
     ],
@@ -81,7 +81,36 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-purple)',
     blocks: [
       {
-        note: '气球队列直接读取 DOMjudge 的气球接口 /contests/{id}/balloons，不再由判题结果合成；管理端可在「打印 / 气球」页面打印小票、标记已送。同一场比赛的气球状态以 DOMjudge 为准，每次轮询双向同步。若某个气球在列表中消失（例如封榜后 DOMjudge 隐藏、或重测撤销了提交），它不会被标记为已派送，而是显示「已隐藏」并暂时离开待派送队列，等 DOMjudge 重新列出后自动恢复。任务实时推送到管理端 SSE 事件流（/admin/api/events），无需手动刷新页面。升级旧版本数据目录时，旧版本合成的气球任务会被丢弃并输出一行日志。',
+        note: '气球队列直接读取 DOMjudge 的气球接口 /contests/{id}/balloons，不再由判题结果合成；管理端可在「打印 / 气球」页面打印小票、标记已送。同一场比赛的气球状态以 DOMjudge 为准，每次轮询双向同步（DOMjudge 撤销 done，本地也退回待派送）。若某个气球在列表中消失（例如封榜后 DOMjudge 隐藏、或重测撤销了提交），它不会被标记为已派送，而是显示「已隐藏」并暂时离开待派送队列，等 DOMjudge 重新列出后自动恢复；已隐藏的气球不能标记已派送。「标记已派送」只接受最近一轮轮询里出现过的气球 id，其它 id 会返回 404 balloon not found。任务实时推送到管理端 SSE 事件流（/admin/api/events），无需手动刷新页面。',
+        lines: [],
+      },
+      {
+        note: '从旧数据目录升级：旧版本合成的气球任务 id 是提交 id，永远匹配不上 DOMjudge 的气球 id，启动时只会丢弃不属于当前比赛的行并输出一行日志，携带当前比赛 ID 的旧行会一直显示「已隐藏」。请先到「设置 → 比赛设置 → 清空数据」清空，再填写本场比赛 ID。',
+        lines: [],
+      },
+    ],
+  },
+  {
+    title: '比赛设置 · 重启项 · 日志',
+    accent: 'var(--brand-red)',
+    blocks: [
+      {
+        note: '比赛 ID 写一次即锁定：气球任务、打印留档、队伍同步都按它归属，保存后不能再改成别的比赛（保存同一个值始终允许）。保存其它值时服务端会拒绝并提示「比赛 ID 已锁定，设置后不可修改；如需更换请先清空比赛数据」。唯一解锁方式是在「设置 → 比赛设置」输入确认词「清空」后点「清空数据」：它会删除队伍、账号密码、队伍码、登录历史、审批记录、打印任务与留档源码/PDF、气球任务，并把比赛 ID 置空；settings.json 其余设置与 secret.key 保留。清空后填写新的比赛 ID 并保存，气球轮询立即自动开始。',
+        lines: [],
+      },
+      {
+        note: '以下设置在保存后立即生效，无需重启：DOMjudge 地址/账号/超时、打印令牌、管理端账号密码、登录时段（立即影响队伍登录）、气球比赛 ID 与轮询间隔。需要重启并重新登录的只有三项——端口、访问前缀、JWT 密钥，它们由进程在启动时绑定，JWT 密钥更换还会让现有的管理端与队伍登录状态立即失效。',
+        lines: [],
+      },
+      {
+        note: '运行日志写在 data/logs/latest.log（与 settings.json 同级），只保留这一个文件，每次启动清空，需要留档请自行复制。每行格式为「日 时:分:秒 模块名 [级别] 消息」，级别为 D/I/W/E/C；终端输出带颜色，日志文件是纯文本。管理端密码在日志文件中显示为 ********，只有启动横幅的终端输出是明文。现场排查气球/同步问题时先看这个文件的 balloon、proxy 等模块。',
+        lines: [
+          { code: '09 14:03:07   startup [I] Web XCPC Tool <version>' },
+          { code: '09 14:03:44   balloon [E] poll failed for contest 3: DOMjudge API error: ... (status 0)' },
+        ],
+      },
+      {
+        note: '通过 nginx 等反向代理访问本管理端时，代理必须同时转发 Host 与 X-Forwarded-Proto：管理端的保存操作会做同源校验，TLS 在代理上终结而协议头缺失时，所有保存都会返回 403 cross-origin forbidden。',
         lines: [],
       },
     ],
