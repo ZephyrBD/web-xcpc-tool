@@ -142,6 +142,18 @@ bun run server
 - **标记已派送只接受最近一轮轮询里出现过的气球**：对不存在的 id 调用会返回 404 `balloon not found`，既不写盘也不会向 DOMjudge 发请求。
 - **升级旧数据目录（重要）**：本版本的气球任务 id 就是 DOMjudge 的 `balloonid`，旧数据里由判题结果合成的行永远匹配不上。启动时会丢弃**不属于当前比赛**的旧行并打一行 INFO；携带当前比赛 ID 的旧行不会被自动清理，只会在界面上永远显示为「已隐藏」。**升级前请先清空数据**（管理台「设置 → 比赛设置 → 清空数据」，或停机删掉 `data/balloon-tasks.json`），然后再填写比赛 ID。
 
+## 打包发布与静态目录解析
+
+推送到 `v*` 格式的 tag 会触发 release 工作流：`bun build --compile` 交叉编译出 windows-x64 / linux-x64 / linux-arm64 / macos-x64 单文件可执行程序，连同 `static/`、`DEPLOY.md`、`LICENSE` 打成 zip。解压后在包根目录直接运行 `web-xcpc-tool`（Windows 为 `web-xcpc-tool.exe`，Linux/macOS 先 `chmod +x`）。
+
+管理端前端静态目录的解析顺序（`apps/server/src/server.ts` 的 `resolveStaticDir`，第一个在磁盘上存在的候选生效）：
+
+1. 环境变量 `WXT_STATIC_DIR`
+2. 可执行文件（模块）旁的 `../static`（开发态即 `apps/server/static`）
+3. 当前目录 `./static`（zip 包内即此布局；都不存在时回退到此，应用仍能启动但无页面托管）
+
+本地编译示例（版本号注入为 `dev-local`）：在 `apps/server` 下 `bun run compile`，输出 `dist/web-xcpc-tool(.exe)`，配合 `apps/server/static` 运行。
+
 ## Linux：systemd 常驻
 
 `/etc/systemd/system/cuitxcpctool.service`：
