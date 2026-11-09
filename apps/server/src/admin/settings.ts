@@ -86,51 +86,20 @@ export function readConfigBase(settingsPath: string, liveCfg: Config): Record<st
 }
 
 /**
- * Partial settings.json guard, shared by every writer. index.ts bootstraps the
- * admin hash and the JWT secret in memory (and usually in the file), but a file
- * written without them parses to empty values — which locks the operator out
- * (every login compares against "") and makes signing fail with "Zero-length
- * key". Backfill ONLY what is empty, from the live config:
- *
- * - `admin`: the hash plus its banner plaintext; other admin fields (a rename,
- *   sessionTtlSeconds) are left as written.
- * - `jwt`: the secret; the TTL stays as written.
- *
- * Mutates and returns `base` for call chaining.
- */
-export function backfillLiveSecrets(base: Record<string, unknown>, liveCfg: Config): Record<string, unknown> {
-  const current = base as unknown as Config;
-  if (!current.admin?.passwordHash && liveCfg.admin.passwordHash) {
-    base.admin = {
-      ...current.admin,
-      passwordHash: liveCfg.admin.passwordHash,
-      password: liveCfg.admin.password ?? current.admin?.password,
-    };
-  }
-  if (liveCfg.jwt.secret && !current.jwt?.secret) {
-    base.jwt = { ...current.jwt, secret: liveCfg.jwt.secret };
-  }
-  return base;
-}
-
-/**
  * Merges the patch into settings.json (only provided fields; empty-string
  * secrets are skipped) and returns the resulting parsed Config. Callers that
  * hot-reload must hand the result to `ConfigStore.replace` — writing the file
  * alone changes nothing until the next restart (that is what the admin PUT
  * does, and why the settings page no longer asks for one).
  *
- * `liveAdmin` (the currently running config) guards a partial settings.json:
- * when the merged result has no admin hash but the process has one — e.g. the
- * file was generated without an admin block and the hash was bootstrapped at
- * startup — the live block wins, so an unrelated PUT can never lock the
- * operator out. It defaults to `cfg.admin` (see backfillLiveSecrets).
+ * The file on disk is the single source of truth: index.ts writes the admin
+ * hash and JWT secret into it at boot, before the app accepts requests, so no
+ * runtime backfill from the live config happens here.
  */
 export function applySettingsPatch(
   cfg: Config,
   patch: SettingsPatch,
   settingsPath: string,
-  liveAdmin?: Config["admin"],
 ): Config {
   const base = readConfigBase(settingsPath, cfg);
   const current = base as unknown as Config;
@@ -162,14 +131,6 @@ export function applySettingsPatch(
       ...(password ? { passwordHash: hashSync(password, 10), password } : {}),
     };
   }
-
-  // Partial settings.json guard: the file had no usable admin hash or JWT
-  // secret, but this process bootstrapped them — never let the disk base blank
-  // a live secret (see backfillLiveSecrets).
-  backfillLiveSecrets(
-    base,
-    liveAdmin ? { ...cfg, admin: liveAdmin } : cfg,
-  );
 
   const updated = parseConfig(base);
   const tmpPath = `${settingsPath}.tmp`;

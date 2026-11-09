@@ -362,25 +362,10 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     }
     let updated: Config;
     try {
-      updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir), before.admin);
+      updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir));
     } catch (err) {
       log.error("admin", "settings update failed:", err instanceof Error ? err.message : err);
       return c.json({ error: "保存失败，请稍后重试" }, 500);
-    }
-    // Defence in depth for a partial settings.json that slipped past the merge
-    // (e.g. an admin patch carrying no password): never replace a live admin
-    // hash with an empty one, otherwise the next request locks the operator out.
-    // Only the hash (and its banner plaintext) is backfilled — a username or
-    // sessionTtl change made by this patch must survive.
-    if (!updated.admin.passwordHash && before.admin.passwordHash) {
-      updated = {
-        ...updated,
-        admin: {
-          ...updated.admin,
-          passwordHash: before.admin.passwordHash,
-          password: before.admin.password ?? updated.admin.password,
-        },
-      };
     }
     // Hot reload: the file is already written above, so a failing listener must
     // never turn a successful save into an error response (ConfigStore logs it).

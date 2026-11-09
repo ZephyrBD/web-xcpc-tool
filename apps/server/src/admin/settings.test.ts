@@ -433,7 +433,7 @@ describe("contest id lock on PUT /admin/api/settings", () => {
 
   test("applySettingsPatch trims a contest id even for a caller that bypassed the schema", () => {
     const live = loadConfigWithSecret();
-    const updated = applySettingsPatch(live, { balloon: { contestId: "  C9  " } }, join(dataDir, "settings.json"), live.admin);
+    const updated = applySettingsPatch(live, { balloon: { contestId: "  C9  " } }, join(dataDir, "settings.json"));
     expect(updated.balloon.contestId).toBe("C9");
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
     expect(saved.balloon.contestId).toBe("C9");
@@ -456,7 +456,7 @@ describe("contest id lock on PUT /admin/api/settings", () => {
   });
 });
 
-describe("applySettingsPatch partial-file guards", () => {
+describe("applySettingsPatch disk-file behavior", () => {
   let dataDir: string;
 
   beforeEach(() => {
@@ -465,22 +465,6 @@ describe("applySettingsPatch partial-file guards", () => {
 
   afterEach(() => {
     rmSync(dataDir, { recursive: true, force: true });
-  });
-
-  test("a disk file without an admin block keeps the live hash instead of blanking it", () => {
-    const diskOnly = {
-      ...loadConfig("/nonexistent/settings.json"),
-      jwt: { secret: "disk-secret", ttlSeconds: 3600 },
-    };
-    writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskOnly));
-    const liveHash = "$2b$04$keepthislivehashvaluexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-    const live = { ...diskOnly, admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 } };
-    const updated = applySettingsPatch(live, { balloon: { contestId: "c9" } }, join(dataDir, "settings.json"), live.admin);
-    expect(updated.admin.passwordHash).toBe(liveHash);
-    expect(updated.admin.username).toBe("admin");
-    expect(updated.balloon.contestId).toBe("c9");
-    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
-    expect(saved.admin.passwordHash).toBe(liveHash);
   });
 
   test("repeated PUTs against a stale contextPath log the notice at most once", async () => {
@@ -499,11 +483,10 @@ describe("applySettingsPatch partial-file guards", () => {
     initLogger({ logFilePath: logPath, stream, color: false });
     try {
       resetContextPathNotice();
-      const live = loadConfigWithSecret();
       const settingsPath = join(dataDir, "settings.json");
       for (let i = 0; i < 3; i++) {
         writeFileSync(settingsPath, JSON.stringify({ port: 8080, contextPath: "/old", teamLogin: { start: "", end: "" } }));
-        applySettingsPatch(live, { balloon: { contestId: "c9" } }, settingsPath, live.admin);
+        applySettingsPatch(loadConfigWithSecret(), { balloon: { contestId: "c9" } }, settingsPath);
       }
       expect(chunks.join("").match(/is no longer supported/g)?.length).toBe(1);
     } finally {
@@ -511,58 +494,5 @@ describe("applySettingsPatch partial-file guards", () => {
       initLogger({ logFilePath: false });
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  test("a disk file without a jwt secret keeps the live one (never a zero-length key)", () => {
-    writeFileSync(
-      join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
-    );
-    const live = loadConfigWithSecret();
-    const updated = applySettingsPatch(live, { balloon: { contestId: "c9" } }, join(dataDir, "settings.json"), live.admin);
-    expect(updated.jwt.secret).toBe("test-secret");
-    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
-    expect(saved.jwt.secret).toBe("test-secret");
-  });
-
-  test("the admin guard backfills only the hash, so a rename survives a partial file", () => {
-    writeFileSync(
-      join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
-    );
-    const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
-    const live = {
-      ...loadConfigWithSecret(),
-      admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 },
-    };
-    const updated = applySettingsPatch(live, { admin: { username: "chief" } }, join(dataDir, "settings.json"), live.admin);
-    expect(updated.admin.username).toBe("chief");
-    expect(updated.admin.passwordHash).toBe(liveHash);
-    expect(updated.admin.password).toBe("pw");
-    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
-    expect(saved.admin.username).toBe("chief");
-    expect(saved.admin.passwordHash).toBe(liveHash);
-  });
-
-  test("sessionTtlSeconds edits also survive the guard", () => {
-    writeFileSync(
-      join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
-    );
-    const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
-    const live = {
-      ...loadConfigWithSecret(),
-      admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 },
-    };
-    // The UI schema does not expose sessionTtlSeconds, but a hand-built patch
-    // must still not be reverted by the guard when only the hash is missing.
-    const updated = applySettingsPatch(
-      live,
-      { admin: { username: "chief" } },
-      join(dataDir, "settings.json"),
-      live.admin,
-    );
-    expect(updated.admin.sessionTtlSeconds).toBe(28800);
-    expect(updated.admin.username).toBe("chief");
   });
 });

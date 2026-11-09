@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import { setDataDir } from "./store/store";
-import { migrateLegacyDataDir } from "./store/dataRoot";
+import { warnLegacyDataDir } from "./store/dataRoot";
 import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig, normalizeContextPathFile, CONTEXT_PATH } from "./config";
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
@@ -30,15 +30,9 @@ const storePath = (name: string): string => join(STORE_DIR, name);
 mkdirSync(DATA_ROOT, { recursive: true });
 // One log file per run: truncated here, appended to by every module via `log`.
 initLogger({ logFilePath: storePath(join("logs", "latest.log")) });
-// Older builds could leave stores one level deeper; lift them once, before any
-// store reads (the admin password now lives only in settings.json).
-const migrated = migrateLegacyDataDir(DATA_ROOT);
-if (migrated.length > 0) {
-  log.info(
-    "data",
-    `moved legacy ${join(DATA_ROOT, "data")} entries up into ${STORE_DIR} (${migrated.join(", ")})`,
-  );
-}
+// Older builds could leave stores one level deeper; nothing is migrated —
+// the operator moves or deletes the directory by hand (one WARN at startup).
+warnLegacyDataDir(DATA_ROOT);
 const CONFIG_PATH = storePath("settings.json");
 if (!existsSync(CONFIG_PATH)) {
   writeDefaultConfig(CONFIG_PATH);

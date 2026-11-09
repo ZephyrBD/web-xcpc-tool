@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, wr
 import { join } from "node:path";
 import { parseConfig, type Config } from "../config";
 import type { JsonStore } from "../store/store";
-import { backfillLiveSecrets, readConfigBase, settingsPathFor } from "./settings";
+import { readConfigBase, settingsPathFor } from "./settings";
 
 /** Rows removed per store plus the archived print files deleted under printed/ and pdf/. */
 export type PurgeReport = {
@@ -27,8 +27,8 @@ export type PurgeReport = {
 export type PurgeDeps = {
   dataDir: string;
   /**
-   * The running config; its admin hash and JWT secret are what the settings
-   * rewrite backfills when the file on disk is partial (see backfillLiveSecrets).
+   * The running config; readConfigBase falls back to it when the file on
+   * disk is missing or unparseable.
    */
   liveCfg: Config;
   teams: JsonStore<unknown[]>;
@@ -89,18 +89,16 @@ function countCredentials(entries: Record<string, unknown>): { passwords: number
 }
 
 /**
- * Clears balloon.contestId in settings.json with the same base/guard/write
- * sequence as applySettingsPatch: the file normally wins, a missing or
- * unparseable one falls back to the live config, and admin hash / jwt secret
- * are backfilled from the live config so the purge can never lock the operator
- * out. Every other setting (domjudge credentials, poll interval, print token)
- * and secret.key survive untouched.
+ * Clears balloon.contestId in settings.json with the same base/write sequence
+ * as applySettingsPatch: the file on disk wins, a missing or unparseable one
+ * falls back to the live config. The admin hash and JWT secret come from the
+ * file (index.ts writes them at boot). Every other setting (domjudge
+ * credentials, poll interval, print token) and secret.key survive untouched.
  */
 function resetContestId(settingsPath: string, liveCfg: Config): Config {
   const base = readConfigBase(settingsPath, liveCfg);
   const current = base as unknown as Config;
   base.balloon = { ...current.balloon, contestId: "" };
-  backfillLiveSecrets(base, liveCfg);
   const updated = parseConfig(base);
   const tmpPath = `${settingsPath}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(updated, null, 2));
