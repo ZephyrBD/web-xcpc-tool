@@ -1011,6 +1011,17 @@ describe("static hosting", () => {
     },
   );
 
+  test.each([
+    "/wxt//dj/verify",
+    "/wxt/DJ/verify",
+    "/wxt/dj//verify",
+    "/wxt/Dj/Print",
+  ])("retired path variant %s is normalized and answers 404", async (path) => {
+    const res = await makeApp().request(path);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("ADMIN-INDEX");
+  });
+
   test("non-GET miss does not fall back to index.html", async () => {
     const res = await makeApp().request("/wxt/login", { method: "POST" });
     expect(res.status).toBe(404);

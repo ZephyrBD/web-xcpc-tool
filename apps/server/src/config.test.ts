@@ -1,9 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compare } from "bcryptjs";
-import { CONTEXT_PATH, ensureAdminPassword, ensureJwtSecret, loadConfig, normalizeContextPathFile, writeDefaultConfig } from "./config";
+import {
+  CONTEXT_PATH,
+  ensureAdminPassword,
+  ensureJwtSecret,
+  loadConfig,
+  normalizeContextPathFile,
+  parseConfig,
+  resetContextPathNotice,
+  writeDefaultConfig,
+} from "./config";
+import { initLogger } from "./log/logger";
 
 describe("loadConfig", () => {
   test("returns defaults when file does not exist", () => {
@@ -40,6 +50,51 @@ describe("loadConfig", () => {
     writeFileSync(broken, "{not json");
     expect(normalizeContextPathFile(broken)).toBe(false);
     expect(readFileSync(broken, "utf8")).toBe("{not json");
+  });
+
+  test("normalizeContextPathFile writes atomically through a tmp file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ contextPath: "/old" }));
+    expect(normalizeContextPathFile(path)).toBe(true);
+    // rename() replaces the target, so no .tmp may survive a successful write.
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    expect(readFileSync(path, "utf8")).toContain(CONTEXT_PATH);
+  });
+
+  test("the stale contextPath notice is emitted once, not on every re-parse", () => {
+    const chunks: string[] = [];
+    const stream = {
+      isTTY: false,
+      write: (s: string) => {
+        chunks.push(String(s));
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+    // settings PUTs re-parse the file on every save; a stale value on disk
+    // must not produce one INFO line per request.
+    initLogger({ logFilePath: false, stream, color: false });
+    try {
+      resetContextPathNotice();
+      parseConfig({ contextPath: "/wxt" });
+      parseConfig({ contextPath: "/wxt" });
+      parseConfig({ contextPath: "/wxt" });
+      expect(chunks.join("").match(/contextPath/g)?.length ?? 0).toBe(0);
+
+      parseConfig({ contextPath: "/stale" });
+      parseConfig({ contextPath: "/stale" });
+      parseConfig({ contextPath: "/stale" });
+      expect(chunks.join("").match(/contextPath/g)?.length).toBe(1);
+      expect(chunks.join("")).toContain("is no longer supported");
+    } finally {
+      resetContextPathNotice();
+      initLogger({});
+    }
+  });
+
+  test("a non-string contextPath is a schema error, not silently coerced", () => {
+    // Behaviour is unchanged from before: a wrong type fails loudly at load.
+    expect(() => parseConfig({ contextPath: 42 })).toThrow();
   });
 
   test("loads values from an existing JSON file", () => {

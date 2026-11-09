@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hashSync } from "bcryptjs";
 import { z } from "zod";
 import { log } from "./log/logger";
@@ -73,6 +73,18 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
+/**
+ * The stale-contextPath INFO is a startup fact, not a per-parse one: settings
+ * PUTs re-parse the file on every save (readConfigBase/applySettingsPatch), and
+ * with a stale value still on disk that would emit a line per request.
+ */
+let contextPathNoticeLogged = false;
+
+/** Test seam: forget that the notice was emitted. */
+export function resetContextPathNotice(): void {
+  contextPathNoticeLogged = false;
+}
+
 /** Validates an arbitrary raw object against the full config schema. */
 export function parseConfig(raw: unknown): Config {
   const parsed = configSchema.parse(raw);
@@ -80,9 +92,14 @@ export function parseConfig(raw: unknown): Config {
     typeof raw === "object" && raw !== null
       ? (raw as { contextPath?: unknown }).contextPath
       : undefined;
-  if (typeof configured === "string" && configured !== CONTEXT_PATH) {
+  if (
+    !contextPathNoticeLogged &&
+    typeof configured === "string" &&
+    configured !== CONTEXT_PATH
+  ) {
     // The path is part of the router mount and cannot move at runtime; rather
-    // than silently honoring a stale settings.json, keep /wxt and say so.
+    // than silently honoring a stale settings.json, keep /wxt and say so once.
+    contextPathNoticeLogged = true;
     log.info("config", `contextPath "${configured}" is no longer supported; using ${CONTEXT_PATH}`);
   }
   return { ...parsed, contextPath: CONTEXT_PATH };
@@ -102,6 +119,9 @@ export function loadConfig(path: string): Config {
  * Deliberately silent: `parseConfig` already logs the one INFO line for the
  * stale value, and startup loads the config before calling this. A missing or
  * unparseable file is left alone (the loader reports those separately).
+ *
+ * Writes through a tmp file + rename, like applySettingsPatch, so a crash can
+ * never leave a half-written settings.json behind.
  */
 export function normalizeContextPathFile(path: string): boolean {
   if (!existsSync(path)) return false;
@@ -112,7 +132,9 @@ export function normalizeContextPathFile(path: string): boolean {
     return false;
   }
   if (raw.contextPath === CONTEXT_PATH) return false;
-  writeFileSync(path, JSON.stringify({ ...raw, contextPath: CONTEXT_PATH }, null, 2));
+  const tmpPath = `${path}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify({ ...raw, contextPath: CONTEXT_PATH }, null, 2));
+  renameSync(tmpPath, path);
   return true;
 }
 

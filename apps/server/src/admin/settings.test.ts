@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { compare } from "bcryptjs";
-import { loadConfig } from "../config";
+import { loadConfig, resetContextPathNotice } from "../config";
+import { initLogger } from "../log/logger";
 import { createApp } from "../server";
 import { adminAuthHeaders } from "./auth";
 import { applySettingsPatch, assertContestIdMutable, maskToken } from "./settings";
@@ -480,6 +481,36 @@ describe("applySettingsPatch partial-file guards", () => {
     expect(updated.balloon.contestId).toBe("c9");
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
     expect(saved.admin.passwordHash).toBe(liveHash);
+  });
+
+  test("repeated PUTs against a stale contextPath log the notice at most once", async () => {
+    // A hand-edited file keeps `contextPath: "/old"` on disk: every PUT
+    // re-parses it, and a per-parse INFO would spam the log on each save.
+    const dir = mkdtempSync(join(tmpdir(), "settings-log-"));
+    const logPath = join(dir, "latest.log");
+    const chunks: string[] = [];
+    const stream = {
+      isTTY: false,
+      write: (s: string) => {
+        chunks.push(String(s));
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+    initLogger({ logFilePath: logPath, stream, color: false });
+    try {
+      resetContextPathNotice();
+      const live = loadConfigWithSecret();
+      const settingsPath = join(dataDir, "settings.json");
+      for (let i = 0; i < 3; i++) {
+        writeFileSync(settingsPath, JSON.stringify({ port: 8080, contextPath: "/old", teamLogin: { start: "", end: "" } }));
+        applySettingsPatch(live, { balloon: { contestId: "c9" } }, settingsPath, live.admin);
+      }
+      expect(chunks.join("").match(/is no longer supported/g)?.length).toBe(1);
+    } finally {
+      resetContextPathNotice();
+      initLogger({ logFilePath: false });
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("a disk file without a jwt secret keeps the live one (never a zero-length key)", () => {

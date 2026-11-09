@@ -4,6 +4,7 @@ import { getCookie } from "hono/cookie";
 import type { Config } from "../config";
 import { CONTEXT_PATH } from "../config";
 import { signAdminToken, verifyAdminToken } from "../auth/token";
+import { appPath } from "../domjudge/proxy";
 import type { Deps } from "../server";
 
 export { verifyAdminToken };
@@ -149,9 +150,19 @@ export function isMutatingMethod(method: string): boolean {
 /** Same 403 body for every rejected cross-origin mutation. */
 export const CROSS_ORIGIN_FORBIDDEN = "cross-origin forbidden";
 
-/** Auth for every /admin/api/* route except POST /admin/api/login. */export function requireAdmin(cfg: () => Config): MiddlewareHandler {
+/**
+ * Hono routes under the fixed /wxt mount, so `c.req.path` there is
+ * `/wxt/admin/api/...` while the handlers compare against `/admin/api/...`.
+ * `appPath` strips the mount (no-op when served unmounted), keeping every
+ * path comparison correct in both shapes.
+ */
+const adminPath = (c: Context): string => appPath(c);
+
+/** Auth for every /admin/api/* route except POST /admin/api/login. */
+export function requireAdmin(cfg: () => Config): MiddlewareHandler {
   return async (c, next) => {
-    if (c.req.method === "POST" && c.req.path === "/admin/api/login") {
+    const path = adminPath(c);
+    if (c.req.method === "POST" && path === "/admin/api/login") {
       return next();
     }
     let token = "";
@@ -159,7 +170,7 @@ export const CROSS_ORIGIN_FORBIDDEN = "cross-origin forbidden";
     if (auth?.startsWith("Bearer ")) token = auth.slice(7);
     if (!token) token = getCookie(c, ADMIN_COOKIE) ?? "";
     // EventSource cannot set headers, so SSE also accepts ?token=.
-    if (!token && c.req.method === "GET" && c.req.path === "/admin/api/events") {
+    if (!token && c.req.method === "GET" && path === "/admin/api/events") {
       token = c.req.query("token") ?? "";
     }
     const payload = token ? await verifyAdminToken(cfg().jwt.secret, token) : null;

@@ -677,7 +677,9 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       // The old /wxt/dj/* proxy layer is gone (DOMjudge lives at the site root).
       // Answer 404 instead of the SPA index, so a stale bookmark fails loudly
       // rather than rendering the admin shell at a DOMjudge-looking URL.
-      if (raw === "/dj" || raw.startsWith("/dj/")) {
+      // Normalized first: `//dj`, `/DJ/` and `/dj//verify` must match too.
+      const normalized = raw.replace(/\/{2,}/g, "/").toLowerCase();
+      if (normalized === "/dj" || normalized.startsWith("/dj/")) {
         return c.notFound();
       }
       const decodedPath = raw === "/" ? "" : safeDecode(raw);
