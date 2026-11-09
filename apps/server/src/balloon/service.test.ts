@@ -12,8 +12,9 @@ import { BalloonService, type BalloonTask, type BalloonLogger } from "./service"
  * as the real logger, so assertions read like `recorder.warn.calls`.
  */
 function makeRecorder() {
-  const calls = { info: [] as unknown[][], warn: [] as unknown[][], error: [] as unknown[][] };
+  const calls = { debug: [] as unknown[][], info: [] as unknown[][], warn: [] as unknown[][], error: [] as unknown[][] };
   const logger = {
+    debug: (name: string, msg: string, ...args: unknown[]) => calls.debug.push([msg, ...args]),
     info: (name: string, msg: string, ...args: unknown[]) => calls.info.push([msg, ...args]),
     warn: (name: string, msg: string, ...args: unknown[]) => calls.warn.push([msg, ...args]),
     error: (name: string, msg: string, ...args: unknown[]) => calls.error.push([msg, ...args]),
@@ -871,18 +872,20 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
     svc.start(); // 0ms tick → poll #1 starts and blocks on the gate
     await until(() => urls.length === 1);
 
-    // Settings save while poll #1 is in flight: stop()+start() schedules a 0ms
-    // restart tick. Synchronously (no timer has fired yet) the poll is released,
-    // so the restart tick is GUARANTEED to be still pending when the poll
-    // finishes — the exact interleaving the review reproduced with a real
-    // scheduler, without depending on timer jitter.
+    // Settings save while poll #1 is in flight: stop()+start() arms a 0ms
+    // restart tick. What this test proves, and nothing more: after the poll is
+    // released the service polls again WITHOUT any external nudge, i.e. the
+    // restart chain is alive. It does NOT prove the timing — an in-process
+    // `new Response()` needs no macrotask, so this poll may settle before the
+    // restart tick can fire and the pass may come from the ordinary
+    // interval-reschedule path. The exact interleaving (tick still pending when
+    // the poll finishes) is pinned deterministically by "a restart tick that
+    // outlives the in-flight poll…" below, which releases through a microtask.
     svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
     (release as unknown as () => void)();
 
-    // Poll #1 resumes, sees its generation superseded and returns without
-    // scheduling; before the fix the still-pending restart tick then woke up,
-    // saw `polling === true` and bailed → no second GET ever. The hand-over in
-    // pollLoop's finally is what makes the restart tick usable.
+    // Poll #1 resumes; it was superseded, so it no longer chains a tick itself.
+    // The chain must continue through the restart path or the interval path.
     await until(() => urls.length >= 2);
     expect(urls.length).toBeGreaterThanOrEqual(2);
     cleanup();
@@ -897,7 +900,9 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
    */
   function countingTimeout() {
     const live = new Set<ReturnType<typeof setTimeout>>();
+    let scheduled = 0;
     const schedule = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => {
+      scheduled++;
       const handle = setTimeout(() => {
         live.delete(handle);
         fn();
@@ -912,6 +917,8 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
         clearTimeout(handle);
       },
       liveCount: () => live.size,
+      /** How many ticks were ever armed: catches a hand-over that re-armed twice. */
+      scheduled: () => scheduled,
       clear: () => {
         for (const h of live) clearTimeout(h);
         live.clear();
@@ -957,14 +964,21 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
 
       (release as unknown as () => void)();
       // Poll #1 finishes superseded: the restart tick it could not have used is
-      // re-armed (still exactly one outstanding), and poll #2 starts.
+      // re-armed and poll #2 starts. EXACTLY one timer may be outstanding at
+      // every point after that — a duplicate hand-over would arm two.
       await until(() => urls.length >= 2);
-      expect(timers.liveCount()).toBeLessThanOrEqual(1);
+      expect(timers.liveCount()).toBe(1);
+      // Exact accounting for the whole run — nothing was armed twice:
+      // 1 initial tick, 3 restart ticks (one per save, each cancelled by the
+      // next), 1 hand-over tick, 1 regular tick armed by poll #2. A duplicate
+      // hand-over would show up here, and a lost one as urls.length === 1.
+      expect(timers.scheduled()).toBe(6);
 
-      // The chain is alive one full cadence later (10s), with ONE outstanding
-      // tick: a duplicate chain would have armed two, a dead one zero.
+      // Poll #2 completes and schedules its regular tick: still exactly one.
       await new Promise((r) => setTimeout(r, 30));
       expect(timers.liveCount()).toBe(1);
+      // No late duplicate hand-over poll: only #1 and #2 have been fetched.
+      expect(urls.length).toBe(2);
     } finally {
       svc.stop();
       timers.clear();
@@ -1150,6 +1164,90 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
     expect(events).toHaveLength(0);
     expect(svc.list()).toEqual([]);
 
+    svc.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a superseded poll logs one DEBUG line so latest.log explains the gap", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const recorder = makeRecorder();
+    const fetchImpl = (async () => {
+      await gate;
+      return new Response(JSON.stringify([{ balloonid: 7, teamid: "t1", done: false }]));
+    }) as unknown as typeof fetch;
+    const { svc, store } = makeService(fetchImpl, undefined, { logger: recorder.logger });
+
+    const inFlight = svc.pollOnce();
+    await new Promise((r) => setTimeout(r, 5));
+    store.save([]);
+    svc.stop();
+    (release as unknown as () => void)();
+    expect(await inFlight).toBe(0);
+    expect(store.load()).toEqual([]);
+
+    const debugLines = recorder.calls.debug.filter((c: unknown[]) => String(c[0]).includes("轮询结果已作废"));
+    expect(debugLines).toHaveLength(1);
+    expect(recorder.calls.error).toHaveLength(0);
+  });
+
+  test("the store write re-checks the epoch, so a purge between guard and save wins", async () => {
+    // The narrowest window C2's await-guard does not cover: the poll is past its
+    // generation check and about to persist; the purge (stop() + empty the
+    // file) lands with the snapshot already computed; JsonStore.save has no
+    // version check, so whatever the service hands it is renamed into place.
+    //
+    // The purge cannot be injected INTO save() (save only receives the final
+    // value), so the fixture puts it at the one place it can precede the
+    // service's write while the poll is parked: the store's load() of the
+    // existing rows, which happens *after* the await-guard and *before* the
+    // write decision. That is a real ordering too — a purge can run between the
+    // guard and the reconcile pass. The service must re-read the epoch it
+    // captured before deciding to write.
+    const dir = mkdtempSync(join(tmpdir(), "balloon-saverace-"));
+    const inner = new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []);
+    let svc: BalloonService;
+    // Armed only after construction: the constructor's discardForeignRows()
+    // load is not the window under test.
+    let purgePending = false;
+    const store = {
+      load: () => {
+        if (purgePending) {
+          purgePending = false;
+          // Purge order from server.ts: stop the poller, then empty the file.
+          svc.stop();
+          inner.save([]);
+        }
+        return inner.load();
+      },
+      save: (value: BalloonTask[]) => inner.save(value),
+      update: (fn: (cur: BalloonTask[]) => BalloonTask[]) => {
+        const next = fn(inner.load());
+        inner.save(next);
+        return next;
+      },
+    } as unknown as JsonStore<BalloonTask[]>;
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify([{ balloonid: 7, teamid: "t1", contestproblem: { label: "A" }, done: false }]),
+      )) as unknown as typeof fetch;
+    svc = new BalloonService({
+      client: makeClient(fetchImpl),
+      store,
+      bus: new SseBus(),
+      contestId: "c1",
+      pollIntervalSeconds: 60,
+      teams: TEAMS,
+    });
+    purgePending = true;
+
+    expect(await svc.pollOnce()).toBe(0);
+    // Only the pre-purge load saw rows; the purge emptied the file and the
+    // stale reconcile must not refill it.
+    expect(inner.load()).toEqual([]);
+    expect(svc.list()).toEqual([]);
     svc.stop();
     rmSync(dir, { recursive: true, force: true });
   });

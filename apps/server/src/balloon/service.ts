@@ -57,7 +57,7 @@ export type BalloonServiceDeps = {
 };
 
 /** The logger methods this service reports through. */
-export type BalloonLogger = Pick<typeof log, "info" | "warn" | "error">;
+export type BalloonLogger = Pick<typeof log, "debug" | "info" | "warn" | "error">;
 
 const MAX_BACKOFF_MULTIPLIER = 10;
 /** Consecutive empty balloon lists before the operator gets told once. */
@@ -183,6 +183,7 @@ export class BalloonService {
    * here too so the UI does not show raw team ids until then.
    */
   refresh(teams: DjTeam[]): void {
+    const generation = this.generation;
     this.teams = teams;
     if (teams.length === 0) return;
     const rows = this.store.load();
@@ -201,7 +202,11 @@ export class BalloonService {
     // object (`return t`) for rows it leaves alone and a fresh object for rows
     // it relabels, so this is an "any row rebuilt?" check that keeps an
     // unchanged team sync from rewriting the store on every call.
-    if (next.some((t, i) => t !== rows[i])) this.store.save(next);
+    if (!next.some((t, i) => t !== rows[i])) return;
+    // Synchronous today, but keep the same epoch rule as pollOnce: a purge that
+    // emptied the store must not be re-filled by a relabel pass.
+    if (!this.ownsEpoch(generation)) return;
+    this.store.save(next);
   }
 
   start(): void {
@@ -309,6 +314,7 @@ export class BalloonService {
     id: string,
     status: BalloonTask["status"] = "delivered",
   ): Promise<{ task: BalloonTask } | { error: "balloon not found" }> {
+    const generation = this.generation;
     const task = this.store.load().find((t) => t.id === id);
     // A stale row's balloon is (as far as this poller knows) gone from
     // DOMjudge, and an id the last poll never returned is not a balloon at all:
@@ -322,9 +328,13 @@ export class BalloonService {
     this.ackPending.set(id, { postCompletedAt: requestedAt, postFailed: false });
     try {
       await this.client.markBalloonDone(this.contestId, id);
+      // Purged while the POST was in flight: the row (and its ack bookkeeping)
+      // no longer exists, so neither record may be resurrected.
+      if (!this.ownsEpoch(generation)) return { error: "balloon not found" };
       // Only polls that started after the POST finished may override the ack.
       this.ackPending.set(id, { postCompletedAt: Date.now(), postFailed: false });
     } catch (err) {
+      if (!this.ownsEpoch(generation)) return { error: "balloon not found" };
       // Keep the entry (flagged) for the same window as a successful ack: the
       // next poll may still see a predated `done: false`, and after that the
       // failed delivery is landed locally by synchronize().
@@ -367,7 +377,26 @@ export class BalloonService {
   async pollOnce(): Promise<number> {
     const generation = this.generation;
     const result = await this.pollAndReconcile(generation);
-    return generation === this.generation ? result : 0;
+    if (generation !== this.generation) {
+      // Expected during a settings save or a purge; one line so latest.log says
+      // why a poll produced nothing instead of leaving a silent gap.
+      this.logger.debug(
+        "balloon",
+        `轮询结果已作废：等待期间比赛 ${this.contestId || "（已清空）"} 的配置被重新加载或数据被清空`,
+      );
+      return 0;
+    }
+    return result;
+  }
+
+  /**
+   * True when this service instance still owns the data epoch it started for.
+   * Captured before every await and re-checked inside the JsonStore mutator, so
+   * a purge that lands between "I decided to write" and "the write happens"
+   * cannot be overwritten by a snapshot taken before it.
+   */
+  private ownsEpoch(generation: number): boolean {
+    return generation === this.generation;
   }
 
   private async pollAndReconcile(generation: number): Promise<number> {
@@ -378,7 +407,7 @@ export class BalloonService {
     // Superseded while awaiting DOMjudge: this list may belong to a contest or
     // a data epoch that has since been replaced/purged. Drop it, write nothing,
     // publish nothing.
-    if (generation !== this.generation) return 0;
+    if (!this.ownsEpoch(generation)) return 0;
 
     if (balloons.length === 0) {
       // A misconfigured/balloon-less DOMjudge looks exactly like "nothing to
@@ -484,13 +513,20 @@ export class BalloonService {
       next.push(stale);
     }
 
-    this.liveIds = liveIds;
-
     if (created.length > 0 || changed.length > 0) {
+      // Second guard, inside the write: everything above is synchronous, but a
+      // stop()/purge can still have run while this poll awaited DOMjudge and
+      // before this line. Re-checking here means a purge that wiped the file
+      // between the first check and the write is never undone (JsonStore.save
+      // is an unconditional tmp+rename with no version check of its own).
+      if (!this.ownsEpoch(generation)) return 0;
       this.store.save(next);
+      this.liveIds = liveIds;
       for (const task of created) {
         this.bus.publish("admin", "balloon-task", task);
       }
+    } else {
+      this.liveIds = liveIds;
     }
     return created.length + changed.length;
   }

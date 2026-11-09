@@ -289,6 +289,39 @@ describe("POST /admin/api/data/purge", () => {
     expect(JSON.parse(readFileSync(join(dataDir, "balloon-tasks.json"), "utf8"))).toEqual([]);
   });
 
+  test("the balloon poller is stopped BEFORE the balloon store is wiped", async () => {
+    // Order matters: a poll that is already past its generation check would
+    // otherwise write its stale snapshot back over the emptied file.
+    seed(dataDir);
+    const live = cfg({ balloon: { contestId: "contest-1", pollIntervalSeconds: 45 } });
+    const events: string[] = [];
+    const balloonService = {
+      stop: () => events.push("stop"),
+      reconfigure: () => events.push("reconfigure"),
+      refresh: () => events.push("refresh"),
+    } as unknown as NonNullable<Parameters<typeof createApp>[1]>["balloonService"];
+    const app = createApp(live, {
+      dataDir,
+      balloonService,
+      balloonTasks: {
+        load: () => [],
+        save: (next: unknown[]) => {
+          events.push("balloonTasks.save");
+          void next;
+        },
+      } as never,
+    });
+
+    const res = await app.request("/admin/api/data/purge", {
+      method: "POST",
+      headers: await adminAuthHeaders(live),
+    });
+    expect(res.status).toBe(200);
+    expect(events[0]).toBe("stop");
+    expect(events).toContain("balloonTasks.save");
+    expect(events.indexOf("stop")).toBeLessThan(events.indexOf("balloonTasks.save"));
+  });
+
   test("after purging, a new contest id can be set (round trip)", async () => {
     seed(dataDir);
     // A ConfigStore exercises the live path: replace() must reach subscribers.

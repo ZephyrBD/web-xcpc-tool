@@ -412,6 +412,12 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     const teamCredentials = teamStore.store as JsonStore<Record<string, unknown>>;
     let report: PurgeReport | null = null;
     let partialError: unknown = null;
+    // Stop the poller BEFORE the wipe: stopping only after balloonTasks.save([])
+    // left a window in which a poll that was already past its generation check
+    // could write its stale snapshot back over the emptied file. stop() is
+    // synchronous and bumps the generation, so from here on no poll can reach a
+    // store write (the reconcile loop and refresh()/ack() all re-check it).
+    deps?.balloonService?.stop();
     try {
       report = purgePulledData({
         dataDir,
@@ -431,7 +437,8 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     }
     // The emptied id already stops reconfigure(); this also covers the case
     // where the live store was out of step with disk, and guarantees nothing
-    // is scheduled when the response returns.
+    // is scheduled when the response returns (it is idempotent: the first
+    // stop() above is the one the race argument depends on).
     deps?.balloonService?.stop();
     if (partialError || !report) {
       log.error("admin", "data purge failed:", partialError instanceof Error ? partialError.message : partialError);
