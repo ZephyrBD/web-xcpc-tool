@@ -35,8 +35,8 @@ describe('apiFetch', () => {
 
   test('does not set Content-Type for a FormData body (browser sets the multipart boundary)', async () => {
     const form = new FormData()
-    form.append('file', new Blob(['x'], { type: 'application/octet-stream' }), 'teams.xlsx')
-    await apiFetch('/admin/api/teams/import-excel', { method: 'POST', body: form })
+    form.append('file', new Blob(['x'], { type: 'application/octet-stream' }), 'source.pdf')
+    await apiFetch('/admin/api/print-tasks', { method: 'POST', body: form })
     const headers = calls[0].init.headers as Record<string, string>
     expect(headers['Content-Type']).toBeUndefined()
   })
@@ -44,8 +44,8 @@ describe('apiFetch', () => {
   test('still attaches the bearer token for FormData uploads', async () => {
     setToken('tok-1')
     const form = new FormData()
-    form.append('file', new Blob(['x']), 'teams.xlsx')
-    await apiFetch('/admin/api/teams/import-excel', { method: 'POST', body: form })
+    form.append('file', new Blob(['x']), 'source.pdf')
+    await apiFetch('/admin/api/print-tasks', { method: 'POST', body: form })
     expect((calls[0].init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok-1')
   })
 })

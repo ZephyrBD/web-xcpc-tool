@@ -13,7 +13,7 @@ import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/c
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
-import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
+import { syncTeamsFromDomjudge } from "./teams/sync";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { randomInt } from "node:crypto";
@@ -324,20 +324,6 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
     }
-  });
-
-  app.post("/admin/api/teams/import-excel", async (c) => {
-    const form = await c.req.formData().catch(() => null);
-    const file = form?.get("file");
-    if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
-    const buffer = Buffer.from(await file.arrayBuffer());
-    let result;
-    try {
-      result = await importTeamsFromExcel(buffer, teamsStore.load(), teamStore);
-    } catch {
-      return c.json({ ok: false, reason: "invalid excel file" }, 400);
-    }
-    return c.json(result);
   });
 
   app.get("/admin/api/settings", (c) => {

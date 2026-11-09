@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ElButton, ElMessage, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
-import { serverMessage, serverMessageOrEmpty } from '@/lib/apiError'
+import { serverMessage } from '@/lib/apiError'
 import { usePagination } from '@/composables/usePagination'
 
 export type DjTeam = {
@@ -17,8 +17,6 @@ export type DjTeam = {
 const teams = ref<DjTeam[]>([])
 const { page, pageSize, paged: pagedTeams } = usePagination(teams)
 const syncing = ref(false)
-const uploading = ref(false)
-const fileInput = ref<HTMLInputElement | null>(null)
 
 async function refresh(): Promise<void> {
   try {
@@ -65,46 +63,6 @@ async function sync(): Promise<void> {
   }
 }
 
-function pickFile(): void {
-  fileInput.value?.click()
-}
-
-function onDragOver(e: DragEvent): void {
-  e.preventDefault()
-}
-
-async function onDrop(e: DragEvent): Promise<void> {
-  e.preventDefault()
-  const file = e.dataTransfer?.files?.[0]
-  if (file) await upload(file)
-}
-
-async function onFileChange(e: Event): Promise<void> {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file) await upload(file)
-  const el = e.target as HTMLInputElement | null
-  if (el) el.value = ''
-}
-
-async function upload(file: File): Promise<void> {
-  uploading.value = true
-  try {
-    const form = new FormData()
-    form.append('file', file)
-    const result = await apiFetch<{ imported: number; skipped: number }>(
-      '/admin/api/teams/import-excel',
-      { method: 'POST', body: form },
-    )
-    ElMessage.success(`成功导入 ${result.imported} 个队伍，跳过 ${result.skipped} 条`)
-  } catch (err) {
-    const reason = serverMessageOrEmpty(err)
-    ElMessage.error(reason ? `导入失败：${reason}` : '导入没成功，请确认文件是有效的 Excel 后再试')
-  } finally {
-    uploading.value = false
-    await refresh()
-  }
-}
-
 function displayName(row: DjTeam): string {
   return row.display_name?.trim() || row.name
 }
@@ -123,26 +81,7 @@ onMounted(() => void refresh())
 <template>
   <div class="teams page-fill">
     <div class="teams-toolbar">
-      <div class="toolbar-left">
-        <ElButton type="primary" :loading="syncing" @click="sync">从 DOMjudge 同步</ElButton>
-      </div>
-      <div
-        class="upload-zone"
-        @click="pickFile"
-        @dragover="onDragOver"
-        @drop="onDrop"
-      >
-        <input
-          ref="fileInput"
-          class="upload-input"
-          type="file"
-          accept=".xlsx,.xls"
-          :disabled="uploading"
-          @change="onFileChange"
-        />
-        <p class="upload-title">拖拽 Excel 到这里，或点击选择文件</p>
-        <p class="upload-hint">模板：第一行是表头，两列分别为 ICPC_ID、PASSWORD；每行一个队伍</p>
-      </div>
+      <ElButton type="primary" :loading="syncing" @click="sync">从 DOMjudge 同步</ElButton>
     </div>
 
     <div v-if="teams.length" class="table-fill-wrap">
@@ -203,44 +142,6 @@ onMounted(() => void refresh())
   flex-wrap: wrap;
   gap: 16px;
   align-items: stretch;
-}
-
-.toolbar-left {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.upload-zone {
-  flex: 1;
-  min-width: 260px;
-  padding: 12px 16px;
-  border: 1px dashed color-mix(in srgb, var(--brand-blue) 45%, transparent);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--brand-blue) 6%, transparent);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.upload-zone:hover {
-  border-color: var(--brand-blue);
-  background: color-mix(in srgb, var(--brand-blue) 12%, transparent);
-}
-
-.upload-input {
-  display: none;
-}
-
-.upload-title {
-  margin: 0;
-  font-size: var(--text-15);
-  color: var(--brand-blue);
-}
-
-.upload-hint {
-  margin: 4px 0 0;
-  font-size: var(--text-13);
-  color: var(--text-muted);
 }
 
 .empty-state {

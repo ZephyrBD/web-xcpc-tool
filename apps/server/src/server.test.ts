@@ -784,20 +784,6 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(res.headers.get("set-cookie")).toBeNull();
   });
 
-  test("import-excel with an invalid file returns 400 invalid excel file", async () => {
-    const teamStore = makeTeamStore(dataDir);
-    const app = createApp(makeCfg(), {
-      dataDir,
-      teamStore,
-      teamsStore: new JsonStore(join(dataDir, "teams.json"), []),
-    });
-    const form = new FormData();
-    form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])], "bad.xlsx"));
-    const res = await app.request("/admin/api/teams/import-excel", { method: "POST", headers: await adminAuthHeaders(makeCfg()), body: form });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ ok: false, reason: "invalid excel file" });
-  });
-
   test("team sync refreshes the balloon service team lookups", async () => {
     const cfg = makeCfg();
     const client = new DjClient(cfg.domjudge);

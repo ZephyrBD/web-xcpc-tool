@@ -13,7 +13,7 @@ describe('serverMessage', () => {
   })
 
   test('falls back to the reason field (import / sync style bodies)', () => {
-    expect(serverMessage(new ApiError(400, { reason: 'invalid excel file' }), '兜底')).toBe('invalid excel file')
+    expect(serverMessage(new ApiError(400, { reason: 'invalid pdf file' }), '兜底')).toBe('invalid pdf file')
   })
 
   test('uses the fallback when the body carries no message', () => {

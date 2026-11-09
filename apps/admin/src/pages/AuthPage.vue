@@ -291,7 +291,7 @@ onMounted(() => void refresh())
           />
         </div>
         <el-empty v-else-if="unassigned > 0" description="所有队伍都还没有队伍码，用上方「为未分配队伍批量生成」一键分配" />
-        <el-empty v-else description="还没有队伍，先在「队伍」页从 DOMjudge 同步或导入 Excel" />
+        <el-empty v-else description="还没有队伍，先在「队伍」页从 DOMjudge 同步" />
       </ElTabPane>
 
       <ElTabPane label="登录历史" name="history">

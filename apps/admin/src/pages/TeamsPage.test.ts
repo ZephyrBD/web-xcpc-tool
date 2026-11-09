@@ -34,7 +34,6 @@ let syncResult:
   | { count: number }
   | { error?: string; message?: string; status: number }
   | null = null
-let importResult: { imported: number; skipped: number } | { ok: false; reason: string; status: number } | null = null
 /** Non-null makes GET /admin/api/teams fail with this Chinese error. */
 let teamsError: string | null = null
 const calls: Array<{ method: string; path: string; body: unknown; contentType?: string }> = []
@@ -95,18 +94,6 @@ function mockFetch() {
         headers: { 'content-type': 'application/json' },
       })
     }
-    if (method === 'POST' && path === '/admin/api/teams/import-excel') {
-      if (importResult && 'ok' in importResult) {
-        return new Response(JSON.stringify({ ok: false, reason: importResult.reason }), {
-          status: importResult.status,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      return new Response(JSON.stringify(importResult ?? { imported: 0, skipped: 0 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    }
     return new Response(JSON.stringify({ error: 'not found' }), { status: 404 })
   }) as unknown as typeof fetch
 }
@@ -140,7 +127,6 @@ describe('TeamsPage', () => {
     settingsError = null
     settingsErrorStatus = 500
     syncResult = { count: 2 }
-    importResult = { imported: 3, skipped: 1 }
     teamsError = null
     calls.length = 0
     mockFetch()
@@ -176,8 +162,7 @@ describe('TeamsPage', () => {
 
     expect(wrapper.find('input[placeholder*="比赛 ID"]').exists()).toBe(false)
     // 剩下的文本框只有 ElPagination 的页码框：位于分页条内，不在工具栏里。
-    const toolbarInputs = wrapper.find('.teams-toolbar').findAll('input')
-    expect(toolbarInputs.map((i) => (i.element as HTMLInputElement).type)).toEqual(['file'])
+    expect(wrapper.find('.teams-toolbar').findAll('input').length).toBe(0)
     expect(wrapper.text()).not.toContain('比赛 ID')
   })
 
@@ -278,42 +263,6 @@ describe('TeamsPage', () => {
     await flush()
 
     expect(messageMock.error).toHaveBeenCalledWith('队伍数据损坏，请联系管理员')
-  })
-
-  test('uploading an excel file posts FormData field "file" and shows imported/skipped', async () => {
-    const wrapper = mountPage()
-    await flush()
-    await flush()
-
-    const file = new File(['fake-excel'], 'teams.xlsx', { type: 'application/vnd.ms-excel' })
-    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
-    Object.defineProperty(input, 'files', { value: [file] })
-    await wrapper.find('input[type="file"]').trigger('change')
-    await flush()
-    await flush()
-
-    const up = calls.find((c) => c.method === 'POST' && c.path === '/admin/api/teams/import-excel')
-    expect(up).toBeDefined()
-    expect(up!.body).toBe('[FormData]')
-    expect(up!.contentType).toBeUndefined()
-    expect(messageMock.success).toHaveBeenCalledWith('成功导入 3 个队伍，跳过 1 条')
-  })
-
-  test('an invalid excel file surfaces the server reason as a friendly message', async () => {
-    importResult = { ok: false, reason: 'invalid excel file', status: 400 }
-    const wrapper = mountPage()
-    await flush()
-    await flush()
-
-    const file = new File(['nope'], 'teams.xlsx', { type: 'application/vnd.ms-excel' })
-    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
-    Object.defineProperty(input, 'files', { value: [file] })
-    await wrapper.find('input[type="file"]').trigger('change')
-    await flush()
-    await flush()
-
-    expect(messageMock.error).toHaveBeenCalled()
-    expect(messageMock.success).not.toHaveBeenCalled()
   })
 
   test('paginates: 25 teams show 20 rows on page 1 and the rest on page 2', async () => {

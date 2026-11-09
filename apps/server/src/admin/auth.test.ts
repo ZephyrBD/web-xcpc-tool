@@ -101,7 +101,6 @@ describe("admin auth", () => {
       ["/admin/api/balloon-tasks", {}],
       ["/admin/api/teams", {}],
       ["/admin/api/teams/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }],
-      ["/admin/api/teams/import-excel", { method: "POST" }],
       ["/admin/api/print-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/balloon-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/events", {}],
