@@ -146,6 +146,29 @@ describe("login approval flow (outside the login window)", () => {
     expect(claim.headers.get("set-cookie")).toBeNull();
   });
 
+  test("waiting page keeps a deep-link next value in the poll JS and claim honors it", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    // encodeURIComponent escapes every ? & = / here — the JS literal must hold
+    // the encoded form as-is (HTML entities would corrupt the claim URL).
+    const next = "/scoreboard?tab=full&x=1";
+    const res = await app.request(
+      `/dj/verify?code=${teamCode}&next=${encodeURIComponent(next)}`,
+      { redirect: "manual" },
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("&next=%2Fscoreboard%3Ftab%3Dfull%26x%3D1");
+    expect(html).not.toContain("&amp;next=");
+    const id = loginRequests.listPending()[0].id;
+    loginRequests.decide(id, "approved");
+    const claim = await app.request(
+      `/dj/verify/claim?req=${id}&next=${encodeURIComponent(next)}`,
+      { redirect: "manual" },
+    );
+    expect(claim.status).toBe(302);
+    expect(claim.headers.get("location")).toBe(next);
+  });
+
   test("wrong code outside the window still returns the 403 miss page and creates no request", async () => {
     const { app, loginRequests } = setup();
     const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");

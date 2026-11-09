@@ -108,6 +108,19 @@ export function verifyMissPage(): Response {
 }
 
 /**
+ * Embeds a value inside an inline <script> string literal. HTML entities are
+ * NOT decoded inside <script>, so this must not go through escapeHtml —
+ * instead the string is JS-escaped (no quote can break out) and every "<" is
+ * unicode-escaped so a "</" sequence can never close the script tag early.
+ */
+function jsString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/</g, "\\u003c");
+}
+
+/**
  * Login request submitted while the window is closed — HTTP 200. Inline JS
  * polls /dj/verify/status every 5s and redirects to /dj/verify/claim once
  * an admin approves; all values are server-rendered, none user-typed.
@@ -122,9 +135,9 @@ export function verifyWaitingPage(contextPath: string, reqId: string, next: stri
 <p id="msg" class="hint">等待审批中…</p>
 <script>
 (function () {
-  var base = "${escapeHtml(contextPath)}";
-  var reqId = "${escapeHtml(reqId)}";
-  var nextParam = "${escapeHtml(nextParam)}";
+  var base = "${jsString(contextPath)}";
+  var reqId = "${jsString(reqId)}";
+  var nextParam = "${jsString(nextParam)}";
   var msg = document.getElementById("msg");
   var timer = setInterval(function () {
     fetch(base + "/dj/verify/status?req=" + encodeURIComponent(reqId))
@@ -172,28 +185,4 @@ export function upstreamErrorPage(): Response {
 <button type="button" onclick="location.reload()">刷新重试</button>`,
   );
   return new Response(res.body, { status: 502, headers: res.headers });
-}
-
-function friendlyTime(iso: string): string {
-  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
-}
-
-/** The code matched but the current time is outside the allowed login window — HTTP 403. */
-export function verifyWindowPage(window: { start: string; end: string }): Response {
-  let span: string;
-  if (window.start && window.end) {
-    span = `${friendlyTime(window.start)} ~ ${friendlyTime(window.end)}`;
-  } else if (window.start) {
-    span = `${friendlyTime(window.start)} 之后`;
-  } else {
-    span = `${friendlyTime(window.end)} 之前`;
-  }
-  const res = page(
-    "队伍登录",
-    PALETTE.red,
-    `<h1>队伍登录</h1>
-<p>当前不在允许登录的时段内</p>
-<p>允许登录时段：${escapeHtml(span)}</p>`,
-  );
-  return new Response(res.body, { status: 403, headers: res.headers });
 }

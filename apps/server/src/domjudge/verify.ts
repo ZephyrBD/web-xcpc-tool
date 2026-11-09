@@ -47,7 +47,9 @@ export async function verifyTeamCode(
   if (!inLoginWindow(now, cfg.teamLogin)) {
     const entry = teamStore.findByTeamCode(code);
     if (!requestStore || !entry) return { ok: false, reason: "outside-window" };
-    const existing = requestStore.listPending().find((r) => r.icpcId === entry.icpcId);
+    const existing = requestStore
+      .listPending()
+      .find((r) => r.icpcId === entry.icpcId && r.teamCode === entry.teamCode);
     const request =
       existing ??
       requestStore.create({
