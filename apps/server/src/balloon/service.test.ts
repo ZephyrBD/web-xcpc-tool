@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -672,25 +672,20 @@ describe("BalloonService start guard", () => {
     const { svc } = makeService(fake.fetchImpl, (fn, ms) => {
       scheduled.push({ fn, ms });
     });
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      svc.start();
-      const flush = () => new Promise((r) => setTimeout(r, 0));
-      scheduled[0].fn(); // poll 1 fails -> 2x
-      await flush();
-      scheduled[1].fn(); // poll 2 fails -> 4x
-      await flush();
-      fake.failBalloonsWith(null); // recover
-      scheduled[2].fn(); // poll 3 succeeds -> base interval
-      await flush();
-      svc.stop();
+    svc.start();
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    scheduled[0].fn(); // poll 1 fails -> 2x
+    await flush();
+    scheduled[1].fn(); // poll 2 fails -> 4x
+    await flush();
+    fake.failBalloonsWith(null); // recover
+    scheduled[2].fn(); // poll 3 succeeds -> base interval
+    await flush();
+    svc.stop();
 
-      expect(scheduled[1].ms).toBe(20_000);
-      expect(scheduled[2].ms).toBe(40_000);
-      expect(scheduled[3].ms).toBe(10_000);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    expect(scheduled[1].ms).toBe(20_000);
+    expect(scheduled[2].ms).toBe(40_000);
+    expect(scheduled[3].ms).toBe(10_000);
   });
 });
 

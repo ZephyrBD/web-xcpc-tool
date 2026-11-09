@@ -85,6 +85,10 @@ const balloonService = new BalloonService({
 // untouched). A change stops and restarts the loop; an empty contestId leaves
 // it stopped, exactly like start() at boot.
 configStore.onChange((next) => {
+  // A settings PUT or a purge can install a new plaintext admin password; the
+  // file log must mask it too, so every rotated value joins the secret list
+  // (registerSecret ignores empty and absurdly short values).
+  registerSecret(next.admin.password);
   balloonService.reconfigure({
     contestId: next.balloon.contestId,
     pollIntervalSeconds: next.balloon.pollIntervalSeconds,

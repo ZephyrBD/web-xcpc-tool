@@ -64,11 +64,21 @@ export type Logger = {
 
 const MASK = "********";
 
-/** True when `stream` is a TTY and nothing (NO_COLOR / FORCE_COLOR=0) forbids color. */
+/**
+ * Shortest secret worth masking. Generated admin passwords are 16 chars, while
+ * a 1-3 char "password" would turn every line containing that letter sequence
+ * into noise (and mask unrelated text), so shorter values are ignored: they are
+ * not secrets in any meaningful sense and the log stays readable.
+ */
+const MIN_SECRET_LENGTH = 6;
+
+/** True when `stream` is a TTY and nothing (NO_COLOR / FORCE_COLOR) forbids color. */
 function autoColor(stream: NodeJS.WriteStream | undefined, env: NodeJS.ProcessEnv): boolean {
   const force = env.FORCE_COLOR;
-  if (force === "0") return false;
-  if (force === "1" || force === "2" || force === "3" || force === "true") return true;
+  // supports-color convention: FORCE_COLOR wins over NO_COLOR, "" disables.
+  if (force === "") return false;
+  if (force === "0" || force === "false") return false;
+  if (force !== undefined) return true; // "1"/"2"/"3"/"true"/any non-empty value
   if (env.NO_COLOR !== undefined) return false;
   return stream?.isTTY === true;
 }
@@ -108,7 +118,12 @@ function indentContinuation(text: string, width: number): string {
     .join("\n");
 }
 
-/** Applies every registered secret as a plain substring replacement (longest first). */
+/**
+ * Applies every registered secret as a plain substring replacement. The list is
+ * kept longest-first (see addSecret), so a secret that contains another one is
+ * masked whole; ties are broken by the value itself, so the masking result never
+ * depends on registration order.
+ */
 function redact(text: string, secrets: string[]): string {
   let out = text;
   for (const s of secrets) out = out.split(s).join(MASK);
@@ -120,13 +135,14 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
   const toConsole = opts.console !== false;
   const useColor = toConsole && (opts.color ?? autoColor(stream, process.env));
   const filePath = opts.filePath;
-  // Longest first so a secret containing another secret is masked whole.
+  // Longest first so a secret containing another secret is masked whole (ties
+  // by value, so masking is independent of registration order).
   const secrets: string[] = [];
   const addSecret = (s: string | undefined): void => {
-    if (!s) return;
+    if (!s || s.length < MIN_SECRET_LENGTH) return;
     if (secrets.includes(s)) return;
     secrets.push(s);
-    secrets.sort((a, b) => b.length - a.length);
+    secrets.sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
   };
   for (const s of opts.secrets ?? []) addSecret(s);
 

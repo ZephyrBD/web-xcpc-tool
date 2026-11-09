@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLogger, initLogger } from "./logger";
+import { createLogger, initLogger, log, registerSecret } from "./logger";
 
 /** Collects what the logger writes to its console stream. */
 function capture() {
@@ -83,7 +83,8 @@ describe("logger line format", () => {
     const out = lines();
     // 11 (timestamp + space) + 9 (name) + 6 (" [I] ") = 26
     const indent = 26;
-    expect(out[0]).toStartWith(" ".repeat(0) + out[0].slice(0, indent) + "one");
+    expect(out[0]).toEndWith(" [I] one");
+    expect(out[0].indexOf("one")).toBe(indent);
     expect(out[1]).toBe(" ".repeat(indent) + "two");
     expect(out[2]).toBe(" ".repeat(indent));
     expect(out[3]).toBe(" ".repeat(indent) + "three");
@@ -129,6 +130,11 @@ describe("logger color", () => {
 
       delete process.env.NO_COLOR;
       process.env.FORCE_COLOR = "0";
+      createLogger({ stream }).info("n", "m");
+      expect(text()).not.toContain("\x1b");
+
+      // supports-color convention: an empty FORCE_COLOR disables color too.
+      process.env.FORCE_COLOR = "";
       createLogger({ stream }).info("n", "m");
       expect(text()).not.toContain("\x1b");
     } finally {
@@ -214,11 +220,63 @@ describe("logger file output", () => {
     }
   });
 
+  test("secrets shorter than 6 chars are ignored so unrelated text is not mangled", () => {
+    const f = tempFile();
+    try {
+      // "abc" (3) and "abcde" (5) are below the threshold; "abcdef" (6) is not.
+      const logger = createLogger({ filePath: f.path, console: false, secrets: ["abc", "abcde"] });
+      logger.registerSecret("abcdef");
+      logger.info("n", "abcdef and abcde and abc");
+      const raw = readFileSync(f.path, "utf8");
+      expect(raw.trimEnd()).toEndWith("******** and abcde and abc");
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  test("masking is independent of registration order (longest-first, stable ties)", () => {
+    const f = tempFile();
+    try {
+      // "abcdef123456" contains "abcdef": whichever registers first, the whole
+      // secret is masked, never a half-masked remainder.
+      const a = createLogger({ filePath: f.path, console: false, secrets: ["abcdef", "abcdef123456"] });
+      a.info("n", "token abcdef123456");
+      const b = createLogger({ filePath: join(f.dir, "b.log"), console: false, secrets: ["abcdef123456", "abcdef"] });
+      b.info("n", "token abcdef123456");
+      const lineA = readFileSync(f.path, "utf8").trim();
+      const lineB = readFileSync(join(f.dir, "b.log"), "utf8").trim();
+      expect(lineA).toEndWith("token ********");
+      expect(lineB.slice(lineB.indexOf("token"))).toBe(lineA.slice(lineA.indexOf("token")));
+      expect(lineB).not.toContain("123456");
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  test("a rotated password registered later is masked for subsequent lines only", () => {
+    const f = tempFile();
+    const { stream, text } = capture();
+    try {
+      const logger = createLogger({ stream, color: false, filePath: f.path, secrets: ["old-password-1"] });
+      logger.info("banner", "admin old-password-1");
+      // Simulates a settings PUT installing a new plaintext admin password.
+      logger.registerSecret("new-password-2");
+      logger.info("banner", "admin new-password-2");
+      const [first, second] = readFileSync(f.path, "utf8").trim().split("\n");
+      expect(first).toEndWith("admin ********");
+      expect(second).toEndWith("admin ********");
+      expect(text()).toContain("admin old-password-1");
+      expect(text()).toContain("admin new-password-2");
+    } finally {
+      f.cleanup();
+    }
+  });
+
   test("file parent directory is created on demand", () => {
     const f = tempFile();
     const nested = join(f.dir, "logs", "deep", "latest.log");
     try {
-      createLogger({ filePath: nested, color: false, ...capture() }).info("n", "m");
+      createLogger({ filePath: nested, color: false, stream: capture().stream }).info("n", "m");
       expect(existsSync(nested)).toBe(true);
       expectFileLines(readFileSync(nested, "utf8"));
     } finally {
@@ -266,6 +324,45 @@ describe("initLogger", () => {
       const raw = readFileSync(f.path, "utf8");
       expect(raw).toContain("admin admin ********");
       expect(raw).not.toContain("pw-123456");
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  test("a rotated admin password registered later (config change) is masked in the file, plaintext on console", () => {
+    const f = tempFile();
+    const { stream, text } = capture();
+    try {
+      // Boot: the first plaintext password registered with the process logger.
+      initLogger({ logFilePath: f.path, stream, color: false, secrets: ["boot-password"] });
+      log.info("startup", "密码     boot-password");
+
+      // A settings PUT / purge swaps in a new plaintext password; index.ts's
+      // configStore.onChange listener registers it before the next log line.
+      registerSecret("rotated-password");
+      log.info("admin", "密码     rotated-password");
+
+      const raw = readFileSync(f.path, "utf8");
+      expect(raw).toContain("密码     ********");
+      expect(raw).not.toContain("boot-password");
+      expect(raw).not.toContain("rotated-password");
+      // Console keeps both plaintexts.
+      expect(text()).toContain("boot-password");
+      expect(text()).toContain("rotated-password");
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  test("registerSecret ignores empty and shorter-than-6 values", () => {
+    const f = tempFile();
+    try {
+      initLogger({ logFilePath: f.path, console: false, secrets: [""] });
+      registerSecret("");
+      registerSecret("abc");
+      log.info("n", "abc stays readable");
+      const raw = readFileSync(f.path, "utf8");
+      expect(raw).toContain("abc stays readable");
     } finally {
       f.cleanup();
     }
