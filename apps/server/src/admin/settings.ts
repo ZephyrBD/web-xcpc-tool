@@ -52,6 +52,7 @@ export function safeSettingsView(cfg: Config) {
     balloon: {
       contestId: cfg.balloon.contestId,
       pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
+      locked: !!cfg.balloon.contestId,
     },
     print: { tokenMasked: maskToken(cfg.print.token) },
     teamLogin: { start: cfg.teamLogin.start, end: cfg.teamLogin.end },
@@ -146,4 +147,20 @@ export function applySettingsPatch(
 /** Default settings.json path for a data dir, matching index.ts's CONFIG_PATH. */
 export function settingsPathFor(dataDir: string): string {
   return join(dataDir, "settings.json");
+}
+
+/**
+ * The balloon contest id is written once and then locked: balloon tasks,
+ * archived sources and the DJ sync are all keyed by it, so silently pointing
+ * the poller at another contest would mix two contests' data. Re-submitting
+ * the same id (the settings form always sends it) stays allowed, and an empty
+ * string is allowed because the purge flow resets the id.
+ */
+export function assertContestIdMutable(
+  current: Config,
+  patch: SettingsPatch,
+): { ok: true } | { ok: false; reason: "locked" } {
+  const next = patch.balloon?.contestId;
+  if (!current.balloon.contestId || next === undefined || !next) return { ok: true };
+  return next === current.balloon.contestId ? { ok: true } : { ok: false, reason: "locked" };
 }

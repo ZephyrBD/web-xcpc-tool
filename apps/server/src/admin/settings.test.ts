@@ -6,7 +6,7 @@ import { compare } from "bcryptjs";
 import { loadConfig } from "../config";
 import { createApp } from "../server";
 import { adminAuthHeaders } from "./auth";
-import { applySettingsPatch, maskToken } from "./settings";
+import { applySettingsPatch, assertContestIdMutable, maskToken } from "./settings";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
@@ -318,6 +318,113 @@ describe("settings routes", () => {
       body: JSON.stringify({ balloon: { pollIntervalSeconds: 0 } }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("assertContestIdMutable (contest id lock)", () => {
+  const cfgWithContest = (contestId: string) => ({
+    ...loadConfigWithSecret(),
+    balloon: { contestId, pollIntervalSeconds: 30 },
+  });
+
+  test("an empty current contest id accepts any patch value", () => {
+    expect(assertContestIdMutable(cfgWithContest(""), { balloon: { contestId: "c1" } })).toEqual({ ok: true });
+  });
+
+  test("a patch that repeats the locked id is accepted (idempotent form saves)", () => {
+    expect(assertContestIdMutable(cfgWithContest("c1"), { balloon: { contestId: "c1" } })).toEqual({ ok: true });
+  });
+
+  test("a patch that changes the locked id is rejected", () => {
+    const result = assertContestIdMutable(cfgWithContest("c1"), { balloon: { contestId: "c2" } });
+    expect(result).toEqual({ ok: false, reason: "locked" });
+  });
+
+  test("a patch that clears the id is accepted (purge flow)", () => {
+    expect(assertContestIdMutable(cfgWithContest("c1"), { balloon: { contestId: "" } })).toEqual({ ok: true });
+  });
+
+  test("a patch without a balloon.contestId is accepted", () => {
+    expect(assertContestIdMutable(cfgWithContest("c1"), {})).toEqual({ ok: true });
+    expect(assertContestIdMutable(cfgWithContest("c1"), { balloon: { pollIntervalSeconds: 60 } })).toEqual({ ok: true });
+  });
+});
+
+describe("contest id lock on PUT /admin/api/settings", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "contest-lock-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  async function seed(app: ReturnType<typeof createApp>, headers: Record<string, string>, contestId: string) {
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ balloon: { contestId } }),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  test("setting the contest id once is allowed, changing it afterwards is 403 with a Chinese message", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    await seed(app, headers, "contest-1");
+
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ balloon: { contestId: "contest-2" } }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("contest id locked");
+    expect(body.message).toContain("比赛");
+
+    // Nothing was written: disk still holds the original id.
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.balloon.contestId).toBe("contest-1");
+  });
+
+  test("re-saving the same contest id keeps working (idempotent settings form)", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    await seed(app, headers, "contest-1");
+
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        balloon: { contestId: "contest-1", pollIntervalSeconds: 45 },
+        domjudge: { baseUrl: "https://dj.example.com" },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.balloon.contestId).toBe("contest-1");
+    expect(saved.balloon.pollIntervalSeconds).toBe(45);
+  });
+
+  test("GET exposes balloon.locked so the UI can render the field read-only", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    const unlocked = (await (await app.request("/admin/api/settings", { headers })).json()) as {
+      balloon: { locked?: boolean };
+    };
+    expect(unlocked.balloon.locked).toBe(false);
+
+    await seed(app, headers, "contest-1");
+    const locked = (await (await app.request("/admin/api/settings", { headers })).json()) as {
+      balloon: { locked?: boolean };
+    };
+    expect(locked.balloon.locked).toBe(true);
   });
 });
 

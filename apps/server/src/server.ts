@@ -17,7 +17,7 @@ import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
-import { randomInt } from "node:crypto";import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
+import { randomInt } from "node:crypto";import { applySettingsPatch, assertContestIdMutable, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
 import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPage } from "./pages/teamPages";
 import { signTeamToken } from "./auth/token";
@@ -350,6 +350,18 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       return c.json({ error: "密码不能是空白字符，请输入至少 6 个非空白字符" }, 400);
     }
     const before = cfg();
+    // The contest id is write-once: refuse a different value before anything is
+    // written, otherwise the balloon poller would silently switch contests.
+    const mutable = assertContestIdMutable(before, parsed.data);
+    if (!mutable.ok) {
+      return c.json(
+        {
+          error: "contest id locked",
+          message: "比赛 ID 已锁定，设置后不可修改；如需更换请先清空比赛数据",
+        },
+        403,
+      );
+    }
     let updated: Config;
     try {
       updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir), before.admin);
