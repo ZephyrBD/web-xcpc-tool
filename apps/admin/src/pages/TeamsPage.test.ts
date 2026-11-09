@@ -25,6 +25,8 @@ afterAll(() => {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 let teams: DjTeam[] = []
+// The contest id comes from 设置 → 比赛设置 now, so sync reads it from GET /admin/api/settings.
+let settingsContestId = 'c1'
 let syncResult: { count: number } | { error: string; status: number } | null = null
 let importResult: { imported: number; skipped: number } | { ok: false; reason: string; status: number } | null = null
 const calls: Array<{ method: string; path: string; body: unknown; contentType?: string }> = []
@@ -47,6 +49,18 @@ function mockFetch() {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
+    }
+    if (method === 'GET' && path === '/admin/api/settings') {
+      return new Response(
+        JSON.stringify({
+          domjudge: { baseUrl: 'http://dj.old', adminUser: 'djadmin', timeoutSeconds: 10 },
+          balloon: { contestId: settingsContestId, pollIntervalSeconds: 30, locked: !!settingsContestId },
+          print: { tokenMasked: '' },
+          teamLogin: { start: '', end: '' },
+          admin: { username: 'admin' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
     }
     if (method === 'POST' && path === '/admin/api/teams/sync') {
       if (syncResult && 'error' in syncResult) {
@@ -101,6 +115,7 @@ describe('TeamsPage', () => {
     messageMock.error.mockClear()
     messageMock.success.mockClear()
     teams = [makeTeam('t1'), makeTeam('t2', { display_name: '展示名t2', members: undefined, location: undefined })]
+    settingsContestId = 'c1'
     syncResult = { count: 2 }
     importResult = { imported: 3, skipped: 1 }
     calls.length = 0
@@ -130,18 +145,29 @@ describe('TeamsPage', () => {
     expect(wrapper.text()).toContain('还没有队伍')
   })
 
-  test('sync button posts contestId from the input and toasts the count', async () => {
+  test('no contest id input: the id lives in 设置 → 比赛设置', async () => {
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const input = wrapper.find('input[type="text"]')
-    await input.setValue('c1')
+    expect(wrapper.find('input[placeholder*="比赛 ID"]').exists()).toBe(false)
+    // 剩下的文本框只有 ElPagination 的页码框：位于分页条内，不在工具栏里。
+    const toolbarInputs = wrapper.find('.teams-toolbar').findAll('input')
+    expect(toolbarInputs.map((i) => (i.element as HTMLInputElement).type)).toEqual(['file'])
+    expect(wrapper.text()).not.toContain('比赛 ID')
+  })
+
+  test('sync button posts the configured contestId and toasts the count', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
     const btn = findButton(wrapper, '从 DOMjudge 同步')
     await btn.trigger('click')
     await flush()
     await flush()
 
+    expect(messageMock.error).not.toHaveBeenCalled()
     const syncCall = calls.find((c) => c.method === 'POST' && c.path === '/admin/api/teams/sync')
     expect(syncCall).toBeDefined()
     expect(syncCall!.body).toEqual({ contestId: 'c1' })
@@ -149,17 +175,17 @@ describe('TeamsPage', () => {
     expect(calls.some((c) => c.method === 'GET' && c.path === '/admin/api/teams')).toBe(true)
   })
 
-  test('sync without a contest id shows a validation error and does not call the API', async () => {
+  test('sync in a contest without a configured id shows a hint and does not call the API', async () => {
+    settingsContestId = ''
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const btn = findButton(wrapper, '从 DOMjudge 同步')
-    await btn.trigger('click')
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()
     await flush()
 
-    expect(messageMock.error).toHaveBeenCalled()
+    expect(messageMock.error).toHaveBeenCalledWith(expect.stringContaining('设置'))
     expect(calls.some((c) => c.path === '/admin/api/teams/sync')).toBe(false)
   })
 
@@ -169,7 +195,6 @@ describe('TeamsPage', () => {
     await flush()
     await flush()
 
-    await wrapper.find('input[type="text"]').setValue('c1')
     const getsBefore = calls.filter((c) => c.method === 'GET').length
     await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()

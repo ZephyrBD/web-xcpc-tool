@@ -53,9 +53,9 @@ const groups: ApiGroup[] = [
       { method: 'GET', path: '/admin/api/teams', desc: '队伍列表（来自 DOMjudge 同步 / Excel 导入）' },
       { method: 'POST', path: '/admin/api/teams/sync', desc: '从 DOMjudge 按 contestId 同步队伍' },
       { method: 'POST', path: '/admin/api/teams/import-excel', desc: '上传 Excel 批量导入队伍' },
-      { method: 'GET', path: '/admin/api/settings', desc: '读取当前设置（密码与 token 只返回掩码）' },
-      { method: 'PUT', path: '/admin/api/settings', desc: '部分更新设置（密码留空表示不修改），重启后生效' },
-      { method: 'POST', path: '/admin/api/data/purge', desc: '清空已拉取的数据并把比赛 ID 置空；跨站请求会被拒绝' },
+      { method: 'GET', path: '/admin/api/settings', desc: '读取当前设置（密码与 token 只返回掩码，比赛 ID 带 locked 标记）' },
+      { method: 'PUT', path: '/admin/api/settings', desc: '部分更新设置，立即生效（密码留空表示不修改；端口 / 访问前缀 / JWT 密钥需重启；修改比赛 ID 返回 403）' },
+      { method: 'POST', path: '/admin/api/data/purge', desc: '清空已拉取的队伍、账号密码、队伍码、登录历史、审批记录、打印任务与留档文件、气球任务，并把比赛 ID 置空；保留其余设置与 secret.key，跨站请求会被拒绝' },
     ],
   },
 ]

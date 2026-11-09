@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElButton, ElInput, ElMessage, ElPagination, ElTable, ElTableColumn } from 'element-plus'
+import { ElButton, ElMessage, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
 
@@ -15,7 +15,6 @@ export type DjTeam = {
 
 const teams = ref<DjTeam[]>([])
 const { page, pageSize, paged: pagedTeams } = usePagination(teams)
-const contestId = ref('')
 const syncing = ref(false)
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -28,10 +27,20 @@ async function refresh(): Promise<void> {
   }
 }
 
+/** 比赛 ID 只在「设置 → 比赛设置」维护一处；同步时按需读取，避免两处输入不一致。 */
+async function configuredContestId(): Promise<string> {
+  try {
+    const s = await apiFetch<{ balloon?: { contestId?: string } }>('/admin/api/settings')
+    return s.balloon?.contestId?.trim() ?? ''
+  } catch {
+    return ''
+  }
+}
+
 async function sync(): Promise<void> {
-  const cid = contestId.value.trim()
+  const cid = await configuredContestId()
   if (!cid) {
-    ElMessage.error('请先填写 DOMjudge 的比赛 ID 再同步')
+    ElMessage.error('还没有设置比赛 ID，请先到「设置 → 比赛设置」填写')
     return
   }
   syncing.value = true
@@ -111,12 +120,6 @@ onMounted(() => void refresh())
   <div class="teams page-fill">
     <div class="teams-toolbar">
       <div class="toolbar-left">
-        <ElInput
-          v-model="contestId"
-          class="contest-input"
-          placeholder="比赛 ID（DOMjudge contest）"
-          @keyup.enter="sync"
-        />
         <ElButton type="primary" :loading="syncing" @click="sync">从 DOMjudge 同步</ElButton>
       </div>
       <div
@@ -202,10 +205,6 @@ onMounted(() => void refresh())
   display: flex;
   gap: 8px;
   align-items: center;
-}
-
-.contest-input {
-  width: 220px;
 }
 
 .upload-zone {
