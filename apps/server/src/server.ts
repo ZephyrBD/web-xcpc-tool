@@ -114,6 +114,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         const team = teamsStore.load().find((t) => teamAccountKey(t) === icpcId);
         return team?.display_name?.trim() || team?.name || icpcId;
       },
+      // Live admin nudge; the admin page also refreshes on its own poll/load.
+      onRequestCreated: (request) => bus.publish("admin", "login-request", request),
     });
     if (!result.ok) {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
@@ -487,6 +489,36 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         djUsername: teamStore.getDjUsername(e.icpcId),
       }));
     return c.json(rows);
+  });
+
+  /**
+   * Approval requests for logins outside the window (see auth/loginRequests):
+   * `pending` is the admin's work queue, `recent` the decided history
+   * (newest first, capped so the payload stays small mid-contest).
+   */
+  app.get("/admin/api/login-requests", (c) => {
+    const all = loginRequests.listAll();
+    // Stable: requestedAt desc, ties keep store order (newest created first).
+    const recent = all
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.status !== "pending")
+      .sort((a, b) => b.r.requestedAt.localeCompare(a.r.requestedAt) || a.i - b.i)
+      .slice(0, 50)
+      .map(({ r }) => r);
+    return c.json({ pending: all.filter((r) => r.status === "pending"), recent });
+  });
+
+  app.post("/admin/api/login-requests/:id/decision", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const decision = body?.decision;
+    if (decision !== "approved" && decision !== "rejected") {
+      return c.json({ error: "decision must be approved or rejected" }, 400);
+    }
+    // decide() only mutates pending requests, so an already-decided (or unknown)
+    // id surfaces as 404 instead of silently overwriting a previous decision.
+    const updated = loginRequests.decide(c.req.param("id"), decision);
+    if (!updated) return c.json({ error: "login request not found" }, 404);
+    return c.json(updated);
   });
 
   app.get("/admin/api/events", (c) => {

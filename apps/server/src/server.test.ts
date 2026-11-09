@@ -93,8 +93,9 @@ describe("login approval flow (outside the login window)", () => {
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc1");
     const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
-    const app = createApp(makeCfg(), { dataDir, teamStore, loginRequests });
-    return { app, teamCode, loginRequests };
+    const bus = new SseBus();
+    const app = createApp(makeCfg(), { dataDir, teamStore, loginRequests, bus });
+    return { app, teamCode, loginRequests, bus };
   };
 
   test("correct code outside the window returns the waiting page and creates one pending request", async () => {
@@ -187,6 +188,168 @@ describe("login approval flow (outside the login window)", () => {
     const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(loginRequests.listAll().length).toBe(0);
+  });
+});
+
+describe("admin login-request review API", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-login-req-api-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const makeCfg = () => ({
+    ...loadConfigWithSecret(),
+    contextPath: "",
+    teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
+  });
+
+  /** Two teams so the "recent" ordering (requestedAt desc) is meaningful. */
+  const setup = () => {
+    const teamStore = makeTeamStore(dataDir);
+    const code1 = teamStore.setTeamCode("icpc1");
+    const code2 = teamStore.setTeamCode("icpc2");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const bus = new SseBus();
+    const cfg = makeCfg();
+    const app = createApp(cfg, { dataDir, teamStore, loginRequests, bus });
+    const teamLogin = (code: string) => app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    const auth = () => adminAuthHeaders(cfg);
+    const decide = async (id: string, decision: unknown) =>
+      app.request(`/admin/api/login-requests/${id}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await auth()) },
+        body: JSON.stringify({ decision }),
+      });
+    return { app, cfg, teamStore, loginRequests, bus, code1, code2, teamLogin, auth, decide };
+  };
+
+  test("both endpoints reject unauthenticated requests with 401", async () => {
+    const { app } = setup();
+    const list = await app.request("/admin/api/login-requests");
+    expect(list.status).toBe(401);
+    const post = await app.request("/admin/api/login-requests/any/decision", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(post.status).toBe(401);
+  });
+
+  test("GET returns pending and recent lists; decisions move requests to recent, newest first", async () => {
+    const { app, teamLogin, auth, decide, code1, code2, loginRequests } = setup();
+    await teamLogin(code1);
+    await teamLogin(code2);
+    const [r2, r1] = loginRequests.listPending(); // store prepends: newest first
+    expect(r1.icpcId).toBe("icpc1");
+    expect(r2.icpcId).toBe("icpc2");
+
+    const initial = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(initial.pending.map((r: { icpcId: string }) => r.icpcId).sort()).toEqual(["icpc1", "icpc2"]);
+    expect(initial.recent).toEqual([]);
+
+    const approvedRes = await decide(r1.id, "approved");
+    expect(approvedRes.status).toBe(200);
+    const approved = await approvedRes.json();
+    expect(approved.id).toBe(r1.id);
+    expect(approved.status).toBe("approved");
+    expect(typeof approved.decidedAt).toBe("string");
+    await decide(r2.id, "rejected");
+
+    const after = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(after.pending).toEqual([]);
+    // both are stamped "now", so ordering is decided by requestedAt desc; r2 was created last.
+    expect(after.recent.map((r: { icpcId: string }) => r.icpcId)).toEqual(["icpc2", "icpc1"]);
+    const times = after.recent.map((r: { requestedAt: string }) => Date.parse(r.requestedAt));
+    expect(times[0]).toBeGreaterThanOrEqual(times[1]);
+  });
+
+  test("recent is capped at 50 and only holds non-pending requests", async () => {
+    const { app, auth, loginRequests } = setup();
+    // 55 decided + 1 still pending; seeding the store directly keeps this fast.
+    for (let i = 0; i < 55; i++) {
+      const r = loginRequests.create({ icpcId: `icpc${i}`, teamCode: `code${i}`, teamName: `Team ${i}`, ip: null });
+      loginRequests.decide(r.id, i % 2 === 0 ? "approved" : "rejected");
+    }
+    loginRequests.create({ icpcId: "pending-team", teamCode: "pending-code", teamName: "Pending", ip: null });
+
+    const body = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(body.pending.length).toBe(1);
+    expect(body.pending[0].icpcId).toBe("pending-team");
+    expect(body.recent.length).toBe(50);
+    expect(body.recent.every((r: { status: string }) => r.status !== "pending" && r.status !== "claimed")).toBe(true);
+  });
+
+  test("decision on an unknown id is 404 and a bad decision value is 400", async () => {
+    const { teamLogin, decide, code1, loginRequests } = setup();
+    await teamLogin(code1);
+    const id = loginRequests.listPending()[0].id;
+
+    expect((await decide("no-such-request", "approved")).status).toBe(404);
+    for (const bad of ["pending", "claimed", "", 42, null]) {
+      const res = await decide(id, bad);
+      expect(res.status).toBe(400);
+    }
+    // no bad decision leaked through: the request is still pending
+    expect(loginRequests.get(id)?.status).toBe("pending");
+
+    const okRes = await decide(id, "rejected");
+    expect((await okRes.json()).status).toBe("rejected");
+    // already decided: the store only mutates pending requests, so the
+    // request is unchanged and there is no pending request left to decide
+    expect((await decide(id, "approved")).status).toBe(404);
+    expect(loginRequests.get(id)?.status).toBe("rejected");
+  });
+
+  test("a new approval request publishes a login-request event on the admin channel", async () => {
+    const { app, bus, teamLogin, code1, code2, loginRequests } = setup();
+    const events: Array<{ event: string; data: unknown }> = [];
+    const off = bus.subscribe("admin", (e) => events.push(e));
+
+    await teamLogin(code1);
+    expect(events.length).toBe(1);
+    expect(events[0].event).toBe("login-request");
+    expect(events[0].data).toMatchObject({ icpcId: "icpc1", status: "pending" });
+
+    // re-submitting the same code reuses the pending request → no second event
+    await teamLogin(code1);
+    expect(events.length).toBe(1);
+    // …but another team's request does publish
+    await teamLogin(code2);
+    expect(events.length).toBe(2);
+
+    // wrong codes never reach the approval store
+    await teamLogin("zzzzzzzzzzzz");
+    expect(events.length).toBe(2);
+    expect(loginRequests.listAll().length).toBe(2);
+    off();
+  });
+
+  test("the admin SSE stream carries the login-request event", async () => {
+    const { app, cfg, teamLogin, code1 } = setup();
+    const token = (await adminAuthHeaders(cfg)).authorization.slice("Bearer ".length);
+    const controller = new AbortController();
+    const res = await app.request(`/admin/api/events?token=${encodeURIComponent(token)}`, {
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+
+    await teamLogin(code1);
+    const reader = res.body!.getReader();
+    let text = "";
+    // The ping frame is written first, so the login-request frame follows it.
+    while (!text.includes("login-request")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += new TextDecoder().decode(value);
+    }
+    controller.abort();
+    expect(text).toContain("event: login-request");
+    expect(text).toContain(`"icpcId":"icpc1"`);
   });
 });
 

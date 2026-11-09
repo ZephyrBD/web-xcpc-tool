@@ -22,6 +22,8 @@ export type VerifyContext = {
   ip?: string | null;
   /** Resolves a display name for the team holding `icpcId` (falls back to the id). */
   teamNameOf?: (icpcId: string) => string;
+  /** Notified only when a NEW approval request is created (reused pending ones are not). */
+  onRequestCreated?: (request: LoginRequest) => void;
 };
 
 /**
@@ -58,6 +60,9 @@ export async function verifyTeamCode(
         teamName: context?.teamNameOf?.(entry.icpcId) ?? entry.icpcId,
         ip: context?.ip ?? null,
       });
+    // Only a brand-new request is announced; reused pending ones were already
+    // announced when they were created (avoid duplicate admin toasts).
+    if (!existing) context?.onRequestCreated?.(request);
     return { ok: false, reason: "waiting", request };
   }
   const entry = teamStore.findByTeamCode(code);

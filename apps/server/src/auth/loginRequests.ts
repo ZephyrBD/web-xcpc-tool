@@ -61,12 +61,15 @@ export class LoginRequestStore {
 
   /** Only pending requests can be decided; anything else is left untouched. */
   decide(id: string, decision: LoginRequestDecision): LoginRequest | null {
+    // A mutable let (not a definite-assignment const) keeps TS's control-flow
+    // analysis able to narrow the callback's assignment when we return it.
     let updated: LoginRequest | null = null;
     this.store.update((cur) =>
       cur.map((r) => {
         if (r.id !== id || r.status !== "pending") return r;
-        updated = { ...r, status: decision, decidedAt: new Date().toISOString() };
-        return updated;
+        const next: LoginRequest = { ...r, status: decision, decidedAt: new Date().toISOString() };
+        updated = next;
+        return next;
       }),
     );
     return updated;
@@ -78,8 +81,9 @@ export class LoginRequestStore {
     this.store.update((cur) =>
       cur.map((r) => {
         if (r.id !== id || r.status !== "approved") return r;
-        consumed = { ...r, status: "claimed" };
-        return consumed;
+        const next: LoginRequest = { ...r, status: "claimed" };
+        consumed = next;
+        return next;
       }),
     );
     return consumed;
