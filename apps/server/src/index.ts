@@ -137,20 +137,11 @@ const printBanner = (): void => {
   // getVersionInfo().hash is the full version string (build tag, env, or git hash).
   const version = getVersionInfo().hash;
   const base = `http://localhost:${cfg.port}${CONTEXT_PATH}`;
-  log.info(
-    "startup",
-    [
-      `Web XCPC Tool ${version}`,
-      // CJK labels are two terminal columns wide, so they pad with one space less.
-      `服务    ${base}`,
-      `管理台  ${base}/admin   用户名: ${cfg.admin.username}`,
-      cfg.admin.password
-        ? `密码    ${cfg.admin.password}`
-        : `密码    未保存明文（旧版配置），请在管理台「设置」页重设密码`,
-      `DOMjudge ${cfg.domjudge.baseUrl || "未配置"}`,
-      `气球    ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`,
-    ].join("\n"),
-  );
+  log.info("startup", `Web XCPC Tool ${version}`);
+  log.info("startup", `服务    ${base}/admin`);
+  log.info("startup", `账号    ${cfg.admin.username} / ${cfg.admin.password || "未保存明文（请在管理台「设置」页重设密码）"}`);
+  log.info("startup", `DOMjudge ${cfg.domjudge.baseUrl || "未配置"}`);
+  log.info("startup", `气球    ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`);
 };
 printBanner();
 
