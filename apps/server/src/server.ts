@@ -9,8 +9,7 @@ import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import { buildSourceHtml } from "./print/sourceHtml";
-import type { BalloonService } from "./balloon/service";
-import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
+import type { BalloonService, BalloonTask } from "./balloon/service";import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
@@ -23,6 +22,7 @@ import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPag
 import { signTeamToken } from "./auth/token";
 import { LoginRequestStore } from "./auth/loginRequests";
 import { ConfigStore } from "./store/configStore";
+import { purgePulledData, type PurgeReport } from "./admin/purge";
 
 export type Deps = {
   dataDir: string;
@@ -38,6 +38,11 @@ export type Deps = {
   loginHistory?: LoginHistoryStore;
   /** Approval requests for logins outside the window. Defaults to <dataDir>/login-requests.json. */
   loginRequests?: LoginRequestStore;
+  /**
+   * Raw balloon-task store. Defaults to <dataDir>/balloon-tasks.json, the same
+   * path index.ts hands to BalloonService. Only used by the purge endpoint.
+   */
+  balloonTasks?: JsonStore<BalloonTask[]>;
   /** Admin frontend build output directory. Defaults to apps/server/static. */
   staticDir?: string;
 };
@@ -94,6 +99,9 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
   const teamsStore = deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
   const loginHistory = deps?.loginHistory ?? new LoginHistoryStore(join(dataDir, "login-history.json"));
   const loginRequests = deps?.loginRequests ?? new LoginRequestStore(join(dataDir, "login-requests.json"));
+  // Balloon tasks live behind the service, which owns the store (index.ts
+  // builds both); expose the raw rows so the purge can clear and count them.
+  const balloonTasks = deps?.balloonTasks ?? new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks.json"), []);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -391,7 +399,41 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     return c.json({ ...safeSettingsView(updated), note: "已保存，立即生效" });
   });
 
-  /** Teams joined with their login codes. Only teams holding a code are listed;
+  /**
+   * Wipe every value pulled from DOMjudge and unlock the contest id: the
+   * balloon poller stops (contestId is now "") and a different contest can be
+   * configured. settings.json and secret.key survive — only the balloon id is
+   * reset. Gated by the /admin/api/* admin middleware.
+   */
+  app.post("/admin/api/data/purge", (c) => {
+    const teamCredentials = teamStore.store as JsonStore<Record<string, unknown>>;
+    let report: PurgeReport;
+    try {
+      report = purgePulledData({
+        dataDir,
+        teams: teamsStore,
+        teamCredentials,
+        printTasks: printQueue.store,
+        balloonTasks,
+        loginHistory: loginHistory.store,
+        loginRequests: loginRequests.store,
+        // Live config: adopt the rewritten settings.json so every request sees
+        // an empty contestId and the onChange listener reconfigures the poller.
+        contestIdReset: (next) => configStore.replace(next),
+      });
+    } catch (err) {
+      console.error("data purge failed:", err instanceof Error ? err.message : err);
+      return c.json({ error: "清空数据失败，请稍后重试" }, 500);
+    }
+    // The emptied id already stops reconfigure(); this also covers the case
+    // where the live store was out of step with disk, and guarantees nothing
+    // is scheduled when the response returns.
+    deps?.balloonService?.stop();
+    return c.json(report);
+  });
+
+  /**
+   * Teams joined with their login codes. Only teams holding a code are listed;
    *  the rest are summarized so the UI can keep the 已发 X / Y counter meaningful. */
   app.get("/admin/api/team-codes", (c) => {
     const all = teamsStore.load().map((t) => {

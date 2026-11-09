@@ -15,7 +15,8 @@ const DEFAULT_CAP = 2000;
  * growing without bound (last N entries survive, older ones are dropped).
  */
 export class LoginHistoryStore {
-  private readonly store: JsonStore<LoginHistoryEntry[]>;
+  /** Underlying store; exposed for maintenance flows (admin purge). */
+  readonly store: JsonStore<LoginHistoryEntry[]>;
   private readonly cap: number;
 
   constructor(filePath: string, cap: number = DEFAULT_CAP) {

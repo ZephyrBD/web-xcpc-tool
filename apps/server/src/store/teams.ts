@@ -9,7 +9,8 @@ const CODE_CHARSET = "23456789abcdefghjkmnpqrstuvwxyz";
 const CODE_LENGTH = 12;
 
 export class TeamStore {
-  private readonly store: JsonStore<Record<string, TeamEntry | string>>;
+  /** Underlying keyed store; exposed for maintenance flows (admin purge). */
+  readonly store: JsonStore<Record<string, TeamEntry | string>>;
   private readonly box: SecretBox;
 
   constructor(filePath: string, secretBox: SecretBox) {

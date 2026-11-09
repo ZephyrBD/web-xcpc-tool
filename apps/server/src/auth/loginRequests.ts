@@ -29,7 +29,8 @@ export type NewLoginRequest = {
  * team claims its token, so the same request can never log in twice.
  */
 export class LoginRequestStore {
-  private readonly store: JsonStore<LoginRequest[]>;
+  /** Underlying store; exposed for maintenance flows (admin purge). */
+  readonly store: JsonStore<LoginRequest[]>;
 
   constructor(filePath: string) {
     this.store = new JsonStore<LoginRequest[]>(filePath, []);

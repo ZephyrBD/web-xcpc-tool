@@ -7,7 +7,7 @@ import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } 
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
 import { PrintQueue } from "./print/queue";
-import { BalloonService } from "./balloon/service";
+import { BalloonService, type BalloonTask } from "./balloon/service";
 import { DjClient, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
@@ -61,9 +61,11 @@ const teamStore = new TeamStore(
   storePath("team-passwords.json"),
   new SecretBox(ensureKeyFile(storePath("secret.key"))),
 );
+// Shared with BalloonService and the purge endpoint so all three see one file.
+const balloonTasksStore = new JsonStore<BalloonTask[]>(storePath("balloon-tasks.json"), []);
 const balloonService = new BalloonService({
   client: djClient,
-  store: new JsonStore(storePath("balloon-tasks.json"), []),
+  store: balloonTasksStore,
   bus,
   contestId: cfg.balloon.contestId,
   pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
@@ -91,6 +93,7 @@ const app = createApp(configStore, {
   teamsStore,
   teamStore,
   balloonService,
+  balloonTasks: balloonTasksStore,
   server: { requestIP: (req) => server?.requestIP(req) ?? null },
 });
 // Mounting and the port are fixed at boot: Hono routes and Bun.serve cannot be
