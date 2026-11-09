@@ -10,6 +10,13 @@
   --text-muted: #6e6e78;
   --border: #e5e5ea;
 
+  /*
+   * Error copy on white: --brand-red (#ff7262) is ~2.6:1, only enough for
+   * icons, borders and fills. Body-size error text uses this darker tint
+   * (~4.9:1) so the message stays readable without touching the brand hues.
+   */
+  --danger-text: #c2311a;
+
   /* brand prism — all first-class, rotate one accent per section */
   --brand-green: #0acf83;
   --brand-orange: #f24e1e;

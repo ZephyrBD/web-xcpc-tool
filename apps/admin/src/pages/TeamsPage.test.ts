@@ -27,8 +27,16 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 let teams: DjTeam[] = []
 // The contest id comes from 设置 → 比赛设置 now, so sync reads it from GET /admin/api/settings.
 let settingsContestId = 'c1'
-let syncResult: { count: number } | { error: string; status: number } | null = null
+/** Non-null makes GET /admin/api/settings fail with this Chinese error. */
+let settingsError: string | null = null
+let settingsErrorStatus = 500
+let syncResult:
+  | { count: number }
+  | { error?: string; message?: string; status: number }
+  | null = null
 let importResult: { imported: number; skipped: number } | { ok: false; reason: string; status: number } | null = null
+/** Non-null makes GET /admin/api/teams fail with this Chinese error. */
+let teamsError: string | null = null
 const calls: Array<{ method: string; path: string; body: unknown; contentType?: string }> = []
 
 function mockFetch() {
@@ -45,12 +53,24 @@ function mockFetch() {
     calls.push({ method, path, body, contentType })
 
     if (method === 'GET' && path === '/admin/api/teams') {
+      if (teamsError) {
+        return new Response(JSON.stringify({ error: teamsError }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       return new Response(JSON.stringify(teams), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
     }
     if (method === 'GET' && path === '/admin/api/settings') {
+      if (settingsError) {
+        return new Response(JSON.stringify({ error: settingsError }), {
+          status: settingsErrorStatus,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       return new Response(
         JSON.stringify({
           domjudge: { baseUrl: 'http://dj.old', adminUser: 'djadmin', timeoutSeconds: 10 },
@@ -63,9 +83,10 @@ function mockFetch() {
       )
     }
     if (method === 'POST' && path === '/admin/api/teams/sync') {
-      if (syncResult && 'error' in syncResult) {
-        return new Response(JSON.stringify({ error: syncResult.error }), {
-          status: syncResult.status,
+      if (syncResult && !('count' in syncResult)) {
+        const { error, message, status } = syncResult
+        return new Response(JSON.stringify({ ...(error ? { error } : {}), ...(message ? { message } : {}) }), {
+          status,
           headers: { 'content-type': 'application/json' },
         })
       }
@@ -116,8 +137,11 @@ describe('TeamsPage', () => {
     messageMock.success.mockClear()
     teams = [makeTeam('t1'), makeTeam('t2', { display_name: '展示名t2', members: undefined, location: undefined })]
     settingsContestId = 'c1'
+    settingsError = null
+    settingsErrorStatus = 500
     syncResult = { count: 2 }
     importResult = { imported: 3, skipped: 1 }
+    teamsError = null
     calls.length = 0
     mockFetch()
   })
@@ -189,7 +213,7 @@ describe('TeamsPage', () => {
     expect(calls.some((c) => c.path === '/admin/api/teams/sync')).toBe(false)
   })
 
-  test('sync failure shows a friendly error and still refreshes the list', async () => {
+  test('sync failure surfaces the server message and still refreshes the list', async () => {
     syncResult = { error: 'domjudge sync failed', status: 502 }
     const wrapper = mountPage()
     await flush()
@@ -200,8 +224,60 @@ describe('TeamsPage', () => {
     await flush()
     await flush()
 
-    expect(messageMock.error).toHaveBeenCalledWith('同步没成功，请检查 DOMjudge 是否可用后再试')
+    // 服务端说了什么就展示什么，通用文案只在服务端什么都没给时兜底。
+    expect(messageMock.error).toHaveBeenCalledWith('domjudge sync failed')
     expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(getsBefore)
+  })
+
+  test('sync failure prefers the server message field over error', async () => {
+    syncResult = { error: 'sync_failed', message: 'DOMjudge 暂时连不上，请稍后重试', status: 502 }
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('DOMjudge 暂时连不上，请稍后重试')
+  })
+
+  test('sync failure with an empty body falls back to the friendly copy', async () => {
+    syncResult = { status: 502 }
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('同步没成功，请检查 DOMjudge 是否可用后再试')
+  })
+
+  test('a settings failure while reading the contest id is not mistaken for a missing id', async () => {
+    settingsError = '读取设置失败，请稍后重试'
+    settingsErrorStatus = 500
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('读取设置失败，请稍后重试')
+    expect(messageMock.error).not.toHaveBeenCalledWith(expect.stringContaining('还没有设置比赛 ID'))
+    expect(calls.some((c) => c.path === '/admin/api/teams/sync')).toBe(false)
+  })
+
+  test('the list load failure also surfaces the server message', async () => {
+    teamsError = '队伍数据损坏，请联系管理员'
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('队伍数据损坏，请联系管理员')
   })
 
   test('uploading an excel file posts FormData field "file" and shows imported/skipped', async () => {

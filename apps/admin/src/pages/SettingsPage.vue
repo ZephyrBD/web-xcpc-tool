@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElButton, ElInput, ElMessage } from 'element-plus'
-import { apiFetch, ApiError } from '@/api'
+import { apiFetch } from '@/api'
+import { serverMessage } from '@/lib/apiError'
 
 interface SettingsView {
   domjudge: { baseUrl: string; adminUser: string; timeoutSeconds: number }
@@ -56,15 +57,11 @@ const purgeError = ref('')
 const purgeReport = ref<PurgeReport | null>(null)
 const purgeReady = computed(() => purgeConfirm.value === PURGE_WORD)
 
-/** 接口报错里的中文说明：优先 message，其次 error，最后退回兜底文案。 */
-function serverMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
-    const body = err.body as { message?: unknown; error?: unknown }
-    if (typeof body.message === 'string' && body.message.trim()) return body.message
-    if (typeof body.error === 'string' && body.error.trim()) return body.error
-  }
-  return fallback
-}
+/** 轮询间隔必须是正整数：在提交前拦住，不把非法值丢给服务端换一个 400。 */
+const pollIntervalValid = computed(() => {
+  const v = form.balloonPollIntervalSeconds
+  return typeof v === 'number' && Number.isInteger(v) && v > 0
+})
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -88,6 +85,11 @@ async function refresh(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  // 清空结果只服务于「刚清空完」的那次配置；一旦再保存，它就不再代表当前状态。
+  purgeReport.value = null
+  purgeError.value = ''
+  saveError.value = ''
+  if (!pollIntervalValid.value) return
   if (form.adminPassword !== form.adminPasswordConfirm) {
     adminPasswordError.value = '两次输入的新密码不一致，请检查后重新输入'
     return
@@ -98,7 +100,6 @@ async function save(): Promise<void> {
     return
   }
   adminPasswordError.value = ''
-  saveError.value = ''
   saving.value = true
   try {
     await apiFetch<{ note?: string }>('/admin/api/settings', {
@@ -150,17 +151,14 @@ async function purge(): Promise<void> {
     purgeReport.value = await apiFetch<PurgeReport>('/admin/api/data/purge', { method: 'POST' })
     purgeConfirm.value = ''
     ElMessage.success('数据已清空，比赛 ID 已解锁')
+    // 立刻按服务端的最新状态重渲染（比赛 ID 已置空、解锁）；清空条数渲染在
+    // 锁定区之外，刷新后仍然可见。
+    await refresh()
   } catch (e) {
     purgeError.value = serverMessage(e, '清空没成功，请稍后再试')
   } finally {
     purging.value = false
   }
-}
-
-/** 清空成功后单独刷新：先让「已清空 N 条」落一帧，再按解锁后的状态重渲染。 */
-async function refreshAfterPurge(): Promise<void> {
-  if (!purgeReport.value) return
-  await refresh()
 }
 
 /** ISO datetime → value for <input type="datetime-local"> (local time); '' passes through. */
@@ -239,6 +237,7 @@ onMounted(() => void refresh())
         <label class="field">
           <span class="field-label">轮询间隔（秒）</span>
           <ElInput v-model.number="form.balloonPollIntervalSeconds" type="number" :min="1" />
+          <span v-if="!pollIntervalValid" class="field-error poll-error">轮询间隔需为正整数</span>
         </label>
 
         <div class="card-divider" role="separator"></div>
@@ -287,24 +286,22 @@ onMounted(() => void refresh())
                 :disabled="!purgeReady"
                 @click="purge"
               >清空数据</ElButton>
-              <ElButton
-                v-if="purgeReport"
-                size="small"
-                @click="refreshAfterPurge"
-              >重新读取设置</ElButton>
             </div>
             <p v-if="purgeError" class="field-error">{{ purgeError }}</p>
-            <div v-if="purgeReport" class="purge-result">
-              <p class="purge-result-title">已清空：</p>
-              <p class="purge-result-line">
-                队伍 {{ purgeReport.teams }} 个 · 账号密码 {{ purgeReport.passwords }} 条 · 队伍码
-                {{ purgeReport.teamCodes }} 条 · 登录历史 {{ purgeReport.loginHistory }} 条 · 审批记录
-                {{ purgeReport.loginRequests }} 条 · 打印任务 {{ purgeReport.printTasks }} 条 · 气球任务
-                {{ purgeReport.balloonTasks }} 条 · 留档文件 {{ purgeReport.filesRemoved }} 个
-              </p>
-            </div>
           </div>
         </template>
+
+        <!-- 清空结果放在锁定区之外：刷新解锁后锁定区整体收起，条数仍然可见。 -->
+        <div v-if="purgeReport" class="purge-result">
+          <p class="purge-result-title">已清空：</p>
+          <p class="purge-result-line">
+            队伍 {{ purgeReport.teams }} 个 · 账号密码 {{ purgeReport.passwords }} 条 · 队伍码
+            {{ purgeReport.teamCodes }} 条 · 登录历史 {{ purgeReport.loginHistory }} 条 · 审批记录
+            {{ purgeReport.loginRequests }} 条 · 打印任务 {{ purgeReport.printTasks }} 条 · 气球任务
+            {{ purgeReport.balloonTasks }} 条 · 留档文件 {{ purgeReport.filesRemoved }} 个
+          </p>
+          <p class="purge-result-hint">比赛 ID 已置空，可以填写下一场比赛了。</p>
+        </div>
       </section>
 
       <section class="settings-card">
@@ -465,7 +462,8 @@ onMounted(() => void refresh())
 
 .field-error {
   font-size: var(--text-13);
-  color: var(--brand-red);
+  /* 品牌红 #ff7262 在白底上只有 ~2.6:1，正文用更深的红保证可读；亮红留给图标/描边。 */
+  color: var(--danger-text);
   line-height: 1.6;
 }
 
@@ -553,6 +551,7 @@ onMounted(() => void refresh())
 }
 
 .purge-result {
+  margin-top: 2px;
   padding: 12px 14px;
   border-radius: var(--radius-control);
   border: 1px solid color-mix(in srgb, var(--brand-green) 30%, transparent);
@@ -571,6 +570,12 @@ onMounted(() => void refresh())
   font-size: var(--text-13);
   color: var(--text);
   line-height: 1.7;
+}
+
+.purge-result-hint {
+  margin: 6px 0 0;
+  font-size: var(--text-13);
+  color: var(--text-muted);
 }
 
 .token-actions {
@@ -603,11 +608,6 @@ onMounted(() => void refresh())
 
 .save-error {
   margin: 8px 0 0;
-}
-
-.version-card {
-  margin-top: 16px;
-  max-width: none;
 }
 
 .version-line {

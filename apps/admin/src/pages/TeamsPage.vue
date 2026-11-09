@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ElButton, ElMessage, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 import { apiFetch } from '@/api'
+import { serverMessage, serverMessageOrEmpty } from '@/lib/apiError'
 import { usePagination } from '@/composables/usePagination'
 
 export type DjTeam = {
@@ -22,23 +23,29 @@ const fileInput = ref<HTMLInputElement | null>(null)
 async function refresh(): Promise<void> {
   try {
     teams.value = await apiFetch<DjTeam[]>('/admin/api/teams')
-  } catch {
-    ElMessage.error('队伍列表加载失败，请刷新重试')
+  } catch (e) {
+    ElMessage.error(serverMessage(e, '队伍列表加载失败，请刷新重试'))
   }
 }
 
-/** 比赛 ID 只在「设置 → 比赛设置」维护一处；同步时按需读取，避免两处输入不一致。 */
+/**
+ * 比赛 ID 只在「设置 → 比赛设置」维护一处；同步时按需读取，避免两处输入不一致。
+ * 读取失败时抛出原始错误，让同步把服务端的说明原样报出来——绝不能被当成「没有配置」。
+ */
 async function configuredContestId(): Promise<string> {
-  try {
-    const s = await apiFetch<{ balloon?: { contestId?: string } }>('/admin/api/settings')
-    return s.balloon?.contestId?.trim() ?? ''
-  } catch {
-    return ''
-  }
+  const s = await apiFetch<{ balloon?: { contestId?: string } }>('/admin/api/settings')
+  return s.balloon?.contestId?.trim() ?? ''
 }
 
 async function sync(): Promise<void> {
-  const cid = await configuredContestId()
+  // 读取失败 / 同步失败都优先展示服务端的中文说明，只有什么都没给时才用通用文案。
+  let cid: string
+  try {
+    cid = await configuredContestId()
+  } catch (e) {
+    ElMessage.error(serverMessage(e, '读取设置没成功，请刷新页面后再试'))
+    return
+  }
   if (!cid) {
     ElMessage.error('还没有设置比赛 ID，请先到「设置 → 比赛设置」填写')
     return
@@ -50,8 +57,8 @@ async function sync(): Promise<void> {
       body: JSON.stringify({ contestId: cid }),
     })
     ElMessage.success(`同步完成，共 ${count} 个队伍`)
-  } catch {
-    ElMessage.error('同步没成功，请检查 DOMjudge 是否可用后再试')
+  } catch (e) {
+    ElMessage.error(serverMessage(e, '同步没成功，请检查 DOMjudge 是否可用后再试'))
   } finally {
     syncing.value = false
     await refresh()
@@ -90,10 +97,7 @@ async function upload(file: File): Promise<void> {
     )
     ElMessage.success(`成功导入 ${result.imported} 个队伍，跳过 ${result.skipped} 条`)
   } catch (err) {
-    const reason =
-      err && typeof err === 'object' && 'body' in err && err.body && typeof err.body === 'object' && 'reason' in err.body
-        ? String((err.body as { reason?: unknown }).reason)
-        : null
+    const reason = serverMessageOrEmpty(err)
     ElMessage.error(reason ? `导入失败：${reason}` : '导入没成功，请确认文件是有效的 Excel 后再试')
   } finally {
     uploading.value = false

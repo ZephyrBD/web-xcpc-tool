@@ -129,6 +129,12 @@ function saveButton(wrapper: Wrapper) {
   return findButton(wrapper, '保存设置')
 }
 
+function pollIntervalInput(wrapper: Wrapper) {
+  const input = wrapper.find('input[type="number"]')
+  if (!input.exists()) throw new Error('poll interval input not found')
+  return input
+}
+
 function formToken(wrapper: Wrapper): string {
   // 打印令牌排在 DOMjudge 管理员密码之后。
   return (wrapper.findAll('input[type="password"]')[1]!.element as HTMLInputElement).value
@@ -482,26 +488,16 @@ describe('SettingsPage', () => {
     expect(purgeCalls[0]!.method).toBe('POST')
     expect(purgeCalls[0]!.path).toBe('/admin/api/data/purge')
     expect(messageMock.success).toHaveBeenCalledWith('数据已清空，比赛 ID 已解锁')
+    // 不需要手动点「重新读取设置」。
+    expect(hasButton(wrapper, '重新读取设置')).toBe(false)
 
-    // 清空后解锁：比赛 ID 可编辑、已置空，清空区收起。
-    await findButton(wrapper, '重新读取设置').trigger('click')
-    await flush()
-    await flush()
+    // 清空后自动刷新并按解锁状态重渲染：比赛 ID 可编辑、已置空，清空区收起。
     const input = contestInput(wrapper)
     expect((input.element as HTMLInputElement).readOnly).toBe(false)
     expect((input.element as HTMLInputElement).value).toBe('')
     expect(wrapper.find('.purge-block').exists()).toBe(false)
-  })
 
-  test('the purge counts render on the same tick as the response', async () => {
-    // 清空成功后页面会立即刷新并收起清空区；条数必须跟随返回值同步渲染，
-    // 否则管理员永远看不到「删除了多少东西」。
-    const wrapper = await mountReady()
-    await purgeConfirmInput(wrapper).setValue('清空')
-    await flush()
-    await findButton(wrapper, purgeButtonText).trigger('click')
-    await flush()
-
+    // 条数在刷新后依然可见。
     const result = wrapper.find('.purge-result')
     expect(result.exists()).toBe(true)
     const resultText = result.text()
@@ -515,6 +511,25 @@ describe('SettingsPage', () => {
     expect(resultText).toContain('留档文件 7 个')
   })
 
+  test('the purge report follows the first save after a purge and clears on the next save', async () => {
+    const wrapper = await mountReady()
+    await purgeNow(wrapper)
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+
+    // 清空后保存一次新比赛 ID：旧的清空结果不该继续挂在新配置上。
+    settingsView = {
+      ...settingsView,
+      balloon: { contestId: '', pollIntervalSeconds: 30, locked: false },
+    }
+    await contestInput(wrapper).setValue('c9')
+    putError = null
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    expect(wrapper.find('.purge-result').exists()).toBe(false)
+  })
+
   test('a failed purge shows the server Chinese error, never a generic one', async () => {
     purgeError = { status: 500, body: { error: '清空数据失败，已清空部分数据，请再次点击清空' } }
     const wrapper = await mountReady()
@@ -523,6 +538,35 @@ describe('SettingsPage', () => {
     expect(wrapper.find('.purge-block .field-error').text()).toContain(
       '清空数据失败，已清空部分数据，请再次点击清空',
     )
+  })
+
+  test('a non-integer poll interval is blocked inline and skips the PUT', async () => {
+    const wrapper = await mountReady()
+    for (const value of ['0', '-5', '2.5', '']) {
+      await pollIntervalInput(wrapper).setValue(value)
+      await flush()
+      expect(wrapper.find('.poll-error').text()).toContain('轮询间隔需为正整数')
+    }
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(0)
+    expect(messageMock.success).not.toHaveBeenCalled()
+  })
+
+  test('a positive integer poll interval saves normally', async () => {
+    const wrapper = await mountReady()
+    await pollIntervalInput(wrapper).setValue('45')
+    await flush()
+    expect(wrapper.find('.poll-error').exists()).toBe(false)
+
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    const body = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    expect(body.balloon).toEqual({ contestId: 'c1', pollIntervalSeconds: 45 })
   })
 
   test('a 403 from PUT shows the server locked message as-is', async () => {
