@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { setDataDir } from "./store/store";
-import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
+import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
 import { PrintQueue } from "./print/queue";
@@ -12,6 +12,7 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
+import { getVersionInfo } from "./version";
 
 const CONFIG_PATH = "data/settings.json";
 const DATA_DIR = "data";
@@ -22,6 +23,10 @@ if (!existsSync(CONFIG_PATH)) {
 }
 const cfg = loadConfig(CONFIG_PATH);
 cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
+// First launch: generate a readable admin password (hash + plaintext persisted);
+// a configured hash is never replaced.
+const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
+cfg.admin = adminCfg.admin;
 
 setDataDir(DATA_DIR);
 
@@ -81,7 +86,30 @@ server = Bun.serve({
   port: cfg.port,
 });
 balloonService.start();
-console.log(`cuitxcpctool server listening on :${cfg.port}${cfg.contextPath}`);
+
+/**
+ * Startup banner: everything needed to reach the tool and log in, so a fresh
+ * install never needs to hand-edit settings.json. Re-printed on every start;
+ * the plaintext password comes from settings.json (admin.password).
+ */
+const printBanner = (): void => {
+  // getVersionInfo().hash is the full version string (build tag, env, or git hash).
+  const version = getVersionInfo().hash;
+  const base = `http://localhost:${cfg.port}${cfg.contextPath.replace(/\/+$/, "")}`;
+  console.log(
+    [
+      `Web XCPC Tool ${version}`,
+      `  服务   ${base || "/"}`,
+      `  管理台 ${base}/admin   用户名: ${cfg.admin.username}`,
+      cfg.admin.password
+        ? `  密码   ${cfg.admin.password}`
+        : `  密码   未保存明文（旧版配置），请在管理台「设置」页重设密码`,
+      `  DOMjudge  ${cfg.domjudge.baseUrl || "未配置"}`,
+      `  气球   ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`,
+    ].join("\n"),
+  );
+};
+printBanner();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

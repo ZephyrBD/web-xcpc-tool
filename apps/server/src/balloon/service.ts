@@ -99,6 +99,12 @@ export class BalloonService {
 
   start(): void {
     if (this.running) return;
+    // No contest configured means no balloon API to poll; leave running=false
+    // so nothing is scheduled (and /admin/api/balloon endpoints stay inert).
+    if (!this.contestId) {
+      this.running = false;
+      return;
+    }
     this.running = true;
     this.scheduleNext(0);
   }

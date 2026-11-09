@@ -93,13 +93,14 @@ export function applySettingsPatch(cfg: Config, patch: SettingsPatch, settingsPa
   if (patch.teamLogin) base.teamLogin = { ...current.teamLogin, ...patch.teamLogin };
   if (patch.admin) {
     const { password, ...rest } = patch.admin;
-    // Only "password" comes from the UI; it is hashed here so the raw value
-    // never reaches settings.json. A direct "passwordHash" is stripped by the
-    // schema and can never be injected.
+    // Only "password" comes from the UI; it is hashed here and the plaintext
+    // is kept alongside it purely so the startup banner can print it (the GET
+    // view strips both — see safeSettingsView). A direct "passwordHash" is
+    // stripped by the schema and can never be injected.
     base.admin = {
       ...current.admin,
       ...rest,
-      ...(password ? { passwordHash: hashSync(password, 10) } : {}),
+      ...(password ? { passwordHash: hashSync(password, 10), password } : {}),
     };
   }
 

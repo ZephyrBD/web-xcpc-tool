@@ -538,3 +538,40 @@ describe("BalloonService", () => {
     expect(task.location).toBeNull();
   });
 });
+
+describe("BalloonService start guard", () => {
+  test("start() with an empty contestId never schedules a poll", () => {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const schedule = (fn: () => void, ms: number) => {
+      scheduled.push({ fn, ms });
+    };
+    const fetchImpl = (() => {
+      throw new Error("balloon must not poll without a contest id");
+    }) as unknown as typeof fetch;
+    const client = new DjClient(
+      { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
+      fetchImpl,
+    );
+    const svc = new BalloonService({
+      client,
+      store: new JsonStore<BalloonTask[]>("balloon-tasks.json", []),
+      bus: new SseBus(),
+      contestId: "",
+      pollIntervalSeconds: 10,
+      schedule,
+    });
+    svc.start();
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("start() with a contestId still schedules the first poll immediately", () => {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const { svc } = makeService(makeFetch(), (fn, ms) => {
+      scheduled.push({ fn, ms });
+    });
+    svc.start();
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].ms).toBe(0);
+    svc.stop();
+  });
+});

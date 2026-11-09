@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { hashSync } from "bcryptjs";
 import { z } from "zod";
 
 /** Empty string means "no restriction"; otherwise an ISO datetime. */
@@ -50,6 +51,11 @@ const configSchema = z.object({
     .object({
       username: z.string(),
       passwordHash: z.string(),
+      /**
+       * Plaintext of passwordHash, kept only so the startup banner can print
+       * it. Never exposed by the admin API (see safeSettingsView).
+       */
+      password: z.string().optional(),
       sessionTtlSeconds: z.number().int().positive().default(28800),
     })
     .default({ username: "admin", passwordHash: "", sessionTtlSeconds: 28800 }),
@@ -89,4 +95,53 @@ export function ensureJwtSecret(cfg: Config, configPath: string): string {
   raw.jwt = { ...(typeof raw.jwt === "object" && raw.jwt !== null ? raw.jwt : {}), secret };
   writeFileSync(configPath, JSON.stringify(raw, null, 2));
   return secret;
+}
+
+/**
+ * Alphabet for generated admin passwords: no confusables (0 O o 1 l I i), so
+ * the operator can retype it from the terminal banner without guessing.
+ */
+const PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+const GENERATED_PASSWORD_LENGTH = 16;
+
+/** Uniformly-random pick per character (rejection sampling avoids modulo bias). */
+function generateAdminPassword(length = GENERATED_PASSWORD_LENGTH): string {
+  const alphabetSize = PASSWORD_ALPHABET.length;
+  const limit = 256 - (256 % alphabetSize);
+  let out = "";
+  while (out.length < length) {
+    for (const byte of randomBytes(32)) {
+      if (byte >= limit) continue; // reject to keep the distribution flat
+      out += PASSWORD_ALPHABET[byte % alphabetSize];
+      if (out.length === length) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Bootstrap the admin account on first launch: when no hash is configured,
+ * generate a readable password, store its bcrypt hash plus the plaintext (so
+ * the startup banner can print it), and write both back to settings.json.
+ *
+ * Idempotent: a configured hash is never replaced. A legacy settings.json with
+ * a hash but no plaintext keeps that hash — the returned config simply has no
+ * `admin.password`, signalling the caller to tell the operator to reset it.
+ */
+export function ensureAdminPassword(cfg: Config, configPath: string): Config {
+  if (cfg.admin.passwordHash) return cfg;
+  const password = generateAdminPassword();
+  const passwordHash = hashSync(password, 10);
+  let raw: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      raw = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch {
+      raw = {};
+    }
+  }
+  const admin = typeof raw.admin === "object" && raw.admin !== null ? raw.admin : {};
+  raw.admin = { ...admin, passwordHash, password };
+  writeFileSync(configPath, JSON.stringify(raw, null, 2));
+  return { ...cfg, admin: { ...cfg.admin, passwordHash, password } };
 }

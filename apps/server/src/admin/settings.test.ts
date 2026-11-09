@@ -155,11 +155,54 @@ describe("settings routes", () => {
     expect(resText).not.toContain("passwordHash");
 
     const savedRaw = readFileSync(settingsPath, "utf8");
-    expect(savedRaw).not.toContain("brand-new-pass");
-    const saved = JSON.parse(savedRaw) as { admin: { passwordHash: string } };
+    const saved = JSON.parse(savedRaw) as { admin: { passwordHash: string; password?: string } };
     expect(await compare("brand-new-pass", saved.admin.passwordHash)).toBe(true);
+    // Plaintext is kept alongside the hash so the startup banner can print it
+    // (design: data/settings.json is gitignored, local-disk only).
+    expect(saved.admin.password).toBe("brand-new-pass");
     // Hashed at the same cost as initial generation.
     expect(saved.admin.passwordHash.startsWith("$2b$10$")).toBe(true);
+  });
+
+  test("PUT with admin.password stores the plaintext alongside the hash so the banner can print it", async () => {
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const settingsPath = join(dataDir, "settings.json");
+    const res = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ admin: { password: "brand-new-pass" } }),
+    });
+    expect(res.status).toBe(200);
+
+    const saved = loadConfig(settingsPath);
+    expect(saved.admin.password).toBe("brand-new-pass");
+    expect(await compare("brand-new-pass", saved.admin.passwordHash)).toBe(true);
+
+    // The new password is usable for login by a process started with the saved config.
+    const restarted = createApp({ ...saved, jwt: { secret: "test-secret", ttlSeconds: 3600 } }, { dataDir });
+    const login = await restarted.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: saved.admin.username, password: "brand-new-pass" }),
+    });
+    expect(login.status).toBe(200);
+
+    // The GET view still never exposes the plaintext.
+    const view = JSON.stringify(await (await restarted.request("/admin/api/settings", { headers: await adminAuthHeaders(saved) })).json());
+    expect(view).not.toContain("brand-new-pass");
+  });
+
+  test("GET /admin/api/settings never exposes admin.password", async () => {
+    const cfg = {
+      ...loadConfigWithSecret(),
+      admin: { username: "admin", passwordHash: "$2b$10$x", password: "plaintext-should-not-leak", sessionTtlSeconds: 28800 },
+    };
+    const app = createApp(cfg, { dataDir });
+    const res = await app.request("/admin/api/settings", { headers: await adminAuthHeaders(cfg) });
+    expect(res.status).toBe(200);
+    const text = JSON.stringify(await res.json());
+    expect(text).not.toContain("plaintext-should-not-leak");
+    expect(text).not.toContain("password");
   });
 
   test("PUT with whitespace-only admin.password is rejected with 400 and no hash written", async () => {
@@ -195,6 +238,7 @@ describe("settings routes", () => {
     });
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
     expect(saved.admin.passwordHash).toBe(before.admin.passwordHash);
+    expect(saved.admin.password).toBe(before.admin.password);
     expect(saved.admin.username).toBe("chief");
     expect(await compare("keep-me-pass", saved.admin.passwordHash)).toBe(true);
   });

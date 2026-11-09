@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
+import { compare } from "bcryptjs";
+import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 
 describe("loadConfig", () => {
   test("returns defaults when file does not exist", () => {
@@ -119,5 +120,85 @@ describe("ensureJwtSecret", () => {
     writeFileSync(path, JSON.stringify({ jwt: { secret: "abc", ttlSeconds: 60 } }));
     expect(ensureJwtSecret(loadConfig(path), path)).toBe("abc");
     expect(JSON.parse(readFileSync(path, "utf8")).jwt.secret).toBe("abc");
+  });
+});
+
+describe("ensureAdminPassword", () => {
+  test("first launch with an empty hash generates a 16-char password and persists hash + plaintext", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "settings.json");
+    writeDefaultConfig(path);
+    const cfg = loadConfig(path);
+    expect(cfg.admin.passwordHash).toBe("");
+
+    const updated = ensureAdminPassword(cfg, path);
+    expect(updated.admin.password).toHaveLength(16);
+    // No confusables (0 O o 1 l I i) anywhere in the generated password.
+    expect(updated.admin.password).toMatch(/^[A-HJ-NP-Za-hj-nkm-z2-9]{16}$/);
+    expect(updated.admin.passwordHash.startsWith("$2b$10$")).toBe(true);
+
+    const onDisk = loadConfig(path);
+    expect(onDisk.admin.password).toBe(updated.admin.password!);
+    expect(onDisk.admin.passwordHash).toBe(updated.admin.passwordHash);
+    expect(onDisk.admin.username).toBe("admin");
+    return compare(updated.admin.password!, onDisk.admin.passwordHash).then((ok) => expect(ok).toBe(true));
+  });
+
+  test("preserves the rest of settings.json while writing the generated password", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ port: 9999, domjudge: { baseUrl: "http://dj", timeoutSeconds: 42 } }),
+    );
+    ensureAdminPassword(loadConfig(path), path);
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    expect(raw.port).toBe(9999);
+    expect(raw.domjudge.baseUrl).toBe("http://dj");
+    expect(raw.domjudge.timeoutSeconds).toBe(42);
+    expect(typeof raw.admin.passwordHash).toBe("string");
+  });
+
+  test("is idempotent: a second call keeps the existing hash and plaintext", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "settings.json");
+    writeDefaultConfig(path);
+    const first = ensureAdminPassword(loadConfig(path), path);
+    const second = ensureAdminPassword(loadConfig(path), path);
+    expect(second.admin.password).toBe(first.admin.password!);
+    expect(second.admin.passwordHash).toBe(first.admin.passwordHash);
+  });
+
+  test("never rewrites a hash that already exists but has no plaintext (legacy settings.json)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "settings.json");
+    const legacyHash = "$2b$10$legacyhashlegacyhashlegacyha";
+    writeFileSync(path, JSON.stringify({ admin: { username: "admin", passwordHash: legacyHash } }));
+    const updated = ensureAdminPassword(loadConfig(path), path);
+    expect(updated.admin.passwordHash).toBe(legacyHash);
+    expect(updated.admin.password).toBeUndefined();
+    expect(JSON.parse(readFileSync(path, "utf8")).admin.passwordHash).toBe(legacyHash);
+  });
+
+  test("keeps an existing hash + plaintext pair untouched", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "settings.json");
+    const stored = { username: "chief", passwordHash: "$2b$10$h", password: "known-pass" };
+    writeFileSync(path, JSON.stringify({ admin: stored }));
+    const updated = ensureAdminPassword(loadConfig(path), path);
+    expect(updated.admin).toMatchObject(stored);
+    expect(JSON.parse(readFileSync(path, "utf8")).admin).toMatchObject(stored);
+  });
+
+  test("generated passwords differ between installs", () => {
+    const a = mkdtempSync(join(tmpdir(), "config-test-"));
+    const b = mkdtempSync(join(tmpdir(), "config-test-"));
+    const pa = join(a, "settings.json");
+    const pb = join(b, "settings.json");
+    writeDefaultConfig(pa);
+    writeDefaultConfig(pb);
+    expect(ensureAdminPassword(loadConfig(pa), pa).admin.password).not.toBe(
+      ensureAdminPassword(loadConfig(pb), pb).admin.password!,
+    );
   });
 });
