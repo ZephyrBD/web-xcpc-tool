@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import { setDataDir } from "./store/store";
 import { migrateLegacyDataDir } from "./store/dataRoot";
-import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
+import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig, normalizeContextPathFile, CONTEXT_PATH } from "./config";
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
 import { PrintQueue } from "./print/queue";
@@ -12,7 +12,7 @@ import { DjClient, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
-import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
+import { makeRootDispatch } from "./domjudge/proxy";
 import { getVersionInfo } from "./version";
 import { ConfigStore } from "./store/configStore";
 import { initLogger, log, registerSecret } from "./log/logger";
@@ -44,6 +44,9 @@ if (!existsSync(CONFIG_PATH)) {
   writeDefaultConfig(CONFIG_PATH);
 }
 const cfg = loadConfig(CONFIG_PATH);
+// The mount is the constant /wxt: rewrite a stale settings.json value so the
+// file and the running config agree (parseConfig logged the one INFO line).
+normalizeContextPathFile(CONFIG_PATH);
 cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 // First launch: generate a readable admin password (hash + plaintext persisted);
 // a configured hash is never replaced.
@@ -115,33 +118,17 @@ const app = createApp(configStore, {
   server: { requestIP: (req) => server?.requestIP(req) ?? null },
 });
 // Mounting and the port are fixed at boot: Hono routes and Bun.serve cannot be
-// re-pointed at runtime, so a contextPath/port edit needs a restart (the admin
-// settings page warns about this). Everything else hot-reloads.
-const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
+// re-pointed at runtime, so a port edit needs a restart (the admin settings
+// page warns about this). Everything else hot-reloads. The mount path itself
+// is the constant /wxt and is never configurable.
+const serving = new Hono().route(CONTEXT_PATH, app);
 
-// Everything outside the admin contextPath is reverse-proxied straight to
-// DOMjudge with the same team-token semantics as /dj/*; the admin UI keeps
-// its own prefix untouched.
+// Everything outside /wxt is reverse-proxied straight to DOMjudge with the same
+// team-token semantics; the admin UI keeps its own prefix untouched.
 const fetch_ = makeRootDispatch(serving, () => configStore.current, teamStore);
-const fetchWithLegacyRedirect = (req: Request) =>
-  legacyContextPathRedirect(cfg.contextPath, req) ?? fetch_(req);
-
-// Cached old admin SPAs still request /cxtool/*, which now falls into the
-// DOMjudge root proxy and 404s. 301 them onto the current contextPath.
-const LEGACY_PREFIX = "/cxtool";
-const redirectToContextPath = (req: Request): Response | null => {
-  if (req.method !== "GET") return null;
-  const url = new URL(req.url);
-  if (url.pathname !== LEGACY_PREFIX && !url.pathname.startsWith(`${LEGACY_PREFIX}/`)) {
-    return null;
-  }
-  const rest = url.pathname.slice(LEGACY_PREFIX.length);
-  const target = `${configStore.current.contextPath.replace(/\/+$/, "")}${rest}` || "/";
-  return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
-};
 
 server = Bun.serve({
-  fetch: fetchWithLegacyRedirect,
+  fetch: fetch_,
   port: cfg.port,
 });
 balloonService.start();
@@ -155,13 +142,13 @@ balloonService.start();
 const printBanner = (): void => {
   // getVersionInfo().hash is the full version string (build tag, env, or git hash).
   const version = getVersionInfo().hash;
-  const base = `http://localhost:${cfg.port}${cfg.contextPath.replace(/\/+$/, "")}`;
+  const base = `http://localhost:${cfg.port}${CONTEXT_PATH}`;
   log.info(
     "startup",
     [
       `Web XCPC Tool ${version}`,
       // CJK labels are two terminal columns wide, so they pad with one space less.
-      `服务    ${base || "/"}`,
+      `服务    ${base}`,
       `管理台  ${base}/admin   用户名: ${cfg.admin.username}`,
       cfg.admin.password
         ? `密码    ${cfg.admin.password}`

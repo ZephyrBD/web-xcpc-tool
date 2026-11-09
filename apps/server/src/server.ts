@@ -17,7 +17,7 @@ import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { randomInt } from "node:crypto";
-import { appPath, handleDjProxy } from "./domjudge/proxy";
+import { appPath } from "./domjudge/proxy";
 import {
   applySettingsPatch,
   assertContestIdMutable,
@@ -86,8 +86,8 @@ export function resolveStaticDir(opts?: {
  */
 export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): Hono {
   const configStore = config instanceof ConfigStore ? config : new ConfigStore(config);
-  // Always the live values: contextPath/baseUrl/teamLogin/jwt.secret may all
-  // change at runtime, so nothing derived from it is hoisted out of a handler.
+  // Always the live values: baseUrl/teamLogin/jwt.secret may all change at
+  // runtime, so nothing derived from it is hoisted out of a handler.
   const cfg = (): Config => configStore.current;
   // Absolute, matching index.ts: everything derived here is joined onto it, so
   // a relative default would let JsonStore join a second time (data/data/).
@@ -113,9 +113,6 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  /** Root path for DOMjudge routes under the *current* contextPath. */
-  const djRoot = (): string => `${cfg().contextPath.replace(/\/+$/, "")}/dj`;
-
   /**
    * A `next` target is honored only as an absolute-path relative URL:
    * a single leading slash, no protocol-relative "//" and no backslash
@@ -130,13 +127,13 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       ? raw
       : null;
 
-  app.get("/dj/verify", async (c) => {
+  app.get("/public/verify", async (c) => {
     const raw = c.req.query("code");
     const next = safeNext(c.req.query("next"));
     // No code in the URL → the team types it on the form page.
     if (raw === undefined || raw.trim() === "") {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
-      return verifyFormPage(cfg().contextPath, hint, next, cfg().teamLogin);
+      return verifyFormPage(hint, next, cfg().teamLogin);
     }
     const result = await verifyTeamCode(raw.trim(), teamStore, cfg(), new Date(), loginRequests, {
       ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
@@ -152,7 +149,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
       // HTTP status codes keep their semantics (403 on both failures).
       if (result.reason === "waiting") {
-        return verifyWaitingPage(cfg().contextPath, result.request.id, next);
+        return verifyWaitingPage(result.request.id, next);
       }
       // With the approval flow wired, a closed window has already looked the
       // code up: not-found lands here and shows the (unchanged) miss page,
@@ -167,25 +164,25 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       at: new Date().toISOString(),
       ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
     });
-    // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
+    // Path=/ so the token also reaches DOMjudge's root-proxied pages.
     c.header(
       "Set-Cookie",
       `cxtool-token=${result.token}; Path=/; HttpOnly; SameSite=Lax`,
     );
-    return c.redirect(next ?? `${djRoot()}/`, 302);
+    return c.redirect(next ?? "/", 302);
   });
 
   // Waiting page for an existing approval request (shared link / manual revisit).
-  app.get("/dj/verify/wait", (c) => {
+  app.get("/public/verify/wait", (c) => {
     const id = c.req.query("req") ?? "";
     if (!loginRequests.get(id)) {
-      return verifyFormPage(cfg().contextPath, "登录请求不存在或已过期，请重新输入队伍码", null, cfg().teamLogin);
+      return verifyFormPage("登录请求不存在或已过期，请重新输入队伍码", null, cfg().teamLogin);
     }
-    return verifyWaitingPage(cfg().contextPath, id, safeNext(c.req.query("next")));
+    return verifyWaitingPage(id, safeNext(c.req.query("next")));
   });
 
   // Polled by the waiting page's inline JS; id is a server-issued uuid.
-  app.get("/dj/verify/status", (c) => {
+  app.get("/public/verify/status", (c) => {
     const req = loginRequests.get(c.req.query("req") ?? "");
     if (!req) return c.json({ error: "login request not found" }, 404);
     return c.json({ status: req.status });
@@ -193,7 +190,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
 
   // Approval is valid ONCE: consume turns approved → claimed, so a replayed
   // claim link (or a pending/rejected request) always lands on the 403 page.
-  app.get("/dj/verify/claim", async (c) => {
+  app.get("/public/verify/claim", async (c) => {
     const next = safeNext(c.req.query("next"));
     const consumed = loginRequests.consume(c.req.query("req") ?? "");
     if (!consumed) return verifyClaimDeniedPage();
@@ -204,21 +201,16 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       at: new Date().toISOString(),
       ip: consumed.ip ?? deps?.server?.requestIP(c.req.raw)?.address ?? null,
     });
-    // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
+    // Path=/ so the token also reaches DOMjudge's root-proxied pages.
     c.header("Set-Cookie", `cxtool-token=${token}; Path=/; HttpOnly; SameSite=Lax`);
-    return c.redirect(next ?? `${djRoot()}/`, 302);
+    return c.redirect(next ?? "/", 302);
   });
 
-  // Print callback must be registered BEFORE the /dj/* catch-all proxy.
-  app.post("/dj/print", (c) => handlePrintCallback(c, cfg(), printQueue, dataDir));
-
-  // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
-  // The config is read once per request: ConfigStore may swap it mid-flight,
-  // and a half-old/half-new snapshot would mix e.g. two contextPaths.
-  app.all("/dj/*", (c) => handleDjProxy(c, cfg(), teamStore));
+  // Print callback: DOMjudge is configured to POST to /wxt/print.
+  app.post("/print", (c) => handlePrintCallback(c, cfg(), printQueue, dataDir));
 
   // Admin login is registered before the /admin/api/* middleware, which skips it explicitly.
-  // Both read the live config per request (auth/contextPath can change).
+  // Both read the live config per request (auth can change).
   app.post("/admin/api/login", createAdminLoginHandler(cfg, deps));
   app.use("/admin/api/*", requireAdmin(cfg));
 
@@ -678,9 +670,15 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       // Validate the decoded form (URL-encoded traversal like %2e%2e must not
       // survive decoding into a ".." segment); also reject raw suspicious
       // sequences in case decoding already happened upstream.
-      const raw = appPath(c, cfg());
+      const raw = appPath(c);
       if (/(^|\/)\.\.?(\/|$)/.test(raw) || /%2e|%2f|%5c/i.test(raw)) {
         return c.json({ ok: false, reason: "forbidden" }, 403);
+      }
+      // The old /wxt/dj/* proxy layer is gone (DOMjudge lives at the site root).
+      // Answer 404 instead of the SPA index, so a stale bookmark fails loudly
+      // rather than rendering the admin shell at a DOMjudge-looking URL.
+      if (raw === "/dj" || raw.startsWith("/dj/")) {
+        return c.notFound();
       }
       const decodedPath = raw === "/" ? "" : safeDecode(raw);
       if (decodedPath === null) return c.json({ ok: false, reason: "forbidden" }, 403);

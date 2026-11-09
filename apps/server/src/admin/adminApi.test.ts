@@ -10,11 +10,11 @@ import { JsonStore } from "../store/store";
 import { SecretBox, ensureKeyFile } from "../store/secretbox";
 import { TeamStore } from "../store/teams";
 import { DjClient } from "../domjudge/client";
+import { handleRootDjProxy } from "../domjudge/proxy";
 
 const cfg = () => ({
   ...loadConfig("/nonexistent/settings.json"),
   jwt: { secret: "admin-api-test-secret", ttlSeconds: 3600 },
-  contextPath: "",
 });
 
 const TEAMS = [
@@ -204,7 +204,7 @@ describe("admin team-code API: teams without icpc_id fall back to the DOMjudge t
   test("verify with its code signs a token whose sub is the team id", async () => {
     const { verifyTeamToken } = await import("../auth/token");
     const code = teamStore.setTeamCode("djteam9");
-    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
     expect((await verifyTeamToken("admin-api-test-secret", token))?.sub).toBe("djteam9");
@@ -222,16 +222,17 @@ describe("admin team-code API: teams without icpc_id fall back to the DOMjudge t
       },
     });
     try {
-      const djApp = createApp(
-        {
-          ...cfg(),
-          domjudge: { baseUrl: `http://127.0.0.1:${upstream.port}`, adminUser: "", adminPassword: "", timeoutSeconds: 5 },
-        },
-        { dataDir, teamStore },
-      );
+      const cfgForDj = {
+        ...cfg(),
+        domjudge: { baseUrl: `http://127.0.0.1:${upstream.port}`, adminUser: "", adminPassword: "", timeoutSeconds: 5 },
+      };
       teamStore.setPassword("djteam9", "dj-pw", "teamdjteam9");
       const token = await signTeamToken("admin-api-test-secret", 3600, "djteam9");
-      const res = await djApp.request("/dj/login", { headers: { cookie: `cxtool-token=${token}` } });
+      const res = await handleRootDjProxy(
+        new Request("http://dj.test/login", { headers: { cookie: `cxtool-token=${token}` } }),
+        cfgForDj,
+        teamStore,
+      );
       expect(res.status).toBe(200);
       expect(injected.login).toBe("teamdjteam9");
       expect(injected.pass).toBe(Buffer.from("dj-pw", "utf8").toString("base64"));

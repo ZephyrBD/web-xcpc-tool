@@ -2,6 +2,7 @@ import { compare } from "bcryptjs";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import type { Config } from "../config";
+import { CONTEXT_PATH } from "../config";
 import { signAdminToken, verifyAdminToken } from "../auth/token";
 import type { Deps } from "../server";
 
@@ -56,8 +57,9 @@ export function clientIpOf(c: Context, deps?: Partial<Deps>): string {
 }
 
 /**
- * `cfg` is a getter rather than a snapshot so username/password/jwt.secret and
- * contextPath edits apply immediately (runtime config store).
+ * `cfg` is a getter rather than a snapshot so username/password/jwt.secret
+ * edits apply immediately (runtime config store). The cookie path is pinned
+ * to the fixed /wxt mount.
  */
 export function createAdminLoginHandler(
   cfg: () => Config,
@@ -84,9 +86,8 @@ export function createAdminLoginHandler(
     if (username !== current.admin.username) return fail();
     if (!(await compare(password, current.admin.passwordHash))) return fail();
     const token = await signAdminToken(current.jwt.secret, current.admin.sessionTtlSeconds, username);
-    // Cookie path follows the live contextPath (read after the await so a
-    // concurrent settings PUT is already visible).
-    const cookiePath = `${cfg().contextPath.replace(/\/+$/, "")}/`;
+    // The admin UI always lives under /wxt, so the cookie is scoped there.
+    const cookiePath = `${CONTEXT_PATH}/`;
     c.header("Set-Cookie", `${ADMIN_COOKIE}=${token}; Path=${cookiePath}; HttpOnly; SameSite=Strict`);
     return c.json({ token });
   };

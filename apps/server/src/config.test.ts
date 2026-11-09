@@ -3,15 +3,43 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compare } from "bcryptjs";
-import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
+import { CONTEXT_PATH, ensureAdminPassword, ensureJwtSecret, loadConfig, normalizeContextPathFile, writeDefaultConfig } from "./config";
 
 describe("loadConfig", () => {
   test("returns defaults when file does not exist", () => {
     const path = join(tmpdir(), "nonexistent-config-" + Date.now() + ".json");
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
-    expect(cfg.contextPath).toBe("/wxt");
+    expect(cfg.contextPath).toBe(CONTEXT_PATH);
     expect(cfg.teamLogin).toEqual({ start: "", end: "" });
+  });
+
+  test("forces a stale contextPath back to the fixed /wxt", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ contextPath: "/cxtool" }));
+    expect(loadConfig(path).contextPath).toBe(CONTEXT_PATH);
+  });
+
+  test("normalizeContextPathFile rewrites a stale value on disk and keeps other fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ port: 9999, contextPath: "/old" }));
+    expect(normalizeContextPathFile(path)).toBe(true);
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    expect(saved.contextPath).toBe(CONTEXT_PATH);
+    expect(saved.port).toBe(9999);
+    // Second run is a no-op, so startup logging stays one line per real change.
+    expect(normalizeContextPathFile(path)).toBe(false);
+  });
+
+  test("normalizeContextPathFile leaves a missing or unparseable file alone", () => {
+    const dir = mkdtempSync(join(tmpdir(), "config-test-"));
+    expect(normalizeContextPathFile(join(dir, "absent.json"))).toBe(false);
+    const broken = join(dir, "broken.json");
+    writeFileSync(broken, "{not json");
+    expect(normalizeContextPathFile(broken)).toBe(false);
+    expect(readFileSync(broken, "utf8")).toBe("{not json");
   });
 
   test("loads values from an existing JSON file", () => {
@@ -43,7 +71,7 @@ describe("writeDefaultConfig", () => {
     writeDefaultConfig(path);
     const cfg = loadConfig(path);
     expect(cfg.port).toBe(8080);
-    expect(cfg.contextPath).toBe("/wxt");
+    expect(cfg.contextPath).toBe(CONTEXT_PATH);
     expect(cfg.domjudge).toEqual({ baseUrl: "", adminUser: "", adminPassword: "", timeoutSeconds: 10 });
     expect(cfg.jwt.ttlSeconds).toBeGreaterThan(0);
     expect(cfg.teamLogin).toEqual({ start: "", end: "" });

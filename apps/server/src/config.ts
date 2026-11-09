@@ -2,6 +2,15 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { hashSync } from "bcryptjs";
 import { z } from "zod";
+import { log } from "./log/logger";
+
+/**
+ * The tool's one and only mount point. The admin UI, team verify pages and the
+ * print callback all live under it; every path outside it belongs to DOMjudge
+ * (see makeRootDispatch). Not configurable: settings.json values other than
+ * this are normalized at parse time.
+ */
+export const CONTEXT_PATH = "/wxt";
 
 /** Empty string means "no restriction"; otherwise an ISO datetime. */
 export const isoOrEmpty = z
@@ -22,7 +31,8 @@ const teamLoginSchema = z
 
 const configSchema = z.object({
   port: z.number().int().default(8080),
-  contextPath: z.string().default("/wxt"),
+  /** Kept in settings.json for compatibility, but always normalized to CONTEXT_PATH. */
+  contextPath: z.string().default(CONTEXT_PATH),
   domjudge: z
     .object({
       baseUrl: z.string().default(""),
@@ -65,19 +75,49 @@ export type Config = z.infer<typeof configSchema>;
 
 /** Validates an arbitrary raw object against the full config schema. */
 export function parseConfig(raw: unknown): Config {
-  return configSchema.parse(raw);
+  const parsed = configSchema.parse(raw);
+  const configured =
+    typeof raw === "object" && raw !== null
+      ? (raw as { contextPath?: unknown }).contextPath
+      : undefined;
+  if (typeof configured === "string" && configured !== CONTEXT_PATH) {
+    // The path is part of the router mount and cannot move at runtime; rather
+    // than silently honoring a stale settings.json, keep /wxt and say so.
+    log.info("config", `contextPath "${configured}" is no longer supported; using ${CONTEXT_PATH}`);
+  }
+  return { ...parsed, contextPath: CONTEXT_PATH };
 }
 
 export function loadConfig(path: string): Config {
   if (!existsSync(path)) {
-    return configSchema.parse({});
+    return parseConfig({});
   }
   const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-  return configSchema.parse(raw);
+  return parseConfig(raw);
+}
+
+/**
+ * Rewrites settings.json when it still carries a stale `contextPath`, so the
+ * on-disk file matches the fixed mount. Returns true when the file changed.
+ * Deliberately silent: `parseConfig` already logs the one INFO line for the
+ * stale value, and startup loads the config before calling this. A missing or
+ * unparseable file is left alone (the loader reports those separately).
+ */
+export function normalizeContextPathFile(path: string): boolean {
+  if (!existsSync(path)) return false;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (raw.contextPath === CONTEXT_PATH) return false;
+  writeFileSync(path, JSON.stringify({ ...raw, contextPath: CONTEXT_PATH }, null, 2));
+  return true;
 }
 
 export function writeDefaultConfig(path: string): void {
-  writeFileSync(path, JSON.stringify(configSchema.parse({}), null, 2));
+  writeFileSync(path, JSON.stringify(parseConfig({}), null, 2));
 }
 
 /** Generate and persist a JWT secret on first launch; returns the secret to use for this run. */

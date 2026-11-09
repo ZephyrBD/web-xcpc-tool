@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import { hashSync } from "bcryptjs";
 import { loadConfig } from "./config";
+import { CONTEXT_PATH } from "./config";
 import { createApp, resolveStaticDir } from "./server";
+import { makeRootDispatch } from "./domjudge/proxy";
 import { adminAuthHeaders } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { DjClient } from "./domjudge/client";
@@ -154,7 +156,6 @@ describe("login approval flow (outside the login window)", () => {
   // end in the past → the window is permanently closed for these tests.
   const makeCfg = () => ({
     ...loadConfigWithSecret(),
-    contextPath: "",
     teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
   });
 
@@ -169,49 +170,49 @@ describe("login approval flow (outside the login window)", () => {
 
   test("correct code outside the window returns the waiting page and creates one pending request", async () => {
     const { app, teamCode, loginRequests } = setup();
-    const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(res.status).toBe(200);
     const pending = loginRequests.listPending();
     expect(pending.length).toBe(1);
     expect(pending[0].icpcId).toBe("icpc1");
     expect(await res.text()).toContain(pending[0].id);
     // resubmitting the same team code reuses the existing pending request
-    await app.request(`/dj/verify?code=${teamCode}`);
+    await app.request(`/public/verify?code=${teamCode}`);
     expect(loginRequests.listAll().length).toBe(1);
   });
 
   test("approved request claims a token exactly once; a replayed claim is 403", async () => {
     const { app, teamCode, loginRequests } = setup();
-    await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     const id = loginRequests.listPending()[0].id;
 
-    const statusRes = await app.request(`/dj/verify/status?req=${id}`);
+    const statusRes = await app.request(`/public/verify/status?req=${id}`);
     expect(await statusRes.json()).toEqual({ status: "pending" });
     expect(loginRequests.decide(id, "approved")?.status).toBe("approved");
 
-    const claim = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    const claim = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
     expect(claim.status).toBe(302);
-    expect(claim.headers.get("location")).toBe("/dj/");
+    expect(claim.headers.get("location")).toBe("/");
     const setCookie = claim.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cxtool-token=");
     expect(setCookie).toContain("Path=/; HttpOnly; SameSite=Lax");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
     expect((await verifyTeamToken("test-secret", token))?.sub).toBe("icpc1");
 
-    const again = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    const again = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
     expect(again.status).toBe(403);
     expect(await again.text()).toContain("队伍登录");
   });
 
   test("a rejected request cannot claim and the status poll reports it", async () => {
     const { app, teamCode, loginRequests } = setup();
-    await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     const id = loginRequests.listPending()[0].id;
     loginRequests.decide(id, "rejected");
 
-    const statusRes = await app.request(`/dj/verify/status?req=${id}`);
+    const statusRes = await app.request(`/public/verify/status?req=${id}`);
     expect(await statusRes.json()).toEqual({ status: "rejected" });
-    const claim = await app.request(`/dj/verify/claim?req=${id}`, { redirect: "manual" });
+    const claim = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
     expect(claim.status).toBe(403);
     expect(claim.headers.get("set-cookie")).toBeNull();
   });
@@ -222,7 +223,7 @@ describe("login approval flow (outside the login window)", () => {
     // the encoded form as-is (HTML entities would corrupt the claim URL).
     const next = "/scoreboard?tab=full&x=1";
     const res = await app.request(
-      `/dj/verify?code=${teamCode}&next=${encodeURIComponent(next)}`,
+      `/public/verify?code=${teamCode}&next=${encodeURIComponent(next)}`,
       { redirect: "manual" },
     );
     expect(res.status).toBe(200);
@@ -232,7 +233,7 @@ describe("login approval flow (outside the login window)", () => {
     const id = loginRequests.listPending()[0].id;
     loginRequests.decide(id, "approved");
     const claim = await app.request(
-      `/dj/verify/claim?req=${id}&next=${encodeURIComponent(next)}`,
+      `/public/verify/claim?req=${id}&next=${encodeURIComponent(next)}`,
       { redirect: "manual" },
     );
     expect(claim.status).toBe(302);
@@ -241,7 +242,7 @@ describe("login approval flow (outside the login window)", () => {
 
   test("wrong code outside the window still returns the 403 miss page and creates no request", async () => {
     const { app, loginRequests } = setup();
-    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    const res = await app.request("/public/verify?code=zzzzzzzzzzzz");
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("队伍码不正确");
     expect(loginRequests.listAll().length).toBe(0);
@@ -251,10 +252,10 @@ describe("login approval flow (outside the login window)", () => {
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc1");
     const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
-    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
+    const cfg = { ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } };
     const app = createApp(cfg, { dataDir, teamStore, loginRequests });
 
-    const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(loginRequests.listAll().length).toBe(0);
   });
@@ -274,14 +275,14 @@ describe("settings hot reload", () => {
   });
 
   test("a PUT that closes the login window takes effect on the same app instance", async () => {
-    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } });
+    const store = new ConfigStore({ ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } });
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc1");
     const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
     const app = createApp(store, { dataDir, teamStore, loginRequests });
 
     // Window open: the valid code logs in directly.
-    const open = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const open = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(open.status).toBe(302);
     expect(loginRequests.listAll().length).toBe(0);
 
@@ -294,7 +295,7 @@ describe("settings hot reload", () => {
     expect(put.status).toBe(200);
     expect((await put.json() as { note?: string }).note).toBe("已保存，立即生效");
 
-    const closed = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const closed = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(closed.status).toBe(200);
     expect(await closed.text()).toContain("等待管理员审批");
     expect(loginRequests.listPending().length).toBe(1);
@@ -305,7 +306,7 @@ describe("settings hot reload", () => {
   });
 
   test("a ConfigStore passed to createApp is updated in place by a PUT", async () => {
-    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } });
+    const store = new ConfigStore({ ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } });
     const app = createApp(store, { dataDir });
     const changes: string[] = [];
     store.onChange((next) => changes.push(next.teamLogin.end));
@@ -321,7 +322,7 @@ describe("settings hot reload", () => {
   });
 
   test("replacing print.token hot-reloads the print callback auth", async () => {
-    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", print: { token: "old-token" } });
+    const store = new ConfigStore({ ...loadConfigWithSecret(), print: { token: "old-token" } });
     const app = createApp(store, { dataDir });
 
     const put = await app.request("/admin/api/settings", {
@@ -336,16 +337,15 @@ describe("settings hot reload", () => {
       fd.set("file", new File([Buffer.from("%PDF-1.4 test")], "a.pdf"));
       return fd;
     };
-    const stale = await app.request("/dj/print", { method: "POST", headers: { "org.domjudge.print-token": "old-token" }, body: form() });
+    const stale = await app.request("/print", { method: "POST", headers: { "org.domjudge.print-token": "old-token" }, body: form() });
     expect(stale.status).toBe(403);
-    const fresh = await app.request("/dj/print", { method: "POST", headers: { "org.domjudge.print-token": "new-token" }, body: form() });
+    const fresh = await app.request("/print", { method: "POST", headers: { "org.domjudge.print-token": "new-token" }, body: form() });
     expect(fresh.status).toBe(200);
   });
 
   test("an admin password change is usable for login on the same instance", async () => {
     const store = new ConfigStore({
       ...loadConfigWithSecret(),
-      contextPath: "",
       admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 },
     });
     const app = createApp(store, { dataDir });
@@ -369,12 +369,11 @@ describe("settings hot reload", () => {
     // must not overwrite the live hash that the running process bootstrapped.
     const cfg = {
       ...loadConfigWithSecret(),
-      contextPath: "",
       admin: { username: "admin", passwordHash: "", password: undefined, sessionTtlSeconds: 28800 },
     };
     writeFileSync(
       join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
     );
     // The live config carries a real bcrypt hash (as ensureAdminPassword would
     // have produced at boot), the file does not.
@@ -412,7 +411,6 @@ describe("settings hot reload", () => {
     // old username, which is what spreading the whole live block would do.
     const diskCfg = {
       ...loadConfigWithSecret(),
-      contextPath: "",
       admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 },
     };
     writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskCfg));
@@ -444,7 +442,6 @@ describe("settings hot reload", () => {
     // guard is a no-op here and the rename must simply work.
     const diskCfg = {
       ...loadConfigWithSecret(),
-      contextPath: "",
       admin: { username: "admin", passwordHash: liveHash, password: "live-pass", sessionTtlSeconds: 28800 },
     };
     writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskCfg));
@@ -483,7 +480,6 @@ describe("admin login-request review API", () => {
 
   const makeCfg = () => ({
     ...loadConfigWithSecret(),
-    contextPath: "",
     teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
   });
 
@@ -496,7 +492,7 @@ describe("admin login-request review API", () => {
     const bus = new SseBus();
     const cfg = makeCfg();
     const app = createApp(cfg, { dataDir, teamStore, loginRequests, bus });
-    const teamLogin = (code: string) => app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    const teamLogin = (code: string) => app.request(`/public/verify?code=${code}`, { redirect: "manual" });
     const auth = () => adminAuthHeaders(cfg);
     const decide = async (id: string, decision: unknown) =>
       app.request(`/admin/api/login-requests/${id}/decision`, {
@@ -686,7 +682,6 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
 
   const makeCfg = () => ({
     ...loadConfigWithSecret(),
-    contextPath: "",
     jwt: { secret: "dod-test-secret", ttlSeconds: 3600 },
     domjudge: {
       baseUrl: `http://127.0.0.1:${upstream.port}`,
@@ -706,17 +701,19 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     const app = createApp(makeCfg(), { dataDir, teamStore, printQueue });
 
     // 1. verify issues the team-token cookie carrying the icpcId
-    const verifyRes = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const verifyRes = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(verifyRes.status).toBe(302);
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cxtool-token=");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
     expect((await verifyTeamToken("dod-test-secret", token))?.sub).toBe("icpc1");
 
-    // 2. the cookie lets /dj/* reach the mock upstream
-    const proxied = await app.request("/dj/anything", {
-      headers: { cookie: `cxtool-token=${token}` },
-    });
+    // 2. the cookie lets the root DOMjudge proxy reach the mock upstream
+    const serving = new Hono().route(CONTEXT_PATH, app);
+    const dispatch = makeRootDispatch(serving, makeCfg(), teamStore);
+    const proxied = await dispatch(
+      new Request("http://s.test/anything", { headers: { cookie: `cxtool-token=${token}` } }),
+    );
     expect(proxied.status).toBe(200);
     expect(await proxied.text()).toBe("upstream-ok");
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
@@ -727,7 +724,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     form.set("location", "A-101");
     form.set("teamname", "Team X");
     form.set("teamid", "t1");
-    const printRes = await app.request("/dj/print", {
+    const printRes = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "print-tok" },
       body: form,
@@ -746,22 +743,28 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].pdfPath).toBeUndefined();
   });
 
-  test("verify → proxy chain works through a /wxt mount", async () => {
+  test("verify → proxy chain works through the fixed /wxt mount", async () => {
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc2");
-    const cfg = { ...makeCfg(), contextPath: "/wxt" };
-    const app = new Hono().route("/wxt", createApp(cfg, { dataDir, teamStore }));
+    const cfg = makeCfg();
+    const serving = new Hono().route(CONTEXT_PATH, createApp(cfg, { dataDir, teamStore }));
+    const dispatch = makeRootDispatch(serving, cfg, teamStore);
 
-    const verifyRes = await app.request(`/wxt/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const verifyRes = await dispatch(
+      new Request(`http://s.test${CONTEXT_PATH}/public/verify?code=${teamCode}`, { redirect: "manual" }),
+    );
     expect(verifyRes.status).toBe(302);
-    expect(verifyRes.headers.get("location")).toBe("/wxt/dj/");
+    expect(verifyRes.headers.get("location")).toBe("/");
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("Path=/");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
 
-    const proxied = await app.request("/wxt/dj/anything", {
-      headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
-    });
+    // DOMjudge lives at the site root now; the mounted /wxt app is not involved.
+    const proxied = await dispatch(
+      new Request("http://s.test/anything", {
+        headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
+      }),
+    );
     expect(proxied.status).toBe(200);
     expect(await proxied.text()).toBe("upstream-ok");
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
@@ -774,8 +777,8 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     const history = new LoginHistoryStore(join(dataDir, "hist.json"));
     const app = createApp(makeCfg(), { dataDir, teamStore, loginHistory: history });
 
-    await app.request(`/dj/verify?code=${code1}`, { redirect: "manual" });
-    await app.request(`/dj/verify?code=${code2}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${code1}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${code2}`, { redirect: "manual" });
 
     const res = await app.request("/admin/api/login-history", {
       headers: await adminAuthHeaders(makeCfg()),
@@ -790,7 +793,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
   test("wrong team code never issues a cookie", async () => {
     const teamStore = makeTeamStore(dataDir);
     const app = createApp(makeCfg(), { dataDir, teamStore });
-    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    const res = await app.request("/public/verify?code=zzzzzzzzzzzz");
     expect(res.status).toBe(403);
     expect(res.headers.get("set-cookie")).toBeNull();
   });
@@ -922,7 +925,7 @@ describe("static hosting", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const makeCfg = () => ({ ...loadConfigWithSecret(), contextPath: "/wxt" });
+  const makeCfg = () => loadConfigWithSecret();
   const makeApp = () => new Hono().route("/wxt", createApp(makeCfg(), { dataDir: mkdtempSync(join(tmpdir(), "static-data-")), staticDir }));
 
   test("GET /wxt/ serves index.html as text/html", async () => {
@@ -969,12 +972,44 @@ describe("static hosting", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
   });
 
-  test("SPA fallback does not swallow /dj 404s", async () => {
-    const res = await makeApp().request("/wxt/dj/no-such-route", { redirect: "manual" });
-    // Team paths redirect humans to the type-in verify form.
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/wxt/dj/verify");
+  test("SPA deep link /wxt/settings falls back to index.html", async () => {
+    const res = await makeApp().request("/wxt/settings");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("ADMIN-INDEX");
   });
+
+  test("team verify page is served, not swallowed by the SPA fallback", async () => {
+    const res = await makeApp().request("/wxt/public/verify");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("请输入屏幕上显示的队伍码开始登录");
+    expect(html).not.toContain("ADMIN-INDEX");
+  });
+
+  test("POST /wxt/print is reachable (no token → PROXY 403, not the SPA)", async () => {
+    const res = await makeApp().request("/wxt/print", { method: "POST" });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "invalid print token" });
+  });
+
+  test("legacy /dj/verify is no longer a route and goes through the root proxy", async () => {
+    const dispatch = makeRootDispatch(makeApp(), makeCfg());
+    const res = await dispatch(new Request("http://s.test/dj/verify", { redirect: "manual" }));
+    // No team token: the root proxy sends humans to the new verify page.
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("/wxt/public/verify?next=");
+  });
+
+  test.each(["/wxt/dj", "/wxt/dj/", "/wxt/dj/verify", "/wxt/dj/verify/claim", "/wxt/dj/print"])(
+    "retired %s answers 404 instead of the SPA index",
+    async (path) => {
+      const res = await makeApp().request(path);
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toContain("ADMIN-INDEX");
+    },
+  );
 
   test("non-GET miss does not fall back to index.html", async () => {
     const res = await makeApp().request("/wxt/login", { method: "POST" });

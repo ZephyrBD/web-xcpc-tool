@@ -17,7 +17,6 @@ const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 function testCfg(teamLogin: { start: string; end: string } = { start: "", end: "" }) {
   return {
     ...loadConfig("/nonexistent/settings.json"),
-    contextPath: "",
     jwt: { secret: SECRET, ttlSeconds: 600 },
     domjudge: { baseUrl: "http://test.local", adminUser: "", adminPassword: "", timeoutSeconds: 10 },
     teamLogin,
@@ -139,16 +138,16 @@ describe("verifyTeamCode", () => {
   });
 });
 
-describe("GET /dj/verify route", () => {
-  test("correct code redirects to /dj/ with a cxtool-token cookie carrying sub", async () => {
+describe("GET /public/verify route", () => {
+  test("correct code redirects to / with a cxtool-token cookie carrying sub", async () => {
     const cfg = testCfg();
     const store = testStore();
     store.setPassword("2025001", "pw");
     const code = store.setTeamCode("2025001");
     const app = createApp(cfg, { teamStore: store });
-    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/dj/");
+    expect(res.headers.get("location")).toBe("/");
     const cookie = res.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("cxtool-token=");
     expect(cookie).toContain("Path=/");
@@ -159,15 +158,15 @@ describe("GET /dj/verify route", () => {
     expect(payload?.sub).toBe("2025001");
   });
 
-  test("under /wxt mount, redirect and cookie path carry the contextPath", async () => {
-    const cfg = { ...testCfg(), contextPath: "/wxt" };
+  test("under /wxt mount, redirect lands on / and the cookie path is /", async () => {
+    const cfg = testCfg();
     const store = testStore();
     const code = store.setTeamCode("2025001");
     const sub = createApp(cfg, { teamStore: store });
     const app = new Hono().route("/wxt", sub);
-    const res = await app.request(`/wxt/dj/verify?code=${code}`, { redirect: "manual" });
+    const res = await app.request(`/wxt/public/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/wxt/dj/");
+    expect(res.headers.get("location")).toBe("/");
     expect(res.headers.get("set-cookie")).toContain("Path=/");
     const token = /cxtool-token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
     expect((await verifyTeamToken(SECRET, token))?.sub).toBe("2025001");
@@ -178,7 +177,7 @@ describe("GET /dj/verify route", () => {
     const store = testStore();
     const code = store.setTeamCode("2025001");
     const app = createApp(cfg, { teamStore: store });
-    const res = await app.request(`/dj/verify?code=${code}&next=%2Fscoreboard`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${code}&next=%2Fscoreboard`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/scoreboard");
     const cookie = res.headers.get("set-cookie") ?? "";
@@ -191,16 +190,16 @@ describe("GET /dj/verify route", () => {
     const code = store.setTeamCode("2025001");
     const app = createApp(cfg, { teamStore: store });
     for (const next of ["//evil.com", "http://evil.com", "%2F%2Fevil.com", "%2F..%5Cevil", "/x?y=1%0d%0aSet-Cookie: x"]) {
-      const res = await app.request(`/dj/verify?code=${code}&next=${next}`, { redirect: "manual" });
+      const res = await app.request(`/public/verify?code=${code}&next=${next}`, { redirect: "manual" });
       expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("/dj/");
+      expect(res.headers.get("location")).toBe("/");
     }
   });
 
   test("the form page preserves next as a hidden field", async () => {
     const cfg = testCfg();
     const app = createApp(cfg, { teamStore: testStore() });
-    const res = await app.request("/dj/verify?next=%2Fscoreboard");
+    const res = await app.request("/public/verify?next=%2Fscoreboard");
     const text = await res.text();
     expect(text).toContain('name="next"');
     expect(text).toContain('value="/scoreboard"');
@@ -210,7 +209,7 @@ describe("GET /dj/verify route", () => {
     const cfg = testCfg();
     const store = testStore();
     const app = createApp(cfg, { teamStore: store });
-    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    const res = await app.request("/public/verify?code=zzzzzzzzzzzz");
     expect(res.status).toBe(403);
     expect(res.headers.get("content-type")).toContain("text/html");
     const text = await res.text();
@@ -225,7 +224,7 @@ describe("GET /dj/verify route", () => {
       join(tmpdir(), `verify-req-${crypto.randomUUID()}`, "login-requests.json"),
     );
     const app = createApp(cfg, { teamStore: store, loginRequests });
-    const res = await app.request(`/dj/verify?code=${code}`);
+    const res = await app.request(`/public/verify?code=${code}`);
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain("等待管理员审批");
@@ -237,36 +236,36 @@ describe("GET /dj/verify route", () => {
     const store = testStore();
     const code = store.setTeamCode("t1");
     const app = createApp(cfg, { teamStore: store });
-    const res = await app.request(`/dj/verify?code=${code}`, { redirect: "manual" });
+    const res = await app.request(`/public/verify?code=${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
   });
 
-  test("GET /dj/verify without code renders the type-in form page", async () => {
+  test("GET /public/verify without code renders the type-in form page", async () => {
     const cfg = testCfg();
     const app = createApp(cfg, { teamStore: testStore() });
-    const res = await app.request("/dj/verify");
+    const res = await app.request("/public/verify");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const text = await res.text();
     expect(text).toContain("请输入屏幕上显示的队伍码开始登录");
-    expect(text).toContain('action="/dj/verify"');
+    expect(text).toContain('action="/wxt/public/verify"');
     expect(text).toContain('name="code"');
   });
 
   test("blank code re-renders the form with the empty hint", async () => {
     const cfg = testCfg();
     const app = createApp(cfg, { teamStore: testStore() });
-    const res = await app.request("/dj/verify?code=");
+    const res = await app.request("/public/verify?code=");
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain("队伍码不能为空");
-    expect(text).toContain('action="/dj/verify"');
+    expect(text).toContain('action="/wxt/public/verify"');
   });
 
   test("whitespace-only code re-renders the form with the empty hint", async () => {
     const cfg = testCfg();
     const app = createApp(cfg, { teamStore: testStore() });
-    const res = await app.request("/dj/verify?code=%20%20");
+    const res = await app.request("/public/verify?code=%20%20");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("队伍码不能为空");
   });
@@ -274,20 +273,20 @@ describe("GET /dj/verify route", () => {
   test("code is escaped on the miss page (XSS regression)", async () => {
     const cfg = testCfg();
     const app = createApp(cfg, { teamStore: testStore() });
-    const res = await app.request("/dj/verify?code=<script>alert(1)</script>");
+    const res = await app.request("/public/verify?code=<script>alert(1)</script>");
     const text = await res.text();
     expect(text).not.toContain("<script>alert(1)</script>");
   });
 
   test("waiting page renders under a /wxt mount", async () => {
-    const cfg = { ...testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" }), contextPath: "/wxt" };
+    const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
     const store = testStore();
     const code = store.setTeamCode("t1");
     const loginRequests = new LoginRequestStore(
       join(tmpdir(), `verify-req-${crypto.randomUUID()}`, "login-requests.json"),
     );
     const app = new Hono().route("/wxt", createApp(cfg, { teamStore: store, loginRequests }));
-    const res = await app.request(`/wxt/dj/verify?code=${code}`);
+    const res = await app.request(`/wxt/public/verify?code=${code}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("等待管理员审批");

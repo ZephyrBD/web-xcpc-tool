@@ -67,12 +67,11 @@ describe("admin auth", () => {
     expect(setCookie).toContain(`${ADMIN_COOKIE}=${token}`);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
-    expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("Path=/wxt/");
   });
 
-  test("cookie path follows the contextPath", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
-    const app = createApp(cfg, { dataDir });
+  test("cookie path is pinned to the fixed /wxt mount", async () => {
+    const app = createApp(await makeCfg(), { dataDir });
     const res = await login(app, { username: "admin", password: PASSWORD });
     expect(res.headers.get("set-cookie")).toContain("Path=/wxt/");
   });
@@ -160,7 +159,7 @@ describe("admin auth", () => {
   });
 
   test("401 applies through a /wxt mount too", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
+    const cfg = await makeCfg();
     const mounted = new Hono().route("/wxt", createApp(cfg, { dataDir }));
     const res = await mounted.request("/wxt/admin/api/settings");
     expect(res.status).toBe(401);

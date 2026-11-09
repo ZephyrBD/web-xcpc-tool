@@ -34,7 +34,7 @@ function makeMultipart(fileContent: string = PDF_BYTES, filename = "main.pdf"): 
   return form;
 }
 
-describe("POST /dj/print", () => {
+describe("POST /print", () => {
   test("correct token saves pdf, enqueues pending task, publishes SSE event", async () => {
     const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
     const bus = new SseBus();
@@ -42,7 +42,7 @@ describe("POST /dj/print", () => {
     bus.subscribe("admin", (e) => events.push(e));
     const app = createApp(cfg, { dataDir, bus });
 
-    const res = await app.request("/dj/print", {
+    const res = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "secret" },
       body: makeMultipart(),
@@ -74,7 +74,7 @@ describe("POST /dj/print", () => {
     const app = createApp(cfg, { dataDir, bus });
 
     const src = "int main(){\r\nif(x){\r\ny();\r\n}\r\n}\r\n";
-    const res = await app.request("/dj/print", {
+    const res = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "secret" },
       body: makeMultipart(src, "main.cpp"),
@@ -99,7 +99,7 @@ describe("POST /dj/print", () => {
     const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
     const app = createApp(cfg, { dataDir });
 
-    const res = await app.request("/dj/print", {
+    const res = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "secret" },
       body: makeMultipart("plain notes\n\nsecond line\n", "notes.txt"),
@@ -113,7 +113,7 @@ describe("POST /dj/print", () => {
     const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
     const app = createApp(cfg, { dataDir });
 
-    const res = await app.request("/dj/print", { method: "POST", body: makeMultipart() });
+    const res = await app.request("/print", { method: "POST", body: makeMultipart() });
     expect(res.status).toBe(403);
     expect(existsSync(join(dataDir, "pdf"))).toBe(false);
     expect((await (await app.request("/admin/api/print-tasks", { headers: await adminAuthHeaders(cfg) })).json()).length).toBe(0);
@@ -123,7 +123,7 @@ describe("POST /dj/print", () => {
     const cfg = { ...loadConfigWithSecret(), print: { token: "secret" } };
     const app = createApp(cfg, { dataDir });
 
-    const res = await app.request("/dj/print", {
+    const res = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "wrong" },
       body: makeMultipart(),

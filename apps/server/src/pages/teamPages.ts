@@ -5,6 +5,10 @@
  * Palette mirrors the admin UI (Design-md).
  */
 import { getVersionInfo } from "../version";
+import { CONTEXT_PATH } from "../config";
+
+/** URL of the team verify entry point (always under the fixed /wxt mount). */
+const VERIFY_PATH = `${CONTEXT_PATH}/public/verify`;
 
 const PALETTE = {
   green: "#0acf83",
@@ -74,7 +78,6 @@ function loginWindowLine(teamLogin?: { start: string; end: string }): string {
 
 /** Team code typed on the form page (HTTP 200). `next` is preserved as a hidden field. */
 export function verifyFormPage(
-  contextPath: string,
   hint?: string,
   next?: string | null,
   teamLogin?: { start: string; end: string },
@@ -85,7 +88,7 @@ export function verifyFormPage(
     `<h1>队伍登录</h1>
 <p>请输入屏幕上显示的队伍码开始登录</p>
 ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
-<form method="get" action="${escapeHtml(contextPath)}/dj/verify">
+<form method="get" action="${VERIFY_PATH}">
 ${next ? `<input type="hidden" name="next" value="${escapeHtml(next)}">` : ""}
 <input name="code" placeholder="请输入队伍码">
 <button type="submit">开始登录</button>
@@ -122,10 +125,11 @@ function jsString(value: string): string {
 
 /**
  * Login request submitted while the window is closed — HTTP 200. Inline JS
- * polls /dj/verify/status every 5s and redirects to /dj/verify/claim once
- * an admin approves; all values are server-rendered, none user-typed.
+ * polls /wxt/public/verify/status every 5s and redirects to
+ * /wxt/public/verify/claim once an admin approves; all values are
+ * server-rendered, none user-typed.
  */
-export function verifyWaitingPage(contextPath: string, reqId: string, next: string | null): Response {
+export function verifyWaitingPage(reqId: string, next: string | null): Response {
   const nextParam = next ? `&next=${encodeURIComponent(next)}` : "";
   return page(
     "等待登录审批",
@@ -135,22 +139,22 @@ export function verifyWaitingPage(contextPath: string, reqId: string, next: stri
 <p id="msg" class="hint">等待审批中…</p>
 <script>
 (function () {
-  var base = "${jsString(contextPath)}";
+  var base = "${jsString(VERIFY_PATH)}";
   var reqId = "${jsString(reqId)}";
   var nextParam = "${jsString(nextParam)}";
   var msg = document.getElementById("msg");
   var timer = setInterval(function () {
-    fetch(base + "/dj/verify/status?req=" + encodeURIComponent(reqId))
+    fetch(base + "/status?req=" + encodeURIComponent(reqId))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (!d) return;
         if (d.status === "approved") {
           clearInterval(timer);
           msg.textContent = "管理员已批准，正在进入比赛系统…";
-          location.href = base + "/dj/verify/claim?req=" + encodeURIComponent(reqId) + nextParam;
+          location.href = base + "/claim?req=" + encodeURIComponent(reqId) + nextParam;
         } else if (d.status === "rejected") {
           clearInterval(timer);
-          msg.innerHTML = '管理员拒绝了本次登录，可<a href="' + base + '/dj/verify">重新提交</a>';
+          msg.innerHTML = '管理员拒绝了本次登录，可<a href="' + base + '">重新提交</a>';
         } else if (d.status === "claimed") {
           clearInterval(timer);
           msg.textContent = "本次登录已完成，请返回比赛系统";
@@ -170,7 +174,7 @@ export function verifyClaimDeniedPage(): Response {
     PALETTE.red,
     `<h1>队伍登录</h1>
 <p>本次登录请求无法继续</p>
-<p>请重新提交登录请求或联系监考人员</p>`,
+<p>请<a href="${VERIFY_PATH}">重新提交登录请求</a>或联系监考人员</p>`,
   );
   return new Response(res.body, { status: 403, headers: res.headers });
 }

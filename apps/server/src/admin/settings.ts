@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { hashSync } from "bcryptjs";
-import { parseConfig, type Config } from "../config";
+import { parseConfig, CONTEXT_PATH, type Config } from "../config";
 import { isoOrEmpty } from "../config";
 import { getVersionInfo } from "../version";
 
@@ -49,7 +49,8 @@ export function maskToken(token: string): string {
 export function safeSettingsView(cfg: Config) {
   return {
     port: cfg.port,
-    contextPath: cfg.contextPath,
+    /** Read-only: the mount is pinned to /wxt (the UI no longer edits it). */
+    contextPath: CONTEXT_PATH,
     domjudge: {
       baseUrl: cfg.domjudge.baseUrl,
       adminUser: cfg.domjudge.adminUser,

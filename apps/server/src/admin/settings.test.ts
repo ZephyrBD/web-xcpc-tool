@@ -485,9 +485,9 @@ describe("applySettingsPatch partial-file guards", () => {
   test("a disk file without a jwt secret keeps the live one (never a zero-length key)", () => {
     writeFileSync(
       join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
     );
-    const live = { ...loadConfigWithSecret(), contextPath: "" };
+    const live = loadConfigWithSecret();
     const updated = applySettingsPatch(live, { balloon: { contestId: "c9" } }, join(dataDir, "settings.json"), live.admin);
     expect(updated.jwt.secret).toBe("test-secret");
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
@@ -497,7 +497,7 @@ describe("applySettingsPatch partial-file guards", () => {
   test("the admin guard backfills only the hash, so a rename survives a partial file", () => {
     writeFileSync(
       join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
     );
     const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
     const live = {
@@ -516,7 +516,7 @@ describe("applySettingsPatch partial-file guards", () => {
   test("sessionTtlSeconds edits also survive the guard", () => {
     writeFileSync(
       join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
     );
     const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
     const live = {

@@ -20,7 +20,6 @@ import type { DjTeam } from "../domjudge/client";
 const cfg = (overrides: Partial<Config> = {}): Config => ({
   ...loadConfig("/nonexistent/settings.json"),
   jwt: { secret: "purge-test-secret", ttlSeconds: 3600 },
-  contextPath: "",
   ...overrides,
 });
 
@@ -47,7 +46,6 @@ function seedSettings(dataDir: string) {
     JSON.stringify(
       {
         port: 8080,
-        contextPath: "",
         domjudge: DJ_BLOCK,
         jwt: { secret: "purge-test-secret", ttlSeconds: 3600 },
         teamLogin: { start: "", end: "" },
@@ -535,7 +533,7 @@ describe("purge keeps the live secrets when settings.json is partial", () => {
     });
     writeFileSync(
       join(dataDir, "settings.json"),
-      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+      JSON.stringify({ port: 8080, teamLogin: { start: "", end: "" } }),
     );
     const store = new ConfigStore(live);
     const app = createApp(store, { dataDir });

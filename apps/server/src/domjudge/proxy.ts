@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { proxy } from "hono/proxy";
-import type { Config } from "../config";
+import { CONTEXT_PATH, type Config } from "../config";
 import { verifyTeamToken } from "../auth/token";
 import { upstreamErrorPage } from "../pages/teamPages";
 import type { TeamStore } from "../store/teams";
@@ -25,24 +25,15 @@ const HOP_BY_HOP = new Set([
 
 /**
  * Path relative to this app. Under production mounting
- * (`new Hono().route(cfg.contextPath, app)`) `c.req.url` still carries the
+ * (`new Hono().route(CONTEXT_PATH, app)`) `c.req.url` still carries the
  * prefix, so subtract it once here; when served directly it is a no-op.
  */
-export function appPath(c: Context, cfg: Config): string {
+export function appPath(c: Context): string {
   const raw = new URL(c.req.url).pathname;
-  const prefix = cfg.contextPath.replace(/\/+$/, "");
-  if (prefix && (raw === prefix || raw.startsWith(`${prefix}/`))) {
-    return raw.slice(prefix.length) || "/";
+  if (raw === CONTEXT_PATH || raw.startsWith(`${CONTEXT_PATH}/`)) {
+    return raw.slice(CONTEXT_PATH.length) || "/";
   }
   return raw;
-}
-
-/** Returns the path after "/dj" to forward upstream, or null if the request is not under /dj. */
-export function proxyFilter(c: Context, cfg: Config): string | null {
-  const path = appPath(c, cfg);
-  if (path !== "/dj" && !path.startsWith("/dj/")) return null;
-  const rest = path.slice("/dj".length);
-  return rest === "" ? "/" : rest;
 }
 
 /** Joins the DOMjudge baseUrl with a remaining path (leading slash optional). */
@@ -165,27 +156,10 @@ async function forwardToDj(
   }
 }
 
-export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamStore): Promise<Response> {
-  // One snapshot per request: the store may be swapped mid-flight by a
-  // settings PUT, and a half-old/half-new combination would mismatch paths.
-  const token = getCookie(c.req.header("cookie"), "cxtool-token");
-  const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
-  if (!payload) {
-    // Teams are humans: send them to the verify page, where they type their
-    // team code (shown on screen) to start authentication.
-    return c.redirect(`${cfg.contextPath.replace(/\/+$/, "")}/dj/verify`, 302);
-  }
-  const rest = proxyFilter(c, cfg);
-  if (rest === null) {
-    return c.json({ ok: false, reason: "not found" }, 404);
-  }
-  return forwardToDj(c.req.raw, cfg, teamStore, payload, rest);
-}
-
 /**
- * Reverse-proxy any path outside the admin contextPath directly to DOMjudge,
- * with the same team-token semantics as /dj/*: a valid team cookie is
- * forwarded upstream, anything else is sent to the team verify page.
+ * Reverse-proxy any path outside the admin contextPath directly to DOMjudge.
+ * A valid team cookie is forwarded upstream; anything else is sent to the team
+ * verify page (with the original URL as `next`).
  */
 export async function handleRootDjProxy(req: Request, src: ConfigSource, teamStore?: TeamStore): Promise<Response> {
   const cfg = snapshot(src);
@@ -195,37 +169,17 @@ export async function handleRootDjProxy(req: Request, src: ConfigSource, teamSto
     // Carry the original URL so verify can send the team back where they started.
     const url = new URL(req.url);
     const next = encodeURIComponent(`${url.pathname}${url.search}`);
-    const location = `${cfg.contextPath.replace(/\/+$/, "")}/dj/verify?next=${next}`;
+    const location = `${CONTEXT_PATH}/public/verify?next=${next}`;
     return Response.redirect(new URL(location, req.url).toString(), 302);
   }
   return forwardToDj(req, cfg, teamStore, payload, new URL(req.url).pathname);
 }
 
-/**
- * Old cached admin SPAs still request /cxtool/*, which now falls into the
- * DOMjudge root proxy and 404s. 301 them onto the current contextPath
- * (empty contextPath redirects to /...).
- */
-export function legacyContextPathRedirect(
-  contextPath: string,
-  req: Request,
-): Response | null {
-  if (req.method !== "GET") return null;
-  const url = new URL(req.url);
-  const legacy = "/cxtool";
-  if (url.pathname !== legacy && !url.pathname.startsWith(`${legacy}/`)) {
-    return null;
-  }
-  const rest = url.pathname.slice(legacy.length);
-  const target = `${contextPath.replace(/\/+$/, "")}${rest}` || "/";
-  return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
-}
-
 type HonoLike = { fetch: (req: Request) => Promise<Response> | Response };
 
 /**
- * Dispatcher for Bun.serve: paths inside the admin contextPath go to the
- * Hono app; everything else falls through to the DOMjudge root proxy.
+ * Dispatcher for Bun.serve: paths inside the fixed /wxt mount go to the Hono
+ * app; everything else falls through to the DOMjudge root proxy.
  */
 export function makeRootDispatch(
   serving: HonoLike,
@@ -233,14 +187,10 @@ export function makeRootDispatch(
   teamStore?: TeamStore,
 ): (req: Request) => Promise<Response> {
   return async (req) => {
-    // Read per request (a getter follows the live contextPath); one snapshot
-    // per request so the prefix check and the proxy agree on the same config.
-    const cfg = snapshot(src);
-    const prefix = cfg.contextPath.replace(/\/+$/, "");
     const path = new URL(req.url).pathname;
-    if (prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+    if (path === CONTEXT_PATH || path.startsWith(`${CONTEXT_PATH}/`)) {
       return serving.fetch(req);
     }
-    return handleRootDjProxy(req, cfg, teamStore);
+    return handleRootDjProxy(req, src, teamStore);
   };
 }
