@@ -16,6 +16,9 @@ describe('HelpPage', () => {
     expect(text).toContain('original')
     expect(text).toContain('file')
     expect(text).toContain('curl')
+    // 打印契约：不再提旧接口字段
+    expect(text).not.toContain('printTeamDTO')
+    expect(text).toContain('/wxt/print')
   })
 
   test('renders the verify, DOMjudge config, and balloon sections', () => {

@@ -35,7 +35,7 @@ const sections: HelpSection[] = [
         ],
       },
       {
-        note: '兼容说明：script/print.sh 是发给本工具打印回调的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName。只要把脚本里的 PRINT_API 指向本工具的 /wxt/print、API_TOKEN 填成设置页生成的令牌，即可直接对接。',
+        note: '兼容说明：script/print.sh 是发给本工具打印回调的客户端脚本，参数顺序为 Location TeamName teamid FilePath OriginalFileName，请求头与 multipart 字段与当前回调契约完全一致。只要把脚本里的 PRINT_API 指向本工具的 /wxt/print、API_TOKEN 填成设置页生成的令牌，即可开箱直接对接（旧版的 JSON DTO 请求格式已废弃，不再支持）。',
         lines: [],
       },
     ],
