@@ -230,8 +230,15 @@ describe("isSameOriginRequest", () => {
     expect(isSameOriginRequest(req({ host: "localhost:8080", referer: "not a url" }))).toBe(false);
   });
 
-  test("fails open only when there is no Host to compare against", () => {
-    expect(isSameOriginRequest(req({ origin: "https://evil.example" }))).toBe(true);
+  test("still checks the origin when the request carries no Host header", () => {
+    // HTTP/1.0 clients can omit Host; the request URL still knows its host.
+    const noHost = (origin: string) =>
+      new Request("http://localhost:8080/admin/api/data/purge", {
+        method: "POST",
+        headers: { origin },
+      });
+    expect(isSameOriginRequest(noHost("https://evil.example"))).toBe(false);
+    expect(isSameOriginRequest(noHost("http://localhost:8080"))).toBe(true);
   });
 });
 
@@ -346,6 +353,76 @@ describe("POST /admin/api/data/purge", () => {
       expect(JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8")).balloon.contestId).toBe(
         "contest-1",
       );
+    });
+
+    test("a cross-origin request with no Host header is rejected", async () => {
+      seed(dataDir);
+      // HTTP/1.0-style request: no Host header, only a foreign Origin.
+      const live = cfg({ balloon: { contestId: "contest-1", pollIntervalSeconds: 45 } });
+      const app = createApp(live, { dataDir });
+      const res = await app.request(
+        new Request("http://localhost/admin/api/data/purge", {
+          method: "POST",
+          headers: { ...(await adminAuthHeaders(live)), origin: "https://evil.example" },
+        }),
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "cross-origin forbidden" });
+      expect(JSON.parse(readFileSync(join(dataDir, "teams.json"), "utf8")).length).toBe(1);
+    });
+
+    test("the guard covers other mutating admin routes too", async () => {
+      seed(dataDir);
+      const live = cfg({ balloon: { contestId: "contest-1", pollIntervalSeconds: 45 } });
+      const app = createApp(live, { dataDir, teamsStore: new JsonStore(join(dataDir, "teams.json"), []) });
+      const auth = await adminAuthHeaders(live);
+      const foreign = { ...auth, host: "localhost:8080", origin: "https://evil.example" };
+      const sameOrigin = { ...auth, host: "localhost:8080", origin: "http://localhost:8080" };
+
+      // team-codes/generate: foreign origin is refused, same-origin works.
+      const genForeign = await app.request("/admin/api/team-codes/generate", {
+        method: "POST",
+        headers: foreign,
+        body: JSON.stringify({ all: true }),
+      });
+      expect(genForeign.status).toBe(403);
+      expect(await genForeign.json()).toEqual({ error: "cross-origin forbidden" });
+      // The seeded team already had a code; a refused call must not add rows.
+      expect(Object.keys(JSON.parse(readFileSync(join(dataDir, "team-passwords.json"), "utf8")))).toEqual(["icpc1"]);
+
+      const genSame = await app.request("/admin/api/team-codes/generate", {
+        method: "POST",
+        headers: sameOrigin,
+        body: JSON.stringify({ all: true }),
+      });
+      expect(genSame.status).toBe(200);
+
+      // settings PUT: foreign origin is refused and writes nothing.
+      const putForeign = await app.request("/admin/api/settings", {
+        method: "PUT",
+        headers: foreign,
+        body: JSON.stringify({ domjudge: { baseUrl: "http://evil.example" } }),
+      });
+      expect(putForeign.status).toBe(403);
+      expect(JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8")).domjudge.baseUrl).toBe(
+        DJ_BLOCK.baseUrl,
+      );
+
+      const putSame = await app.request("/admin/api/settings", {
+        method: "PUT",
+        headers: sameOrigin,
+        body: JSON.stringify({ print: { token: "new-token" } }),
+      });
+      expect(putSame.status).toBe(200);
+    });
+
+    test("read-only admin routes are not origin-gated", async () => {
+      const live = cfg({ balloon: { contestId: "contest-1", pollIntervalSeconds: 45 } });
+      const app = createApp(live, { dataDir });
+      const res = await app.request("/admin/api/settings", {
+        headers: { ...(await adminAuthHeaders(live)), host: "localhost:8080", origin: "https://evil.example" },
+      });
+      expect(res.status).toBe(200);
     });
 
     test("a same-site but different-port Origin is rejected", async () => {

@@ -155,3 +155,5 @@ powershell -File script/deploy/start.ps1   # Windows
 ## 安全说明
 
 管理端登录 Cookie 未设置 `Secure` 标志：现场部署走的是受信任局域网内的纯 HTTP，浏览器若要求 Secure Cookie 将无法在 HTTP 下送达。若需要把服务暴露到局域网之外，请在前面加一层带 TLS 的反向代理（如 nginx + 证书）。
+
+> nginx 反代到本服务时，除 `proxy_set_header Host $http_host;` 外还必须加 `proxy_set_header X-Forwarded-Proto $scheme;`（`script/nginx.conf`、`script/2026.conf` 已包含）：管理端 API 的写操作会做同源校验，缺少该项时 TLS 终止后的请求协议不一致，会返回 403 `cross-origin forbidden`。

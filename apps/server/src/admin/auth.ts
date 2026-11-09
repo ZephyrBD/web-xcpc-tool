@@ -93,35 +93,44 @@ export function createAdminLoginHandler(
 }
 
 /**
- * CSRF guard for destructive routes whose auth may come from the admin cookie.
- * The cookie is SameSite=Strict, but a same-site sibling (or a browser that
- * drops the attribute) can still fire a cross-origin form/fetch, so the
- * browser-supplied Origin (or Referer when Origin is absent) must name this
- * very scheme+host: any cross-origin page would otherwise purge a contest's
- * data.
+ * CSRF guard for every mutating (non-GET/HEAD) /admin/api/* request, whose
+ * auth may come from the admin cookie. The cookie is SameSite=Strict, but a
+ * same-site sibling (or a browser that drops the attribute) can still fire a
+ * cross-origin form/fetch, so the browser-supplied Origin (or Referer when
+ * Origin is absent) must name this very scheme+host — a cross-origin page
+ * could otherwise purge a contest's data or rewrite its settings.
  *
- * The expected scheme is x-forwarded-proto when a reverse proxy set it, else
- * the request URL's own protocol (Bun reports the real one).
- * A request with neither header (curl, server-side callers) is not a browser
- * cross-site request and is allowed — those callers already hold the token.
- * Returns false when the request must be rejected.
+ * Expected hosts: the Host header, x-forwarded-host (set by a reverse proxy
+ * that rewrites Host), and always the request URL's own host — HTTP/1.1
+ * requires Host but an HTTP/1.0 client may omit it, and the URL still knows.
+ * Expected scheme: x-forwarded-proto when a reverse proxy set it, else the
+ * request URL's own protocol.
+ *
+ * A request with neither Origin nor Referer (curl, server-side callers) is
+ * not a browser cross-site request and is allowed — those callers already
+ * hold the token. Returns false when the request must be rejected.
  */
 export function isSameOriginRequest(req: Request): boolean {
   const source = req.headers.get("origin") ?? req.headers.get("referer");
   if (!source) return true;
-  // Behind a reverse proxy the Host header may be rewritten (nginx
-  // proxy_set_header Host would fix that); fall back to the forwarded host so
-  // a proxied admin page is not locked out.
-  const hosts = [req.headers.get("host"), req.headers.get("x-forwarded-host")].filter(
-    (h): h is string => !!h,
-  );
-  const proto = (req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
-    new URL(req.url).protocol.replace(/:$/, "")).toLowerCase();
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(req.url);
+  } catch {
+    // Without a parseable request URL there is nothing to compare against.
+    return false;
+  }
+  const hosts = [
+    req.headers.get("host"),
+    req.headers.get("x-forwarded-host"),
+    requestUrl.host,
+  ].filter((h): h is string => !!h);
+  const proto = (
+    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    requestUrl.protocol.replace(/:$/, "")
+  ).toLowerCase();
   try {
     const url = new URL(source);
-    // `hosts` is empty in a bare unit call without a Host header: fail open
-    // (no host to compare against), never a silent 403 for every request.
-    if (hosts.length === 0) return true;
     return hosts.includes(url.host) && url.protocol.replace(/:$/, "").toLowerCase() === proto;
   } catch {
     // "null" (sandboxed iframe, data: URL) or a malformed value: never
@@ -129,6 +138,15 @@ export function isSameOriginRequest(req: Request): boolean {
     return false;
   }
 }
+
+/** Methods that can change server state and therefore need the origin check. */
+export function isMutatingMethod(method: string): boolean {
+  const m = method.toUpperCase();
+  return m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
+}
+
+/** Same 403 body for every rejected cross-origin mutation. */
+export const CROSS_ORIGIN_FORBIDDEN = "cross-origin forbidden";
 
 /** Auth for every /admin/api/* route except POST /admin/api/login. */export function requireAdmin(cfg: () => Config): MiddlewareHandler {
   return async (c, next) => {
@@ -145,6 +163,11 @@ export function isSameOriginRequest(req: Request): boolean {
     }
     const payload = token ? await verifyAdminToken(cfg().jwt.secret, token) : null;
     if (!payload) return c.json({ error: UNAUTHORIZED }, 401);
+    // CSRF: every other mutating admin call must come from this very origin.
+    // Checked AFTER auth so an anonymous probe learns nothing about its token.
+    if (isMutatingMethod(c.req.method) && !isSameOriginRequest(c.req.raw)) {
+      return c.json({ error: CROSS_ORIGIN_FORBIDDEN }, 403);
+    }
     await next();
   };
 }

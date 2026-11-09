@@ -14,7 +14,7 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
-import { createAdminLoginHandler, isSameOriginRequest, requireAdmin } from "./admin/auth";
+import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { randomInt } from "node:crypto";import { applySettingsPatch, assertContestIdMutable, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
@@ -403,17 +403,14 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
    * Wipe every value pulled from DOMjudge and unlock the contest id: the
    * balloon poller stops (contestId is now "") and a different contest can be
    * configured. settings.json and secret.key survive — only the balloon id is
-   * reset. Gated by the /admin/api/* admin middleware, plus a same-origin check
-   * because a cookie-authenticated destructive POST is a CSRF target.
+   * reset. Gated by the /admin/api/* admin middleware, which also rejects any
+   * mutating request whose Origin/Referer is not this server.
    *
    * The purge is not transactional: an archive dir may already be gone while
    * the settings rewrite fails. The error copy therefore says part of the data
    * is gone and asks the operator to click purge again (it is safe to repeat).
    */
   app.post("/admin/api/data/purge", (c) => {
-    if (!isSameOriginRequest(c.req.raw)) {
-      return c.json({ error: "cross-origin forbidden" }, 403);
-    }
     const teamCredentials = teamStore.store as JsonStore<Record<string, unknown>>;
     let report: PurgeReport | null = null;
     let partialError: unknown = null;

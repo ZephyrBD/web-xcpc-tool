@@ -55,6 +55,7 @@ const groups: ApiGroup[] = [
       { method: 'POST', path: '/admin/api/teams/import-excel', desc: '上传 Excel 批量导入队伍' },
       { method: 'GET', path: '/admin/api/settings', desc: '读取当前设置（密码与 token 只返回掩码）' },
       { method: 'PUT', path: '/admin/api/settings', desc: '部分更新设置（密码留空表示不修改），重启后生效' },
+      { method: 'POST', path: '/admin/api/data/purge', desc: '清空已拉取的数据并把比赛 ID 置空；跨站请求会被拒绝' },
     ],
   },
 ]
