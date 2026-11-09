@@ -370,14 +370,20 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     const beforeId = before.balloon?.contestId?.trim() ?? "";
     const afterId = updated.balloon?.contestId?.trim() ?? "";
     const client = deps?.djClient;
-    if (afterId && afterId !== beforeId && client && !teamSyncInFlight) {
-      teamSyncInFlight = true;
-      void syncTeamsAndRefresh(client, afterId)
-        .then((count) => log.info("admin", `比赛 ID 已设置，后台自动同步队伍完成：共 ${count} 支队伍`))
-        .catch((err) => log.warn("admin", "后台自动同步队伍失败:", err instanceof Error ? err.message : err))
-        .finally(() => {
-          teamSyncInFlight = false;
-        });
+    if (afterId && afterId !== beforeId && client) {
+      // A sync already running for the old id can't be repurposed: the team
+      // table would stay stale for the new id, so at least say so.
+      if (teamSyncInFlight) {
+        log.warn("admin", "上一次队伍同步仍在进行，本次变更未触发自动同步，请稍后手动同步");
+      } else {
+        teamSyncInFlight = true;
+        void syncTeamsAndRefresh(client, afterId)
+          .then((count) => log.info("admin", `比赛 ID 已设置，后台自动同步队伍完成：共 ${count} 支队伍`))
+          .catch((err) => log.warn("admin", "后台自动同步队伍失败:", err instanceof Error ? err.message : err))
+          .finally(() => {
+            teamSyncInFlight = false;
+          });
+      }
     }
     // Password fields are write-only and never echoed back.
     return c.json({ ...safeSettingsView(updated), note: "已保存，立即生效" });

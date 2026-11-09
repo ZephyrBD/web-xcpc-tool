@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../config";
 import { DjClient, type DjTeam } from "../domjudge/client";
+import { SecretBox } from "../store/secretbox";
 import { JsonStore, setDataDir } from "../store/store";
+import { TeamStore } from "../store/teams";
 import { createApp } from "../server";
 import { adminAuthHeaders } from "../admin/auth";
 import { syncTeamsFromDomjudge } from "./sync";
@@ -13,6 +15,8 @@ const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
   jwt: { secret: "test-secret", ttlSeconds: 3600 },
 });
+
+const KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 let dir: string;
 
@@ -87,12 +91,24 @@ describe("team routes", () => {
   });
 
   test("GET /admin/api/teams returns teams with no password anywhere in the response", async () => {
-    const { app, cfg, teamsStore } = makeApp();
+    const cfg = loadConfigWithSecret();
+    const teamStore = new TeamStore(join(dir, "team-passwords.json"), new SecretBox(KEY));
+    const { teamsStore } = makeStores();
+    const client = new DjClient(
+      { ...cfg.domjudge, baseUrl: "http://dj.test" },
+      (async () =>
+        new Response(JSON.stringify(TEAMS), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+    const app = createApp(cfg, { dataDir: dir, teamStore, teamsStore, djClient: client });
     teamsStore.save(TEAMS);
+    teamStore.setPassword("t1", "plaintext-leak-pw");
     const res = await app.request("/admin/api/teams", { headers: await adminAuthHeaders(cfg) });
     expect(res.status).toBe(200);
     const text = JSON.stringify(await res.json());
-    expect(text).not.toContain("password");
+    expect(text).not.toContain("plaintext-leak-pw");
     expect(text).toContain("Team One");
   });
 });
