@@ -1,19 +1,26 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
 import type { DjTeam } from '@/pages/TeamsPage.vue'
 
+// bun 的模块 mock 是进程级的，会漏到后续文件（App.test 会挂载真实路由页），
+// 先留一份未被污染的命名空间，本文件跑完恢复。
+const pristineElementPlus = { ...elementPlus }
 const messageMock = {
   error: mock(() => ({})),
   success: mock(() => ({})),
 }
 mock.module('element-plus', () => ({
-  ...elementPlus,
-  ElMessage: { ...elementPlus.ElMessage, ...messageMock },
+  ...pristineElementPlus,
+  ElMessage: { ...pristineElementPlus.ElMessage, ...messageMock },
 }))
 
 const { default: TeamsPage } = await import('./TeamsPage.vue')
+
+afterAll(() => {
+  mock.module('element-plus', () => ({ ...pristineElementPlus }))
+})
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 

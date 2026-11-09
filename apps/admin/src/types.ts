@@ -60,3 +60,24 @@ export function loginHistoryLabel(e: Pick<LoginHistoryEntry, 'icpcId' | 'teamNam
   if (e.teamName && e.djUsername) return `${e.teamName}（${e.djUsername}）`
   return e.teamName || e.djUsername || e.icpcId
 }
+
+export type LoginRequestStatus = 'pending' | 'approved' | 'rejected' | 'claimed'
+
+/** Login approval request raised when a team logs in outside the allowed window.
+ *  pending → approved / rejected; approved → claimed once the team actually lands. */
+export interface LoginRequest {
+  id: string
+  icpcId: string
+  teamCode: string
+  teamName: string
+  ip: string | null
+  requestedAt: string
+  status: LoginRequestStatus
+  decidedAt: string | null
+}
+
+/** Payload of GET /admin/api/login-requests. */
+export interface LoginRequestsResponse {
+  pending: LoginRequest[]
+  recent: LoginRequest[]
+}

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
-import type { LoginHistoryEntry, TeamCodeRow } from '@/types'
+import type { LoginHistoryEntry, LoginRequest, TeamCodeRow } from '@/types'
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 5))
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -28,11 +28,12 @@ mock.module('element-plus', () => ({
   ElMessageBox: { ...elementPlus.ElMessageBox, confirm: async () => 'confirm' },
 }))
 
-const { default: TeamCodesPage } = await import('./TeamCodesPage.vue')
+const { default: AuthPage } = await import('./AuthPage.vue')
 
 let teamCodeRows: TeamCodeRow[] = []
 let unassignedCount = 0
 let loginHistory: LoginHistoryEntry[] = []
+let loginRequests: LoginRequest[] = []
 let provisionHandler: ((body: { icpcId?: string; all?: boolean }) => Response | Promise<Response>) | null = null
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
 
@@ -63,18 +64,21 @@ function mockFetch() {
     if (path === '/admin/api/login-history' && method === 'GET') {
       return new Response(JSON.stringify(loginHistory), { status: 200, headers: { 'content-type': 'application/json' } })
     }
+    if (path === '/admin/api/login-requests' && method === 'GET') {
+      return new Response(JSON.stringify({ pending: loginRequests, recent: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(JSON.stringify({ error: 'not found' }), { status: 404 })
   }) as unknown as typeof fetch
 }
 
 async function mountPage() {
-  const wrapper = mount(TeamCodesPage, { global: { plugins: [createPinia()] } })
+  const wrapper = mount(AuthPage, { global: { plugins: [createPinia()] } })
   await waitFor(() => calls.some((c) => c.path === '/admin/api/team-codes'))
   await flush()
   return wrapper
 }
 
-describe('TeamCodesPage', () => {
+describe('AuthPage', () => {
   beforeEach(() => {
     localStorage.clear()
     teamCodeRows = [
@@ -82,6 +86,7 @@ describe('TeamCodesPage', () => {
     ]
     unassignedCount = 1
     loginHistory = []
+    loginRequests = []
     provisionHandler = null
     calls.length = 0
     mockFetch()
@@ -330,5 +335,42 @@ describe('TeamCodesPage', () => {
     expect(rows[0].text()).toContain('队伍二（team2）')
     // both enriched fields unknown → falls back to the raw icpcId
     expect(rows[1].text()).toContain('icpc1')
+  })
+
+  test('renders the 登录审批 card above the team-code tabs', async () => {
+    loginRequests = [
+      {
+        id: 'lr1',
+        icpcId: 'icpc1',
+        teamCode: 'abcdefghjkmn',
+        teamName: '队伍一',
+        ip: '10.0.0.5',
+        requestedAt: '2026-11-09T10:00:00.000Z',
+        status: 'pending',
+        decidedAt: null,
+      },
+    ]
+    const wrapper = await mountPage()
+    await waitFor(() => calls.some((c) => c.path === '/admin/api/login-requests'))
+    await waitFor(() => wrapper.text().includes('暂无待审批') === false)
+
+    const text = wrapper.text()
+    expect(text).toContain('登录审批')
+    // 登录审批卡片排在队伍码 tabs 之前
+    const html = wrapper.html()
+    expect(html.indexOf('登录审批')).toBeLessThan(html.indexOf('el-tabs'))
+    expect(wrapper.findAll('button').some((b) => b.text() === '同意')).toBe(true)
+    expect(wrapper.findAll('button').some((b) => b.text() === '拒绝')).toBe(true)
+  })
+
+  test('keeps every existing team-code action (tabs, batch generate, provision, export)', async () => {
+    const wrapper = await mountPage()
+    const text = wrapper.text()
+    expect(text).toContain('已发队伍码 1 / 2')
+    const labels = wrapper.findAll('button').map((b) => b.text())
+    expect(labels).toContain('为未分配队伍批量生成')
+    expect(labels).toContain('一键配置密码')
+    expect(labels).toContain('导出 CSV')
+    expect(wrapper.findAll('.el-tabs__item').map((t) => t.text())).toEqual(['队伍码', '登录历史'])
   })
 })

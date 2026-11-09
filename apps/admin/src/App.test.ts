@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory } from 'vue-router'
 import { createPinia } from 'pinia'
 import App from './App.vue'
-import { createAppRouter } from './router'
+import { createAppRouter, routes } from './router'
 import { useSessionStore } from './stores/session'
 import { clearToken, setToken } from './api'
 
@@ -39,9 +39,24 @@ describe('App', () => {
     await wrapper.vm.$nextTick()
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    for (const route of ['/', '/team-codes', '/jobs', '/teams', '/api-list', '/help', '/settings']) {
+    for (const route of ['/', '/auth', '/jobs', '/teams', '/api-list', '/help', '/settings']) {
       expect(hrefs).toContain(route)
     }
+  })
+
+  test('/auth is the 认证管理 route and the legacy /team-codes path redirects to it', async () => {
+    const auth = routes.find((r) => r.path === '/auth')!
+    expect(auth.name).toBe('auth')
+    expect(auth.meta?.title).toBe('认证管理')
+    // the redirect record keeps old bookmarks working
+    expect(routes.find((r) => r.path === '/team-codes')?.redirect).toBe('/auth')
+
+    // resolve only — mounting AuthPage here would depend on element-plus being
+    // unmocked process-wide, which other page specs intentionally violate.
+    const router = createAppRouter(createMemoryHistory())
+    const resolved = router.resolve('/team-codes')
+    expect(resolved.matched[0]?.redirect).toBe('/auth')
+    expect(router.resolve('/auth').name).toBe('auth')
   })
 
   test('router guard redirects unauthenticated visits to /login', async () => {

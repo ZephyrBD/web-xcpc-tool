@@ -17,7 +17,7 @@ const groups: ApiGroup[] = [
     title: '认证',
     accent: 'var(--brand-purple)',
     entries: [
-      { method: 'GET', path: '/dj/verify', desc: '队伍码登录入口，校验队伍码与登录时段后签发 cxtool-token 并跳转 DOMjudge 反代' },
+      { method: 'GET', path: '/dj/verify', desc: '认证管理页的队伍码登录入口，校验队伍码与登录时段后签发 cxtool-token 并跳转 DOMjudge 反代' },
     ],
   },
   {
@@ -43,6 +43,8 @@ const groups: ApiGroup[] = [
       { method: 'POST', path: '/admin/api/team-codes/generate', desc: '为指定队伍（icpcId）或所有未分配队伍（all:true）生成队伍码' },
       { method: 'GET', path: '/admin/api/team-codes/export', desc: '导出队伍码 CSV（含 DOMjudge 密码，管理员专用）' },
       { method: 'GET', path: '/admin/api/login-history', desc: '队伍码登录历史，最新在前，可 ?limit= 限制条数' },
+      { method: 'GET', path: '/admin/api/login-requests', desc: '登录审批请求：pending 待审批 / recent 最近处理' },
+      { method: 'POST', path: '/admin/api/login-requests/:id/decision', desc: '同意（approved）或拒绝（rejected）一条待审批登录请求' },
       { method: 'GET', path: '/admin/api/print-tasks', desc: '打印任务列表，可按 status 过滤' },
       { method: 'POST', path: '/admin/api/print-tasks/:id/ack', desc: '标记打印任务为已打 / 失败' },
       { method: 'GET', path: '/admin/api/print-tasks/:id/pdf', desc: '下载待打印的 PDF（内联预览）' },

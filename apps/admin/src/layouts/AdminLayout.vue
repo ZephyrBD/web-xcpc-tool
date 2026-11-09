@@ -22,7 +22,7 @@ function logout(): void {
 
 const navItems = [
   { path: '/', label: '总览', accent: 'var(--brand-purple)' },
-  { path: '/team-codes', label: '队伍码', accent: 'var(--brand-green)' },
+  { path: '/auth', label: '认证管理', accent: 'var(--brand-green)' },
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
   { path: '/api-list', label: '接口', accent: 'var(--brand-red)' },

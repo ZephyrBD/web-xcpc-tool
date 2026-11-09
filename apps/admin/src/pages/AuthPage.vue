@@ -5,6 +5,7 @@ import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
 import { loginHistoryLabel } from '@/types'
 import type { LoginHistoryEntry, TeamCodeRow, TeamCodesResponse } from '@/types'
+import LoginRequestsCard from './LoginRequestsCard.vue'
 
 const activeTab = ref<'codes' | 'history'>('codes')
 
@@ -239,7 +240,8 @@ onMounted(() => void refresh())
 </script>
 
 <template>
-  <div class="team-codes page-fill">
+  <div class="auth-page page-fill">
+    <LoginRequestsCard />
     <ElTabs v-model="activeTab" class="code-tabs" @tab-change="onTabChange">
       <ElTabPane label="队伍码" name="codes">
         <div class="tab-toolbar">
