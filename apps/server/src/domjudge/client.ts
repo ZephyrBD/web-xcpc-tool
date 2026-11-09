@@ -138,26 +138,56 @@ export type DjBalloon = {
 };
 
 export class DjClient {
-  private readonly baseUrl: string;
-  private readonly authHeader: string;
+  private readonly cfg: () => Config["domjudge"];
+  /** False when constructed from a plain config: URL/auth/timeout stay frozen. */
+  private readonly live: boolean;
   private readonly fetchImpl: typeof fetch;
-  private readonly timeoutMs: number;
+  private baseUrl: string;
+  private authHeader: string;
+  private timeoutMs: number;
+  /** Constructor override (tests pin a short timeout); live config never touches it. */
+  private readonly explicitTimeoutMs: number | undefined;
 
-  constructor(cfg: Config["domjudge"], fetchImpl?: typeof fetch, timeoutMs?: number) {
-    this.baseUrl = cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/";
+  /**
+   * `cfg` may be a live getter (the runtime config store) so DOMjudge URL and
+   * credentials edits apply without a restart; a plain object is frozen.
+   * `timeoutMs` is the URL/auth-independent timeout (overrides any getter).
+   */
+  constructor(cfg: Config["domjudge"] | (() => Config["domjudge"]), fetchImpl?: typeof fetch, timeoutMs?: number) {
+    const initial = typeof cfg === "function" ? cfg() : cfg;
+    this.cfg = typeof cfg === "function" ? cfg : () => initial;
+    this.live = typeof cfg === "function";
+    this.baseUrl = initial.baseUrl.replace(/\/+$/, "") + "/api/v4/";
     this.authHeader =
-      "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64");
+      "Basic " + Buffer.from(`${initial.adminUser}:${initial.adminPassword}`).toString("base64");
     this.fetchImpl = fetchImpl ?? fetch;
     this.timeoutMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.explicitTimeoutMs = timeoutMs;
+  }
+
+  /**
+   * Re-derive URL/credentials/timeout from the live config (or once, for a
+   * plain-config client). Called per request — cheap: one concat + base64 — so
+   * a settings PUT is visible on the very next API call. An explicit
+   * constructor `timeoutMs` always wins over the config value.
+   */
+  private sync(): { baseUrl: string; authHeader: string; timeoutMs: number } {
+    if (this.live) {
+      const cfg = this.cfg();
+      this.baseUrl = cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/";
+      this.authHeader = "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64");
+    }
+    return { baseUrl: this.baseUrl, authHeader: this.authHeader, timeoutMs: this.timeoutMs };
   }
 
   private async get<T>(path: string): Promise<T> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
-        headers: { Authorization: this.authHeader, Accept: "application/json" },
-        signal: AbortSignal.timeout(this.timeoutMs),
+        headers: { Authorization: authHeader, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);
@@ -169,18 +199,19 @@ export class DjClient {
   }
 
   private async patch(path: string, body: unknown): Promise<unknown> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
         method: "PATCH",
         headers: {
-          Authorization: this.authHeader,
+          Authorization: authHeader,
           Accept: "application/json",
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);
@@ -196,18 +227,19 @@ export class DjClient {
   }
 
   private async post(path: string, body?: unknown): Promise<unknown> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
         method: "POST",
         headers: {
-          Authorization: this.authHeader,
+          Authorization: authHeader,
           Accept: "application/json",
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);

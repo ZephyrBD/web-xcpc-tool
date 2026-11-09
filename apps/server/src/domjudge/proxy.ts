@@ -5,6 +5,11 @@ import { verifyTeamToken } from "../auth/token";
 import { upstreamErrorPage } from "../pages/teamPages";
 import type { TeamStore } from "../store/teams";
 
+/** A config snapshot, or a getter for the live one (runtime config store). */
+export type ConfigSource = Config | (() => Config);
+
+const snapshot = (src: ConfigSource): Config => (typeof src === "function" ? src() : src);
+
 const HOP_BY_HOP = new Set([
   "host",
   "connection",
@@ -160,6 +165,8 @@ async function forwardToDj(
 }
 
 export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamStore): Promise<Response> {
+  // One snapshot per request: the store may be swapped mid-flight by a
+  // settings PUT, and a half-old/half-new combination would mismatch paths.
   const token = getCookie(c.req.header("cookie"), "cxtool-token");
   const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
   if (!payload) {
@@ -179,7 +186,8 @@ export async function handleDjProxy(c: Context, cfg: Config, teamStore?: TeamSto
  * with the same team-token semantics as /dj/*: a valid team cookie is
  * forwarded upstream, anything else is sent to the team verify page.
  */
-export async function handleRootDjProxy(req: Request, cfg: Config, teamStore?: TeamStore): Promise<Response> {
+export async function handleRootDjProxy(req: Request, src: ConfigSource, teamStore?: TeamStore): Promise<Response> {
+  const cfg = snapshot(src);
   const token = getCookie(req.headers.get("cookie"), "cxtool-token");
   const payload = token ? await verifyTeamToken(cfg.jwt.secret, token) : null;
   if (!payload) {
@@ -220,11 +228,14 @@ type HonoLike = { fetch: (req: Request) => Promise<Response> | Response };
  */
 export function makeRootDispatch(
   serving: HonoLike,
-  cfg: Config,
+  src: ConfigSource,
   teamStore?: TeamStore,
 ): (req: Request) => Promise<Response> {
-  const prefix = cfg.contextPath.replace(/\/+$/, "");
   return async (req) => {
+    // Read per request (a getter follows the live contextPath); one snapshot
+    // per request so the prefix check and the proxy agree on the same config.
+    const cfg = snapshot(src);
+    const prefix = cfg.contextPath.replace(/\/+$/, "");
     const path = new URL(req.url).pathname;
     if (prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
       return serving.fetch(req);

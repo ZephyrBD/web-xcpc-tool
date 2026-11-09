@@ -35,7 +35,7 @@ function mockFetch() {
     if (method === 'PUT' && path === '/admin/api/settings') {
       const body = JSON.parse(String(init?.body))
       putCalls.push({ path, body })
-      return new Response(JSON.stringify({ ...settingsView, note: '已保存，重启服务后生效' }), {
+      return new Response(JSON.stringify({ ...settingsView, note: '已保存，立即生效' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })

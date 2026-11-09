@@ -55,13 +55,15 @@ export function clientIpOf(c: Context, deps?: Partial<Deps>): string {
   );
 }
 
+/**
+ * `cfg` is a getter rather than a snapshot so username/password/jwt.secret and
+ * contextPath edits apply immediately (runtime config store).
+ */
 export function createAdminLoginHandler(
-  cfg: Config,
+  cfg: () => Config,
   deps?: Partial<Deps>,
   limiter: LoginRateLimiter = new LoginRateLimiter(),
 ): MiddlewareHandler {
-  const cookiePath = `${cfg.contextPath.replace(/\/+$/, "")}/`;
-
   return async (c) => {
     const ip = clientIpOf(c, deps);
     if (limiter.isBlocked(ip)) {
@@ -74,20 +76,24 @@ export function createAdminLoginHandler(
       limiter.recordFailure(ip);
       return c.json({ error: LOGIN_FAILED }, 401);
     };
-    if (!cfg.admin.passwordHash) {
+    if (!cfg().admin.passwordHash) {
       limiter.recordFailure(ip);
       return c.json({ error: LOGIN_UNAVAILABLE }, 401);
     }
-    if (username !== cfg.admin.username) return fail();
-    if (!(await compare(password, cfg.admin.passwordHash))) return fail();
-    const token = await signAdminToken(cfg.jwt.secret, cfg.admin.sessionTtlSeconds, username);
+    const current = cfg();
+    if (username !== current.admin.username) return fail();
+    if (!(await compare(password, current.admin.passwordHash))) return fail();
+    const token = await signAdminToken(current.jwt.secret, current.admin.sessionTtlSeconds, username);
+    // Cookie path follows the live contextPath (read after the await so a
+    // concurrent settings PUT is already visible).
+    const cookiePath = `${cfg().contextPath.replace(/\/+$/, "")}/`;
     c.header("Set-Cookie", `${ADMIN_COOKIE}=${token}; Path=${cookiePath}; HttpOnly; SameSite=Strict`);
     return c.json({ token });
   };
 }
 
 /** Auth for every /admin/api/* route except POST /admin/api/login. */
-export function requireAdmin(cfg: Config): MiddlewareHandler {
+export function requireAdmin(cfg: () => Config): MiddlewareHandler {
   return async (c, next) => {
     if (c.req.method === "POST" && c.req.path === "/admin/api/login") {
       return next();
@@ -100,7 +106,7 @@ export function requireAdmin(cfg: Config): MiddlewareHandler {
     if (!token && c.req.method === "GET" && c.req.path === "/admin/api/events") {
       token = c.req.query("token") ?? "";
     }
-    const payload = token ? await verifyAdminToken(cfg.jwt.secret, token) : null;
+    const payload = token ? await verifyAdminToken(cfg().jwt.secret, token) : null;
     if (!payload) return c.json({ error: UNAUTHORIZED }, 401);
     await next();
   };

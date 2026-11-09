@@ -94,7 +94,7 @@ async function save(): Promise<void> {
     form.adminPassword = ''
     form.adminPasswordConfirm = ''
     await refresh()
-    ElMessage.success('已保存，重启服务后生效（新登录密码也需重启后才会启用）')
+    ElMessage.success('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
   } catch {
     ElMessage.error('保存没成功，请检查填写内容后再试')
   } finally {

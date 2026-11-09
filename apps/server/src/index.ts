@@ -14,6 +14,7 @@ import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
 import { getVersionInfo } from "./version";
+import { ConfigStore } from "./store/configStore";
 
 /**
  * Single data root, relative to the process cwd (so `bun run dev` in
@@ -43,12 +44,18 @@ cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
 cfg.admin = adminCfg.admin;
 
+// Runtime config store: every request reads `configStore.current`, and the
+// admin settings PUT calls replace() so edits apply without a restart.
+// Long-lived services (e.g. balloon polling) hook replace() through onChange.
+const configStore = new ConfigStore(cfg);
+
 // Absolute, so resolvePath returns store paths untouched (no second join).
 setDataDir(STORE_DIR);
 
 const bus = new SseBus();
 const printQueue = new PrintQueue(storePath("print-tasks.json"));
-const djClient = new DjClient(cfg.domjudge, undefined, cfg.domjudge.timeoutSeconds * 1000);
+// A getter keeps DOMjudge URL/credentials/timeout in step with the store.
+const djClient = new DjClient(() => configStore.current.domjudge);
 const teamsStore = new JsonStore<DjTeam[]>(storePath("teams.json"), []);
 const teamStore = new TeamStore(
   storePath("team-passwords.json"),
@@ -65,7 +72,7 @@ const balloonService = new BalloonService({
 });
 
 let server: Bun.Server<never> | null = null;
-const app = createApp(cfg, {
+const app = createApp(configStore, {
   dataDir: STORE_DIR,
   bus,
   printQueue,
@@ -75,12 +82,15 @@ const app = createApp(cfg, {
   balloonService,
   server: { requestIP: (req) => server?.requestIP(req) ?? null },
 });
+// Mounting and the port are fixed at boot: Hono routes and Bun.serve cannot be
+// re-pointed at runtime, so a contextPath/port edit needs a restart (the admin
+// settings page warns about this). Everything else hot-reloads.
 const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
 
 // Everything outside the admin contextPath is reverse-proxied straight to
 // DOMjudge with the same team-token semantics as /dj/*; the admin UI keeps
 // its own prefix untouched.
-const fetch_ = makeRootDispatch(serving, cfg, teamStore);
+const fetch_ = makeRootDispatch(serving, () => configStore.current, teamStore);
 const fetchWithLegacyRedirect = (req: Request) =>
   legacyContextPathRedirect(cfg.contextPath, req) ?? fetch_(req);
 
@@ -94,7 +104,7 @@ const redirectToContextPath = (req: Request): Response | null => {
     return null;
   }
   const rest = url.pathname.slice(LEGACY_PREFIX.length);
-  const target = `${cfg.contextPath.replace(/\/+$/, "")}${rest}` || "/";
+  const target = `${configStore.current.contextPath.replace(/\/+$/, "")}${rest}` || "/";
   return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
 };
 

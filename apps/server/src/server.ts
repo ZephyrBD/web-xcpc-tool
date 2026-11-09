@@ -22,6 +22,7 @@ import { appPath } from "./domjudge/proxy";
 import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPage } from "./pages/teamPages";
 import { signTeamToken } from "./auth/token";
 import { LoginRequestStore } from "./auth/loginRequests";
+import { ConfigStore } from "./store/configStore";
 
 export type Deps = {
   dataDir: string;
@@ -64,7 +65,17 @@ export function resolveStaticDir(opts?: {
   return resolve(cwdDir);
 }
 
-export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
+/**
+ * `cfg` may be a plain Config (tests, scripts: frozen for the app's lifetime)
+ * or a ConfigStore, whose `current` is re-read on every request so admin
+ * settings edits apply without a restart. Pass a ConfigStore to enable hot
+ * reload — a plain Config is wrapped once and never replaced.
+ */
+export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): Hono {
+  const configStore = config instanceof ConfigStore ? config : new ConfigStore(config);
+  // Always the live values: contextPath/baseUrl/teamLogin/jwt.secret may all
+  // change at runtime, so nothing derived from it is hoisted out of a handler.
+  const cfg = (): Config => configStore.current;
   // Absolute, matching index.ts: everything derived here is joined onto it, so
   // a relative default would let JsonStore join a second time (data/data/).
   const dataDir = resolve(deps?.dataDir ?? "data");
@@ -86,7 +97,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
+  /** Root path for DOMjudge routes under the *current* contextPath. */
+  const djRoot = (): string => `${cfg().contextPath.replace(/\/+$/, "")}/dj`;
 
   /**
    * A `next` target is honored only as an absolute-path relative URL:
@@ -108,9 +120,9 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     // No code in the URL → the team types it on the form page.
     if (raw === undefined || raw.trim() === "") {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
-      return verifyFormPage(cfg.contextPath, hint, next, cfg.teamLogin);
+      return verifyFormPage(cfg().contextPath, hint, next, cfg().teamLogin);
     }
-    const result = await verifyTeamCode(raw.trim(), teamStore, cfg, new Date(), loginRequests, {
+    const result = await verifyTeamCode(raw.trim(), teamStore, cfg(), new Date(), loginRequests, {
       ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
       teamNameOf: (icpcId) => {
         const team = teamsStore.load().find((t) => teamAccountKey(t) === icpcId);
@@ -124,7 +136,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
       // HTTP status codes keep their semantics (403 on both failures).
       if (result.reason === "waiting") {
-        return verifyWaitingPage(cfg.contextPath, result.request.id, next);
+        return verifyWaitingPage(cfg().contextPath, result.request.id, next);
       }
       // With the approval flow wired, a closed window has already looked the
       // code up: not-found lands here and shows the (unchanged) miss page,
@@ -144,16 +156,16 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       "Set-Cookie",
       `cxtool-token=${result.token}; Path=/; HttpOnly; SameSite=Lax`,
     );
-    return c.redirect(next ?? `${djRoot}/`, 302);
+    return c.redirect(next ?? `${djRoot()}/`, 302);
   });
 
   // Waiting page for an existing approval request (shared link / manual revisit).
   app.get("/dj/verify/wait", (c) => {
     const id = c.req.query("req") ?? "";
     if (!loginRequests.get(id)) {
-      return verifyFormPage(cfg.contextPath, "登录请求不存在或已过期，请重新输入队伍码", null, cfg.teamLogin);
+      return verifyFormPage(cfg().contextPath, "登录请求不存在或已过期，请重新输入队伍码", null, cfg().teamLogin);
     }
-    return verifyWaitingPage(cfg.contextPath, id, safeNext(c.req.query("next")));
+    return verifyWaitingPage(cfg().contextPath, id, safeNext(c.req.query("next")));
   });
 
   // Polled by the waiting page's inline JS; id is a server-issued uuid.
@@ -169,7 +181,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const next = safeNext(c.req.query("next"));
     const consumed = loginRequests.consume(c.req.query("req") ?? "");
     if (!consumed) return verifyClaimDeniedPage();
-    const token = await signTeamToken(cfg.jwt.secret, cfg.jwt.ttlSeconds, consumed.icpcId);
+    const token = await signTeamToken(cfg().jwt.secret, cfg().jwt.ttlSeconds, consumed.icpcId);
     loginHistory.append({
       icpcId: consumed.icpcId,
       teamCode: consumed.teamCode,
@@ -178,16 +190,19 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     });
     // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
     c.header("Set-Cookie", `cxtool-token=${token}; Path=/; HttpOnly; SameSite=Lax`);
-    return c.redirect(next ?? `${djRoot}/`, 302);
+    return c.redirect(next ?? `${djRoot()}/`, 302);
   });
 
   // Print callback must be registered BEFORE the /dj/* catch-all proxy.
-  app.post("/dj/print", (c) => handlePrintCallback(c, cfg, printQueue, dataDir));
+  app.post("/dj/print", (c) => handlePrintCallback(c, cfg(), printQueue, dataDir));
 
   // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
-  app.all("/dj/*", (c) => handleDjProxy(c, cfg, teamStore));
+  // The config is read once per request: ConfigStore may swap it mid-flight,
+  // and a half-old/half-new snapshot would mix e.g. two contextPaths.
+  app.all("/dj/*", (c) => handleDjProxy(c, cfg(), teamStore));
 
   // Admin login is registered before the /admin/api/* middleware, which skips it explicitly.
+  // Both read the live config per request (auth/contextPath can change).
   app.post("/admin/api/login", createAdminLoginHandler(cfg, deps));
   app.use("/admin/api/*", requireAdmin(cfg));
 
@@ -320,7 +335,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
   });
 
   app.get("/admin/api/settings", (c) => {
-    return c.json(safeSettingsView(cfg));
+    return c.json(safeSettingsView(cfg()));
   });
 
   app.put("/admin/api/settings", async (c) => {
@@ -334,15 +349,18 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     if (newPassword !== undefined && newPassword !== "" && newPassword.trim() === "") {
       return c.json({ error: "密码不能是空白字符，请输入至少 6 个非空白字符" }, 400);
     }
-    let updated;
+    let updated: Config;
     try {
-      updated = applySettingsPatch(cfg, parsed.data, settingsPathFor(dataDir));
+      updated = applySettingsPatch(cfg(), parsed.data, settingsPathFor(dataDir));
     } catch (err) {
       console.error("settings update failed:", err instanceof Error ? err.message : err);
       return c.json({ error: "保存失败，请稍后重试" }, 500);
     }
+    // Hot reload: the file is already written above, so a failing listener must
+    // never turn a successful save into an error response (ConfigStore logs it).
+    configStore.replace(updated);
     // Password fields are write-only and never echoed back.
-    return c.json({ ...safeSettingsView(updated), note: "已保存，重启服务后生效" });
+    return c.json({ ...safeSettingsView(updated), note: "已保存，立即生效" });
   });
 
   /** Teams joined with their login codes. Only teams holding a code are listed;
@@ -575,7 +593,7 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       // Validate the decoded form (URL-encoded traversal like %2e%2e must not
       // survive decoding into a ".." segment); also reject raw suspicious
       // sequences in case decoding already happened upstream.
-      const raw = appPath(c, cfg);
+      const raw = appPath(c, cfg());
       if (/(^|\/)\.\.?(\/|$)/.test(raw) || /%2e|%2f|%5c/i.test(raw)) {
         return c.json({ ok: false, reason: "forbidden" }, 403);
       }

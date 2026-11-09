@@ -16,6 +16,7 @@ import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
 import { verifyTeamToken } from "./auth/token";
 import { LoginRequestStore } from "./auth/loginRequests";
+import { ConfigStore } from "./store/configStore";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
@@ -188,6 +189,105 @@ describe("login approval flow (outside the login window)", () => {
     const res = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(loginRequests.listAll().length).toBe(0);
+  });
+});
+
+describe("settings hot reload", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-hot-reload-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test("a PUT that closes the login window takes effect on the same app instance", async () => {
+    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const app = createApp(cfg, { dataDir, teamStore, loginRequests });
+
+    // Window open: the valid code logs in directly.
+    const open = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(open.status).toBe(302);
+    expect(loginRequests.listAll().length).toBe(0);
+
+    // Close the window in the past through the admin API (same instance).
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ teamLogin: { start: "", end: "2000-01-01T00:00:00Z" } }),
+    });
+    expect(put.status).toBe(200);
+    expect((await put.json() as { note?: string }).note).toBe("已保存，立即生效");
+
+    const closed = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(closed.status).toBe(200);
+    expect(await closed.text()).toContain("等待管理员审批");
+    expect(loginRequests.listPending().length).toBe(1);
+
+    // GET reflects the live values too.
+    const view = await (await app.request("/admin/api/settings", { headers: await adminAuthHeaders(cfg) })).json();
+    expect((view as { teamLogin: unknown }).teamLogin).toEqual({ start: "", end: "2000-01-01T00:00:00Z" });
+  });
+
+  test("a ConfigStore passed to createApp is updated in place by a PUT", async () => {
+    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
+    const store = new ConfigStore(cfg);
+    const app = createApp(store, { dataDir });
+    const changes: string[] = [];
+    store.onChange((next) => changes.push(next.teamLogin.end));
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ teamLogin: { end: "2001-01-01T00:00:00Z" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.teamLogin.end).toBe("2001-01-01T00:00:00Z");
+    expect(changes).toEqual(["2001-01-01T00:00:00Z"]);
+  });
+
+  test("replacing print.token hot-reloads the print callback auth", async () => {
+    const cfg = { ...loadConfigWithSecret(), contextPath: "", print: { token: "old-token" } };
+    const app = createApp(cfg, { dataDir });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ print: { token: "new-token" } }),
+    });
+    expect(put.status).toBe(200);
+
+    const form = () => {
+      const fd = new FormData();
+      fd.set("file", new File([Buffer.from("%PDF-1.4 test")], "a.pdf"));
+      return fd;
+    };
+    const stale = await app.request("/dj/print", { method: "POST", headers: { "org.domjudge.print-token": "old-token" }, body: form() });
+    expect(stale.status).toBe(403);
+    const fresh = await app.request("/dj/print", { method: "POST", headers: { "org.domjudge.print-token": "new-token" }, body: form() });
+    expect(fresh.status).toBe(200);
+  });
+
+  test("an admin password change is usable for login on the same instance", async () => {
+    const cfg = { ...loadConfigWithSecret(), contextPath: "", admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 } };
+    const app = createApp(cfg, { dataDir });
+    // No hash configured yet → bootstrap one via PUT with a known password.
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(cfg),
+      body: JSON.stringify({ admin: { password: "brand-new-pass", username: "chief" } }),
+    });
+    expect(put.status).toBe(200);
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "chief", password: "brand-new-pass" }),
+    });
+    expect(login.status).toBe(200);
   });
 });
 

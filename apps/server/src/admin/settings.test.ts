@@ -84,7 +84,7 @@ describe("settings routes", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.note).toBe("已保存，重启服务后生效");
+    expect(body.note).toBe("已保存，立即生效");
     const text = JSON.stringify(body);
     expect(text).not.toContain("real-pass");
 
