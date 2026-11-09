@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElButton, ElInput, ElMessage } from 'element-plus'
 import { apiFetch } from '@/api'
 import { serverMessage } from '@/lib/apiError'
@@ -42,6 +42,10 @@ const form = reactive({
 const loading = ref(false)
 const saving = ref(false)
 const purging = ref(false)
+/** 至少成功读到过一次配置：没读到就不允许保存，免得把表单默认值（空 Base URL 等）PUT 回去。 */
+const loaded = ref(false)
+/** 最近一次成功刷新的错误：刷新失败不清空编辑，只提示操作员手动刷新。 */
+const refreshError = ref('')
 /** 服务端判定比赛 ID 已写入（写一次后锁定），输入框改为只读。 */
 const contestLocked = ref(false)
 /** 保存失败时服务端返回的中文说明，原样展示，不吞成通用文案。 */
@@ -50,46 +54,105 @@ const printTokenMasked = ref('')
 const adminPasswordError = ref('')
 const versionInfo = ref<NonNullable<SettingsView['version']> | null>(null)
 
-/** 清空数据的二次确认词：必须一字不差地输入才解锁按钮。 */
+/** 清空数据的二次确认词：首尾空白不算，输入「清空」才解锁按钮。 */
 const PURGE_WORD = '清空'
 const purgeConfirm = ref('')
 const purgeError = ref('')
 const purgeReport = ref<PurgeReport | null>(null)
-const purgeReady = computed(() => purgeConfirm.value === PURGE_WORD)
+const purgeReady = computed(() => purgeConfirm.value.trim() === PURGE_WORD)
 
 /** 轮询间隔必须是正整数：在提交前拦住，不把非法值丢给服务端换一个 400。 */
 const pollIntervalValid = computed(() => {
   const v = form.balloonPollIntervalSeconds
   return typeof v === 'number' && Number.isInteger(v) && v > 0
 })
+/** 只有操作员动过这个字段才提示，加载出来的值不先吓人一跳。 */
+const pollIntervalTouched = ref(false)
+const showPollIntervalError = computed(() => pollIntervalTouched.value && !pollIntervalValid.value)
 
-async function refresh(): Promise<void> {
+/** 清空后填了新比赛 ID：报告还在，但「比赛 ID 已置空」这句话已经不成立了。 */
+const purgeIdRefilled = ref(false)
+watch(
+  () => form.balloonContestId,
+  (next) => {
+    if (next.trim() !== '') purgeIdRefilled.value = true
+  },
+)
+
+/**
+ * 把表单快照下来：只和快照比较，不维护逐字段的 dirty 标记（漏标一个字段就会悄悄改掉
+ * 操作员的输入）。快照在每次拿到服务端状态时更新。
+ */
+type Snapshot = typeof form
+
+function snapshot(): Snapshot {
+  return { ...form }
+}
+
+const baseline = ref<Snapshot | null>(null)
+
+function applyBaseline(): void {
+  baseline.value = snapshot()
+  loaded.value = true
+}
+
+/**
+ * 拉取设置并合并进表单。
+ *
+ * 保存或清空后不整体覆盖表单：服务端回写的是请求体里的值，而表单里可能还有别的卡片
+ * 尚未保存的编辑。这里只覆盖「服务端已经落地」的字段，以及服务端派生、前端只读的内容
+ * （比赛 ID 锁定状态、令牌掩码、版本信息）。返回是否成功。
+ */
+async function pullSettings(options: { merge: boolean }): Promise<boolean> {
   loading.value = true
+  refreshError.value = ''
   try {
     const s = await apiFetch<SettingsView>('/admin/api/settings')
-    form.domjudgeBaseUrl = s.domjudge.baseUrl
-    form.domjudgeAdminUser = s.domjudge.adminUser
-    form.balloonContestId = s.balloon.contestId
-    form.balloonPollIntervalSeconds = s.balloon.pollIntervalSeconds
-    contestLocked.value = s.balloon.locked ?? s.balloon.contestId !== ''
-    form.adminUsername = s.admin.username
-    printTokenMasked.value = s.print.tokenMasked
-    form.teamLoginStart = isoToLocalInput(s.teamLogin?.start ?? '')
-    form.teamLoginEnd = isoToLocalInput(s.teamLogin?.end ?? '')
-    versionInfo.value = s.version ?? null
+    applySettings(s, options.merge ? baseline.value : null)
+    return true
   } catch (e) {
-    ElMessage.error(serverMessage(e, '设置加载失败，请刷新重试'))
+    refreshError.value = serverMessage(e, '设置加载失败，请刷新重试')
+    ElMessage.error(refreshError.value)
+    return false
   } finally {
     loading.value = false
   }
 }
 
+function applySettings(s: SettingsView, keep: Snapshot | null): void {
+  const take = <K extends keyof Snapshot>(key: K, next: Snapshot[K]) => {
+    // merge 模式下，操作员改过（与快照不一致）的字段保留原样，绝不覆盖。
+    const edited = keep !== null && JSON.stringify(keep[key]) !== JSON.stringify(form[key])
+    if (!edited) form[key] = next
+  }
+  const contestId = s.balloon.contestId
+  take('domjudgeBaseUrl', s.domjudge.baseUrl)
+  take('domjudgeAdminUser', s.domjudge.adminUser)
+  take('balloonContestId', contestId)
+  take('balloonPollIntervalSeconds', s.balloon.pollIntervalSeconds)
+  take('adminUsername', s.admin.username)
+  take('teamLoginStart', isoToLocalInput(s.teamLogin?.start ?? ''))
+  take('teamLoginEnd', isoToLocalInput(s.teamLogin?.end ?? ''))
+
+  // 服务端派生、前端只读的字段：始终以服务端为准。
+  contestLocked.value = s.balloon.locked ?? contestId !== ''
+  printTokenMasked.value = s.print.tokenMasked
+  versionInfo.value = s.version ?? null
+
+  applyBaseline()
+}
+
+function refresh(): Promise<boolean> {
+  return pullSettings({ merge: false })
+}
+
 async function save(): Promise<void> {
-  // 清空结果只服务于「刚清空完」的那次配置；一旦再保存，它就不再代表当前状态。
-  purgeReport.value = null
-  purgeError.value = ''
+  if (!loaded.value) return
   saveError.value = ''
-  if (!pollIntervalValid.value) return
+  if (!pollIntervalValid.value) {
+    pollIntervalTouched.value = true
+    return
+  }
   if (form.adminPassword !== form.adminPasswordConfirm) {
     adminPasswordError.value = '两次输入的新密码不一致，请检查后重新输入'
     return
@@ -130,7 +193,12 @@ async function save(): Promise<void> {
     form.printToken = ''
     form.adminPassword = ''
     form.adminPasswordConfirm = ''
-    await refresh()
+    // 清空结果只服务于「刚清空完」的那次配置；保存成功后它就不再代表当前状态。
+    purgeReport.value = null
+    purgeError.value = ''
+    purgeIdRefilled.value = false
+    // 只同步服务端派生状态（锁定、掩码、版本），不重读表单：别的卡片里还没保存的编辑必须留着。
+    await pullSettings({ merge: true })
     ElMessage.success('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
   } catch (e) {
     // 403 锁定的说明必须原样展示：管理员要据此知道先清空数据才能换比赛。
@@ -146,19 +214,23 @@ async function purge(): Promise<void> {
   if (!purgeReady.value || purging.value) return
   purgeError.value = ''
   purgeReport.value = null
+  purgeIdRefilled.value = false
   purging.value = true
   try {
     purgeReport.value = await apiFetch<PurgeReport>('/admin/api/data/purge', { method: 'POST' })
     purgeConfirm.value = ''
     ElMessage.success('数据已清空，比赛 ID 已解锁')
-    // 立刻按服务端的最新状态重渲染（比赛 ID 已置空、解锁）；清空条数渲染在
-    // 锁定区之外，刷新后仍然可见。
-    await refresh()
   } catch (e) {
+    // 只有清空请求本身失败才算「清空没成功」。
     purgeError.value = serverMessage(e, '清空没成功，请稍后再试')
-  } finally {
     purging.value = false
+    return
   }
+  // 清空已成功：随后按最新状态重渲染（比赛 ID 已置空、解锁）。刷新失败是另一回事，
+  // 由 pullSettings 自己提示，绝不能反过来把清空说成失败。
+  const refreshed = await pullSettings({ merge: false })
+  if (!refreshed) refreshError.value = '已清空，但页面刷新失败，请手动刷新'
+  purging.value = false
 }
 
 /** ISO datetime → value for <input type="datetime-local"> (local time); '' passes through. */
@@ -236,8 +308,13 @@ onMounted(() => void refresh())
         </label>
         <label class="field">
           <span class="field-label">轮询间隔（秒）</span>
-          <ElInput v-model.number="form.balloonPollIntervalSeconds" type="number" :min="1" />
-          <span v-if="!pollIntervalValid" class="field-error poll-error">轮询间隔需为正整数</span>
+          <ElInput
+            v-model.number="form.balloonPollIntervalSeconds"
+            type="number"
+            :min="1"
+            @input="pollIntervalTouched = true"
+          />
+          <span v-if="showPollIntervalError" class="field-error poll-error">轮询间隔需为正整数</span>
         </label>
 
         <div class="card-divider" role="separator"></div>
@@ -278,6 +355,9 @@ onMounted(() => void refresh())
             <label class="field">
               <span class="field-label">请输入「{{ PURGE_WORD }}」以确认</span>
               <ElInput v-model="purgeConfirm" :placeholder="`输入${PURGE_WORD}以启用按钮`" />
+              <span v-if="purgeConfirm.trim() !== '' && !purgeReady" class="purge-confirm-hint">
+                请输入「{{ PURGE_WORD }}」两个中文字，才能启用按钮
+              </span>
             </label>
             <div class="token-actions">
               <ElButton
@@ -300,7 +380,7 @@ onMounted(() => void refresh())
             {{ purgeReport.loginRequests }} 条 · 打印任务 {{ purgeReport.printTasks }} 条 · 气球任务
             {{ purgeReport.balloonTasks }} 条 · 留档文件 {{ purgeReport.filesRemoved }} 个
           </p>
-          <p class="purge-result-hint">比赛 ID 已置空，可以填写下一场比赛了。</p>
+          <p v-if="!purgeIdRefilled" class="purge-result-hint">比赛 ID 已置空，可以填写下一场比赛了。</p>
         </div>
       </section>
 
@@ -384,12 +464,13 @@ onMounted(() => void refresh())
     </div>
 
     <div class="settings-footer">
-      <ElButton type="primary" :loading="saving" @click="save">保存设置</ElButton>
+      <ElButton type="primary" :loading="saving" :disabled="!loaded" @click="save">保存设置</ElButton>
       <span class="footer-note">
         保存后立即生效；端口、访问前缀、JWT 密钥例外，修改后需重启并重新登录。
       </span>
     </div>
     <p v-if="saveError" class="field-error save-error">{{ saveError }}</p>
+    <p v-if="refreshError" class="refresh-error" role="alert">{{ refreshError }}</p>
     <p v-if="loading" class="footer-note">正在读取当前设置…</p>
 
     <section v-if="versionInfo" class="settings-card version-card" aria-label="版本信息">
@@ -608,6 +689,19 @@ onMounted(() => void refresh())
 
 .save-error {
   margin: 8px 0 0;
+}
+
+.refresh-error {
+  margin: 8px 0 0;
+  font-size: var(--text-13);
+  color: var(--danger-text);
+  line-height: 1.6;
+}
+
+.purge-confirm-hint {
+  font-size: var(--text-13);
+  color: var(--text-muted);
+  line-height: 1.6;
 }
 
 .version-line {

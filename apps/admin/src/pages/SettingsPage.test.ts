@@ -42,6 +42,9 @@ let putCalls: Array<{ path: string; body: unknown }> = []
 let purgeCalls: Array<{ method: string; path: string }> = []
 let putError: { status: number; body: unknown } | null = null
 let purgeError: { status: number; body: unknown } | null = null
+/** Non-null makes GET /admin/api/settings fail with this body/status. */
+let getError: { status: number; body: unknown } | null = null
+let getCalls = 0
 let purgeReport = {
   teams: 3,
   passwords: 2,
@@ -57,15 +60,48 @@ let originalFetch: typeof fetch | null = null
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
+/** Applies a settings patch to the mocked view, mirroring what the server would keep. */
+function mergeIntoView(view: ReturnType<typeof defaultView>, patch: Record<string, any>) {
+  const next = structuredClone(view) as ReturnType<typeof defaultView>
+  if (patch.domjudge) {
+    next.domjudge = {
+      ...next.domjudge,
+      ...(patch.domjudge.baseUrl !== undefined ? { baseUrl: patch.domjudge.baseUrl } : {}),
+      ...(patch.domjudge.adminUser !== undefined ? { adminUser: patch.domjudge.adminUser } : {}),
+    }
+  }
+  if (patch.balloon) {
+    next.balloon = {
+      ...next.balloon,
+      ...(patch.balloon.contestId !== undefined ? { contestId: patch.balloon.contestId } : {}),
+      ...(patch.balloon.pollIntervalSeconds !== undefined
+        ? { pollIntervalSeconds: patch.balloon.pollIntervalSeconds }
+        : {}),
+    }
+    next.balloon.locked = !!next.balloon.contestId
+  }
+  if (patch.teamLogin) next.teamLogin = { ...patch.teamLogin }
+  if (patch.admin?.username !== undefined) next.admin = { ...next.admin, username: patch.admin.username }
+  if (patch.print?.token) next.print = { tokenMasked: `${patch.print.token.slice(0, 4)}***` }
+  return next
+}
+
 function mockFetch() {
   originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(url), 'http://localhost').pathname.replace(/^\/wxt/, '')
     const method = init?.method ?? 'GET'
-    if (method === 'GET' && path === '/admin/api/settings') return json(settingsView)
+    if (method === 'GET' && path === '/admin/api/settings') {
+      getCalls += 1
+      if (getError) return json(getError.body, getError.status)
+      return json(settingsView)
+    }
     if (method === 'PUT' && path === '/admin/api/settings') {
-      putCalls.push({ path, body: JSON.parse(String(init?.body)) })
+      const body = JSON.parse(String(init?.body))
+      putCalls.push({ path, body })
       if (putError) return json(putError.body, putError.status)
+      // 服务端会保存这次 PUT 的内容：后续 GET 反映的是它，而不是 mock 的旧视图。
+      settingsView = mergeIntoView(settingsView, body)
       return json({ ...settingsView, note: '已保存，立即生效（端口与访问前缀例外，修改后需重启）' })
     }
     if (method === 'POST' && path === '/admin/api/data/purge') {
@@ -135,6 +171,13 @@ function pollIntervalInput(wrapper: Wrapper) {
   return input
 }
 
+/** DOMjudge 连接卡片里的 Base URL 输入框。 */
+function domjudgeBaseUrlInput(wrapper: Wrapper) {
+  const card = wrapper.findAll('.settings-card').find((c) => c.text().includes('拼接规则'))
+  if (!card) throw new Error('DOMjudge card not found')
+  return card.findAll('input')[0]!
+}
+
 function formToken(wrapper: Wrapper): string {
   // 打印令牌排在 DOMjudge 管理员密码之后。
   return (wrapper.findAll('input[type="password"]')[1]!.element as HTMLInputElement).value
@@ -148,12 +191,8 @@ async function purgeNow(wrapper: Wrapper): Promise<void> {
   for (let i = 0; i < 6; i++) await flush()
 }
 
-/** A locked page keeps the purge block mounted, so counts and errors stay readable. */
-async function purgePreservingUi(wrapper: Wrapper): Promise<void> {
-  await purgeConfirmInput(wrapper).setValue('清空')
-  await flush()
-  await findButton(wrapper, purgeButtonText).trigger('click')
-  await flush()
+async function setPollInterval(wrapper: Wrapper, value: string): Promise<void> {
+  await pollIntervalInput(wrapper).setValue(value)
   await flush()
 }
 
@@ -174,6 +213,8 @@ describe('SettingsPage', () => {
       loginRequests: 1,
       filesRemoved: 7,
     }
+    getError = null
+    getCalls = 0
     messageMock.error.mockClear()
     messageMock.success.mockClear()
     mockFetch()
@@ -511,18 +552,24 @@ describe('SettingsPage', () => {
     expect(resultText).toContain('留档文件 7 个')
   })
 
-  test('the purge report follows the first save after a purge and clears on the next save', async () => {
+  test('the “比赛 ID 已置空” hint disappears as soon as a new id is typed', async () => {
+    const wrapper = await mountReady()
+    await purgeNow(wrapper)
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(true)
+
+    await contestInput(wrapper).setValue('next-contest')
+    await flush()
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(false)
+    // 条数仍然保留，只是不再声称「已置空」。
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+  })
+
+  test('the purge report clears on the next successful save', async () => {
     const wrapper = await mountReady()
     await purgeNow(wrapper)
     expect(wrapper.find('.purge-result').exists()).toBe(true)
 
-    // 清空后保存一次新比赛 ID：旧的清空结果不该继续挂在新配置上。
-    settingsView = {
-      ...settingsView,
-      balloon: { contestId: '', pollIntervalSeconds: 30, locked: false },
-    }
     await contestInput(wrapper).setValue('c9')
-    putError = null
     await saveButton(wrapper).trigger('click')
     await flush()
     await flush()
@@ -530,10 +577,108 @@ describe('SettingsPage', () => {
     expect(wrapper.find('.purge-result').exists()).toBe(false)
   })
 
+  test('a blocked save keeps the purge counts on screen', async () => {
+    const wrapper = await mountReady()
+    await purgeNow(wrapper)
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+
+    // 校验失败：请求根本没发出去，清空结果不该被抹掉。
+    await setPollInterval(wrapper, '0')
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(0)
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+  })
+
+  test('a failed save keeps the purge counts on screen', async () => {
+    const wrapper = await mountReady()
+    await purgeNow(wrapper)
+    putError = { status: 500, body: { error: '保存失败，请稍后重试' } }
+
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(1)
+    expect(wrapper.find('.save-error').text()).toContain('保存失败，请稍后重试')
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+  })
+
+  test('a successful purge whose refresh fails says so instead of blaming the purge', async () => {
+    const wrapper = await mountReady()
+    await purgeConfirmInput(wrapper).setValue('清空')
+    await flush()
+    getError = { status: 500, body: { error: '设置读取失败，请稍后重试' } }
+    await findButton(wrapper, purgeButtonText).trigger('click')
+    for (let i = 0; i < 6; i++) await flush()
+
+    expect(purgeCalls.length).toBe(1)
+    // 清空本身成功了：条数和成功提示都在，清空区不该出现「清空没成功」。
+    expect(messageMock.success).toHaveBeenCalledWith('数据已清空，比赛 ID 已解锁')
+    expect(wrapper.find('.purge-result').exists()).toBe(true)
+    expect(wrapper.find('.purge-block .field-error').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('清空没成功')
+    // 刷新失败的提示挂在页面级提示上，并说明要手动刷新。
+    expect(wrapper.find('.refresh-error').text()).toContain('已清空，但页面刷新失败，请手动刷新')
+  })
+
+  // ---- HIGH: a successful save must never discard an unsaved edit elsewhere ----
+
+  test('save → edit again → save sends the second value (not the first)', async () => {
+    const wrapper = await mountReady()
+    await domjudgeBaseUrlInput(wrapper).setValue('http://dj.first')
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    await domjudgeBaseUrlInput(wrapper).setValue('http://dj.second')
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    expect(putCalls.length).toBe(2)
+    const first = putCalls[0]!.body as Record<string, Record<string, unknown>>
+    const second = putCalls[1]!.body as Record<string, Record<string, unknown>>
+    expect(first.domjudge.baseUrl).toBe('http://dj.first')
+    expect(second.domjudge.baseUrl).toBe('http://dj.second')
+  })
+
+  test('an unsaved edit in another card survives a save', async () => {
+    const wrapper = await mountReady()
+    await setPollInterval(wrapper, '45')
+    // 另一次保存（改的是 DOMjudge 的 Base URL）不能把还没保存的轮询间隔改回旧值。
+    await domjudgeBaseUrlInput(wrapper).setValue('http://dj.new')
+    await saveButton(wrapper).trigger('click')
+    for (let i = 0; i < 4; i++) await flush()
+
+    expect((pollIntervalInput(wrapper).element as HTMLInputElement).value).toBe('45')
+
+    // 再点一次保存，服务端拿到的也必须是操作员填的值。
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+    const body = putCalls[putCalls.length - 1]!.body as Record<string, Record<string, unknown>>
+    expect(body.balloon.pollIntervalSeconds).toBe(45)
+  })
+
+  test('an unsaved login-window edit survives a save of the DOMjudge card', async () => {
+    const wrapper = await mountReady()
+    await wrapper.findAll('input[type="datetime-local"]')[0]!.setValue('2026-11-08T09:30')
+    await domjudgeBaseUrlInput(wrapper).setValue('http://dj.other')
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    const datetimes = wrapper.findAll('input[type="datetime-local"]')
+    expect((datetimes[0]!.element as HTMLInputElement).value).toBe('2026-11-08T09:30')
+  })
+
   test('a failed purge shows the server Chinese error, never a generic one', async () => {
     purgeError = { status: 500, body: { error: '清空数据失败，已清空部分数据，请再次点击清空' } }
     const wrapper = await mountReady()
-    await purgePreservingUi(wrapper)
+    await purgeNow(wrapper)
 
     expect(wrapper.find('.purge-block .field-error').text()).toContain(
       '清空数据失败，已清空部分数据，请再次点击清空',
@@ -543,8 +688,7 @@ describe('SettingsPage', () => {
   test('a non-integer poll interval is blocked inline and skips the PUT', async () => {
     const wrapper = await mountReady()
     for (const value of ['0', '-5', '2.5', '']) {
-      await pollIntervalInput(wrapper).setValue(value)
-      await flush()
+      await setPollInterval(wrapper, value)
       expect(wrapper.find('.poll-error').text()).toContain('轮询间隔需为正整数')
     }
     await saveButton(wrapper).trigger('click')
@@ -555,10 +699,20 @@ describe('SettingsPage', () => {
     expect(messageMock.success).not.toHaveBeenCalled()
   })
 
+  test('the poll interval hint stays hidden until the operator touches the field', async () => {
+    const wrapper = await mountReady()
+    expect(wrapper.find('.poll-error').exists()).toBe(false)
+
+    await setPollInterval(wrapper, '0')
+    expect(wrapper.find('.poll-error').exists()).toBe(true)
+
+    await setPollInterval(wrapper, '30')
+    expect(wrapper.find('.poll-error').exists()).toBe(false)
+  })
+
   test('a positive integer poll interval saves normally', async () => {
     const wrapper = await mountReady()
-    await pollIntervalInput(wrapper).setValue('45')
-    await flush()
+    await setPollInterval(wrapper, '45')
     expect(wrapper.find('.poll-error').exists()).toBe(false)
 
     await saveButton(wrapper).trigger('click')
@@ -587,6 +741,39 @@ describe('SettingsPage', () => {
       '比赛 ID 已锁定，设置后不可修改；如需更换请先清空比赛数据',
     )
     expect(wrapper.text()).not.toContain('保存没成功')
+  })
+
+  test('保存设置 stays disabled until the settings load succeeded', async () => {
+    getError = { status: 500, body: { error: '设置读取失败，请稍后重试' } }
+    const wrapper = await mountReady()
+
+    expect(saveButton(wrapper).attributes('disabled')).toBeDefined()
+    await saveButton(wrapper).trigger('click')
+    await flush()
+    await flush()
+
+    // 没有读到配置就不允许把表单里的默认值（空 baseUrl 等）PUT 回去。
+    expect(putCalls.length).toBe(0)
+    expect(messageMock.error).toHaveBeenCalledWith('设置读取失败，请稍后重试')
+  })
+
+  test('the purge confirmation word is trimmed, and a wrong word gets a hint', async () => {
+    const wrapper = await mountReady()
+    const confirm = purgeConfirmInput(wrapper)
+    expect(wrapper.find('.purge-confirm-hint').exists()).toBe(false)
+
+    await confirm.setValue('清空 ')
+    await flush()
+    expect(findButton(wrapper, purgeButtonText).attributes('disabled')).toBeUndefined()
+
+    await confirm.setValue('清空空')
+    await flush()
+    expect(findButton(wrapper, purgeButtonText).attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.purge-confirm-hint').text()).toContain('请输入「清空」')
+
+    await confirm.setValue('清空')
+    await flush()
+    expect(wrapper.find('.purge-confirm-hint').exists()).toBe(false)
   })
 
   test('a 400 from PUT surfaces the server error field', async () => {
