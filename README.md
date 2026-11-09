@@ -5,9 +5,6 @@
 当前实现为 **TypeScript + Bun 单进程版本**（设计文档见 [docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md](docs/superpowers/specs/2026-11-07-ts-bun-rewrite-design.md)）。
 
 > [!NOTE]
-> 项目的早期实现已移至 `legacy/java` 分支（完整保留，可通过 `git show legacy/java:src/main/java` 查看）。主分支不再包含早期代码。
-
-> [!NOTE]
 > 外部榜单（xcpcio/board）功能已停止提供，TS 版不包含榜单数据路由。
 
 功能要点：
@@ -145,4 +142,4 @@ GitHub Actions（`.github/workflows/ci.yml`）在 push/PR 到 main 时分别跑 
 
 ## License
 
-GPL-2.0（见 [LICENSE](LICENSE)），对本仓库全部代码生效；早期实现同样保留在 `legacy/java` 分支。
+GPL-2.0（见 [LICENSE](LICENSE)），对本仓库全部代码生效。
