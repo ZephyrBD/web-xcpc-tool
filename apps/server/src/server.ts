@@ -14,7 +14,7 @@ import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
-import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
+import { createAdminLoginHandler, isSameOriginRequest, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { randomInt } from "node:crypto";import { applySettingsPatch, assertContestIdMutable, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
 import { appPath } from "./domjudge/proxy";
@@ -403,14 +403,24 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
    * Wipe every value pulled from DOMjudge and unlock the contest id: the
    * balloon poller stops (contestId is now "") and a different contest can be
    * configured. settings.json and secret.key survive — only the balloon id is
-   * reset. Gated by the /admin/api/* admin middleware.
+   * reset. Gated by the /admin/api/* admin middleware, plus a same-origin check
+   * because a cookie-authenticated destructive POST is a CSRF target.
+   *
+   * The purge is not transactional: an archive dir may already be gone while
+   * the settings rewrite fails. The error copy therefore says part of the data
+   * is gone and asks the operator to click purge again (it is safe to repeat).
    */
   app.post("/admin/api/data/purge", (c) => {
+    if (!isSameOriginRequest(c.req.raw)) {
+      return c.json({ error: "cross-origin forbidden" }, 403);
+    }
     const teamCredentials = teamStore.store as JsonStore<Record<string, unknown>>;
-    let report: PurgeReport;
+    let report: PurgeReport | null = null;
+    let partialError: unknown = null;
     try {
       report = purgePulledData({
         dataDir,
+        liveCfg: cfg(),
         teams: teamsStore,
         teamCredentials,
         printTasks: printQueue.store,
@@ -422,13 +432,16 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
         contestIdReset: (next) => configStore.replace(next),
       });
     } catch (err) {
-      console.error("data purge failed:", err instanceof Error ? err.message : err);
-      return c.json({ error: "清空数据失败，请稍后重试" }, 500);
+      partialError = err;
     }
     // The emptied id already stops reconfigure(); this also covers the case
     // where the live store was out of step with disk, and guarantees nothing
     // is scheduled when the response returns.
     deps?.balloonService?.stop();
+    if (partialError || !report) {
+      console.error("data purge failed:", partialError instanceof Error ? partialError.message : partialError);
+      return c.json({ error: "清空数据失败，已清空部分数据，请再次点击清空" }, 500);
+    }
     return c.json(report);
   });
 

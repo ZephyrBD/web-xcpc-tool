@@ -62,6 +62,51 @@ export function safeSettingsView(cfg: Config) {
 }
 
 /**
+ * The settings.json base every rewrite starts from: the file on disk when it
+ * parses (another request may have written it since this process started),
+ * otherwise a deep copy of the live config — a hand-edited or missing file
+ * must never be silently replaced by schema defaults.
+ */
+export function readConfigBase(settingsPath: string, liveCfg: Config): Record<string, unknown> {
+  if (existsSync(settingsPath)) {
+    try {
+      return JSON.parse(JSON.stringify(parseConfig(JSON.parse(readFileSync(settingsPath, "utf8"))))) as Record<string, unknown>;
+    } catch {
+      // Unparseable / schema-invalid: fall through to the live config.
+    }
+  }
+  return JSON.parse(JSON.stringify(liveCfg)) as Record<string, unknown>;
+}
+
+/**
+ * Partial settings.json guard, shared by every writer. index.ts bootstraps the
+ * admin hash and the JWT secret in memory (and usually in the file), but a file
+ * written without them parses to empty values — which locks the operator out
+ * (every login compares against "") and makes signing fail with "Zero-length
+ * key". Backfill ONLY what is empty, from the live config:
+ *
+ * - `admin`: the hash plus its banner plaintext; other admin fields (a rename,
+ *   sessionTtlSeconds) are left as written.
+ * - `jwt`: the secret; the TTL stays as written.
+ *
+ * Mutates and returns `base` for call chaining.
+ */
+export function backfillLiveSecrets(base: Record<string, unknown>, liveCfg: Config): Record<string, unknown> {
+  const current = base as unknown as Config;
+  if (!current.admin?.passwordHash && liveCfg.admin.passwordHash) {
+    base.admin = {
+      ...current.admin,
+      passwordHash: liveCfg.admin.passwordHash,
+      password: liveCfg.admin.password ?? current.admin?.password,
+    };
+  }
+  if (liveCfg.jwt.secret && !current.jwt?.secret) {
+    base.jwt = { ...current.jwt, secret: liveCfg.jwt.secret };
+  }
+  return base;
+}
+
+/**
  * Merges the patch into settings.json (only provided fields; empty-string
  * secrets are skipped) and returns the resulting parsed Config. Callers that
  * hot-reload must hand the result to `ConfigStore.replace` — writing the file
@@ -72,7 +117,7 @@ export function safeSettingsView(cfg: Config) {
  * when the merged result has no admin hash but the process has one — e.g. the
  * file was generated without an admin block and the hash was bootstrapped at
  * startup — the live block wins, so an unrelated PUT can never lock the
- * operator out.
+ * operator out. It defaults to `cfg.admin` (see backfillLiveSecrets).
  */
 export function applySettingsPatch(
   cfg: Config,
@@ -80,21 +125,7 @@ export function applySettingsPatch(
   settingsPath: string,
   liveAdmin?: Config["admin"],
 ): Config {
-  // Prefer the settings on disk (another PUT may have written them since this
-  // process started); fall back to the running config if the file is missing
-  // or hand-edited into a shape the schema rejects.
-  let base: Record<string, unknown>;
-  if (existsSync(settingsPath)) {
-    try {
-      base = JSON.parse(
-        JSON.stringify(parseConfig(JSON.parse(readFileSync(settingsPath, "utf8")))),
-      ) as Record<string, unknown>;
-    } catch {
-      base = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
-    }
-  } else {
-    base = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
-  }
+  const base = readConfigBase(settingsPath, cfg);
   const current = base as unknown as Config;
   if (patch.domjudge) {
     const { adminPassword, ...rest } = patch.domjudge;
@@ -118,24 +149,13 @@ export function applySettingsPatch(
     };
   }
 
-  // Partial settings.json guard: the file had no usable admin hash, but this
-  // process bootstrapped one at startup. Backfill ONLY the missing hash (and
-  // the banner plaintext that goes with it) — never the whole live block, or a
-  // patch that just renames the admin would be silently reverted.
-  if (!current.admin.passwordHash && liveAdmin?.passwordHash) {
-    base.admin = {
-      ...current.admin,
-      passwordHash: liveAdmin.passwordHash,
-      password: liveAdmin.password ?? current.admin.password,
-    };
-  }
-  // Same trap for the JWT secret: ensureJwtSecret bootstraps it in memory and
-  // in the file at boot, but a file written later without it would parse to an
-  // empty secret and every signing call (admin login, team tokens) would fail
-  // with "Zero-length key". Never let the disk base blank a live secret.
-  if (cfg.jwt.secret && !current.jwt.secret) {
-    base.jwt = { ...current.jwt, secret: cfg.jwt.secret };
-  }
+  // Partial settings.json guard: the file had no usable admin hash or JWT
+  // secret, but this process bootstrapped them — never let the disk base blank
+  // a live secret (see backfillLiveSecrets).
+  backfillLiveSecrets(
+    base,
+    liveAdmin ? { ...cfg, admin: liveAdmin } : cfg,
+  );
 
   const updated = parseConfig(base);
   const tmpPath = `${settingsPath}.tmp`;

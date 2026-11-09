@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, wr
 import { join } from "node:path";
 import { parseConfig, type Config } from "../config";
 import type { JsonStore } from "../store/store";
-import { settingsPathFor } from "./settings";
+import { backfillLiveSecrets, readConfigBase, settingsPathFor } from "./settings";
 
 /** Rows removed per store plus the archived print files deleted under printed/ and pdf/. */
 export type PurgeReport = {
@@ -26,6 +26,11 @@ export type PurgeReport = {
  */
 export type PurgeDeps = {
   dataDir: string;
+  /**
+   * The running config; its admin hash and JWT secret are what the settings
+   * rewrite backfills when the file on disk is partial (see backfillLiveSecrets).
+   */
+  liveCfg: Config;
   teams: JsonStore<unknown[]>;
   printTasks: JsonStore<unknown[]>;
   balloonTasks: JsonStore<unknown[]>;
@@ -84,26 +89,19 @@ function countCredentials(entries: Record<string, unknown>): { passwords: number
 }
 
 /**
- * Clears balloon.contestId in settings.json with the same tmp+rename write as
- * applySettingsPatch, preserving every other setting (domjudge credentials,
- * admin hash, jwt secret, print token, poll interval) and secret.key.
- *
- * The on-disk file is the base — the live config may differ if it was
- * hand-edited. Returns the resulting config for the live store.
+ * Clears balloon.contestId in settings.json with the same base/guard/write
+ * sequence as applySettingsPatch: the file normally wins, a missing or
+ * unparseable one falls back to the live config, and admin hash / jwt secret
+ * are backfilled from the live config so the purge can never lock the operator
+ * out. Every other setting (domjudge credentials, poll interval, print token)
+ * and secret.key survive untouched.
  */
-function resetContestId(settingsPath: string): Config {
-  let base: Config | undefined;
-  if (existsSync(settingsPath)) {
-    try {
-      base = parseConfig(JSON.parse(readFileSync(settingsPath, "utf8")));
-    } catch {
-      // Fall through: a corrupt file must not abort the purge.
-    }
-  }
-  // The file normally exists (index.ts writes it at boot); the all-defaults
-  // parse is only a last resort so the reset still lands on disk.
-  base ??= parseConfig({});
-  const updated = parseConfig({ ...base, balloon: { ...base.balloon, contestId: "" } });
+function resetContestId(settingsPath: string, liveCfg: Config): Config {
+  const base = readConfigBase(settingsPath, liveCfg);
+  const current = base as unknown as Config;
+  base.balloon = { ...current.balloon, contestId: "" };
+  backfillLiveSecrets(base, liveCfg);
+  const updated = parseConfig(base);
   const tmpPath = `${settingsPath}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(updated, null, 2));
   renameSync(tmpPath, settingsPath);
@@ -133,8 +131,10 @@ export function purgePulledData(deps: PurgeDeps): PurgeReport {
     filesRemoved: purgeArchiveDirs(deps.dataDir),
   };
 
-  // JsonStore writes unconditionally; an empty save over a missing file would
-  // invent one, so only touch stores that actually held data.
+  // JsonStore has no "absent" state: save([]) writes a file even when none
+  // existed, so a purge on a fresh install leaves empty JSON stores behind.
+  // Harmless (every reader defaults to []), and keeps the live instances in
+  // step with disk.
   deps.teams.save([]);
   deps.teamCredentials.save({});
   deps.printTasks.save([]);
@@ -143,7 +143,7 @@ export function purgePulledData(deps: PurgeDeps): PurgeReport {
   deps.loginRequests.save([]);
 
   const settingsPath = settingsPathFor(deps.dataDir);
-  const updated = resetContestId(settingsPath);
+  const updated = resetContestId(settingsPath, deps.liveCfg);
   deps.contestIdReset?.(updated);
 
   return report;
