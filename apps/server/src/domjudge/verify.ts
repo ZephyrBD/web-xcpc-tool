@@ -34,8 +34,9 @@ export type VerifyContext = {
  * icpc id is missing).
  *
  * While the window is closed, a matching code with a `requestStore` available
- * creates (or reuses the team's existing pending) approval request and returns
- * the "waiting" result instead; a non-matching code still reports
+ * creates (or reuses the team's existing pending) approval request — keyed by
+ * the team's account id, so a regenerated team code reuses it too — and
+ * returns the "waiting" result instead; a non-matching code still reports
  * "outside-window" so the miss page copy stays identical.
  */
 export async function verifyTeamCode(
@@ -49,9 +50,9 @@ export async function verifyTeamCode(
   if (!inLoginWindow(now, cfg.teamLogin)) {
     const entry = teamStore.findByTeamCode(code);
     if (!requestStore || !entry) return { ok: false, reason: "outside-window" };
-    const existing = requestStore
-      .listPending()
-      .find((r) => r.icpcId === entry.icpcId && r.teamCode === entry.teamCode);
+    // Keyed on the account id alone: regenerating a team code must not orphan
+    // a pending request the admin is already looking at.
+    const existing = requestStore.listPending().find((r) => r.icpcId === entry.icpcId);
     const request =
       existing ??
       requestStore.create({

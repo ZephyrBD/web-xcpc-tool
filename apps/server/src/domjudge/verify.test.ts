@@ -114,6 +114,29 @@ describe("verifyTeamCode", () => {
     const res = await verifyTeamCode("  ABCDEFGH2345 ", store, testCfg(), new Date());
     expect(res.ok).toBe(true);
   });
+
+  test("outside the window a pending request is reused by icpcId even after the team code changes", async () => {
+    const store = testStore();
+    const oldCode = store.setTeamCode("2025001", "abcdefgh2345");
+    const cfg = testCfg({ start: "2026-01-01T00:00:00Z", end: "2026-01-01T08:00:00Z" });
+    const now = new Date("2026-01-01T09:00:00Z");
+    const requests = new LoginRequestStore(
+      join(tmpdir(), `verify-reuse-${crypto.randomUUID()}`, "login-requests.json"),
+    );
+
+    const first = await verifyTeamCode(oldCode, store, cfg, now, requests);
+    expect(first.ok).toBe(false);
+    if (first.ok || first.reason !== "waiting") throw new Error("expected waiting");    const original = requests.listPending()[0];
+
+    // regenerating the team code must not orphan the pending request
+    const newCode = store.setTeamCode("2025001");
+    expect(newCode).not.toBe(oldCode);
+    const second = await verifyTeamCode(newCode, store, cfg, now, requests);
+    expect(second.ok).toBe(false);
+    if (second.ok || second.reason !== "waiting") throw new Error("expected waiting");
+    expect(second.request.id).toBe(original.id);
+    expect(requests.listPending()).toHaveLength(1);
+  });
 });
 
 describe("GET /dj/verify route", () => {
