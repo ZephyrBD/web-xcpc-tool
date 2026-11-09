@@ -411,6 +411,33 @@ describe("contest id lock on PUT /admin/api/settings", () => {
     expect(saved.balloon.pollIntervalSeconds).toBe(45);
   });
 
+  test("a padded contest id is trimmed before it is stored (and can still be re-saved)", async () => {
+    // The field is write-once: storing "  C1  " verbatim would lock the real
+    // "C1" out forever (a different string → 403), with no unlock but a purge.
+    const cfg = loadConfigWithSecret();
+    const app = createApp(cfg, { dataDir });
+    const headers = await adminAuthHeaders(cfg);
+    await seed(app, headers, "  C1  ");
+
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.balloon.contestId).toBe("C1");
+
+    const again = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ balloon: { contestId: "C1", pollIntervalSeconds: 30 } }),
+    });
+    expect(again.status).toBe(200);
+  });
+
+  test("applySettingsPatch trims a contest id even for a caller that bypassed the schema", () => {
+    const live = loadConfigWithSecret();
+    const updated = applySettingsPatch(live, { balloon: { contestId: "  C9  " } }, join(dataDir, "settings.json"), live.admin);
+    expect(updated.balloon.contestId).toBe("C9");
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.balloon.contestId).toBe("C9");
+  });
+
   test("GET exposes balloon.locked so the UI can render the field read-only", async () => {
     const cfg = loadConfigWithSecret();
     const app = createApp(cfg, { dataDir });

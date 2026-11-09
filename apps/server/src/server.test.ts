@@ -95,6 +95,9 @@ describe("createApp", () => {
         location: null,
         status: "pending",
         createdAt: "x",
+        // Current schema: an id the last poll never returned, not an old row
+        // (old rows are discarded at construction, see discardForeignRows).
+        balloonId: null,
       },
     ]);
     const balloonService = new BalloonService({

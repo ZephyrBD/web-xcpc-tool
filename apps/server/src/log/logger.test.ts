@@ -354,6 +354,30 @@ describe("initLogger", () => {
     }
   });
 
+  test("the DOMjudge admin password is masked like the admin one", () => {
+    const f = tempFile();
+    const { stream, text } = capture();
+    try {
+      // index.ts registers both secrets at boot (admin.password and
+      // domjudge.adminPassword) and again from configStore.onChange.
+      initLogger({ logFilePath: f.path, stream, color: false, secrets: ["admin-boot-pw", "dj-boot-pw"] });
+      log.error("proxy", "upstream error: https://dj.example.com/api/v4 users Basic dj-boot-pw");
+
+      // A settings PUT rotates the DOMjudge credential.
+      registerSecret("dj-rotated-pw");
+      log.error("proxy", "upstream error: dj-rotated-pw rejected");
+
+      const raw = readFileSync(f.path, "utf8");
+      expect(raw).not.toContain("dj-boot-pw");
+      expect(raw).not.toContain("dj-rotated-pw");
+      expect(raw).toContain("********");
+      // Console keeps the plaintext (operators debug from the terminal).
+      expect(text()).toContain("dj-rotated-pw");
+    } finally {
+      f.cleanup();
+    }
+  });
+
   test("registerSecret ignores empty and shorter-than-6 values", () => {
     const f = tempFile();
     try {

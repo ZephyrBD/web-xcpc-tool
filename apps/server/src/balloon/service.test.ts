@@ -524,7 +524,8 @@ describe("BalloonService legacy row migration", () => {
   }
 
   const legacyRows: BalloonTask[] = [
-    // Pre-refactor: id is a submission id, contestId is whatever it was then.
+    // Pre-refactor: id is a submission id, contestId is whatever it was then,
+    // and the row predates the `balloonId` field.
     { id: "1001", contestId: "old-contest", problemLabel: "A", teamName: "Team One", location: null, status: "pending", createdAt: "x" },
     { id: "1002", contestId: "old-contest", problemLabel: "B", teamName: "Team Two", location: null, status: "delivered", createdAt: "x" },
   ];
@@ -533,9 +534,9 @@ describe("BalloonService legacy row migration", () => {
     const { svc, store, cleanup } = serviceWithRows(legacyRows);
     try {
       expect(store.load()).toEqual([]);
-      const lines = recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"));
+      const lines = recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("已丢弃"));
       expect(lines).toHaveLength(1);
-      expect(String(lines[0][0])).toContain("discarded 2");
+      expect(String(lines[0][0])).toContain("2 条");
       expect(String(lines[0][0])).toContain(CONTEST);
       expect(svc.list()).toEqual([]);
     } finally {
@@ -552,12 +553,63 @@ describe("BalloonService legacy row migration", () => {
       location: "A-101",
       status: "pending",
       createdAt: "x",
+      balloonId: 7,
     };
     const { svc, store, cleanup } = serviceWithRows([keep]);
     try {
       expect(store.load()).toEqual([keep]);
-      expect(recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"))).toHaveLength(0);
+      expect(recorder.calls.info).toHaveLength(0);
       expect(svc.list()).toEqual([keep]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("pre-refactor rows sharing the CURRENT contest id are discarded too, with one line", () => {
+    // The upgrade trap: the old schema kept the same contest id, so a
+    // contestId-only filter kept these forever. Their id is a submission id,
+    // they carry no `balloonId` field, and they duplicate the live row 7.
+    const legacySameContest: BalloonTask[] = [
+      { id: "1001", contestId: CONTEST, problemLabel: "A", teamName: "t1", location: null, status: "pending", createdAt: "x" },
+      { id: "1002", contestId: CONTEST, problemLabel: "B", teamName: "t2", location: null, status: "delivered", createdAt: "x" },
+    ];
+    const live: BalloonTask = {
+      id: "7",
+      contestId: CONTEST,
+      problemLabel: "A",
+      teamName: "Team One",
+      location: "A-101",
+      status: "pending",
+      createdAt: "x",
+      balloonId: 7,
+    };
+    const { svc, store, cleanup } = serviceWithRows([...legacySameContest, live]);
+    try {
+      expect(store.load()).toEqual([live]);
+      const lines = recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("已丢弃"));
+      expect(lines).toHaveLength(1);
+      expect(String(lines[0][0])).toContain("2");
+      expect(svc.list().map((t) => t.id)).toEqual(["7"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("a current row with a null balloonId (non-numeric DOMjudge id) is not legacy", () => {
+    const keep: BalloonTask = {
+      id: "bl-9",
+      contestId: CONTEST,
+      problemLabel: "C",
+      teamName: "Team One",
+      location: null,
+      status: "pending",
+      createdAt: "x",
+      balloonId: null,
+    };
+    const { store, cleanup } = serviceWithRows([keep]);
+    try {
+      expect(store.load()).toEqual([keep]);
+      expect(recorder.calls.info).toHaveLength(0);
     } finally {
       cleanup();
     }
@@ -770,42 +822,336 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
     cleanup();
   });
 
-  test("reconfigure during an in-flight poll leaves exactly one polling chain", async () => {
-    // Gate every request so the poll started by `start()` is still pending when
-    // reconfigure() runs: that is the re-entrancy window a settings PUT opens.
+  /**
+   * Real-scheduler service: no injectable `schedule`, so setTimeout (and the
+   * 0ms restart tick) actually fires. That is what the review's repro used and
+   * what a hand-driven queue cannot model: the restart tick wakes up *while*
+   * the previous poll is still awaited.
+   */
+  function realSchedulerService(fetchImpl: typeof fetch, contestId = "c1", pollSeconds = 60) {
+    const dir = mkdtempSync(join(tmpdir(), "balloon-realsched-"));
+    const svc = new BalloonService({
+      client: makeClient(fetchImpl),
+      store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
+      bus: new SseBus(),
+      contestId,
+      pollIntervalSeconds: pollSeconds,
+      teams: TEAMS,
+    });
+    return {
+      svc,
+      cleanup: () => {
+        svc.stop();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  /** Lets queued timers and microtasks run until `done()` or the budget is spent. */
+  async function until(done: () => boolean, budgetMs = 1000): Promise<void> {
+    const deadline = Date.now() + budgetMs;
+    while (!done() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 2));
+  }
+
+  test("reconfigure during an in-flight poll is followed by a second poll (real scheduler)", async () => {
+    // First GET hangs until the test releases it: that is the in-flight poll a
+    // settings PUT can land on. Later GETs answer immediately.
     let release: (() => void) | null = null;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const gatedFetch = (async () => {
-      await gate;
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) await gate;
       return new Response(JSON.stringify([]));
     }) as unknown as typeof fetch;
-    const { svc, scheduled, cleanup } = reconfService("c1", gatedFetch);
+    const { svc, cleanup } = realSchedulerService(fetchImpl);
 
-    svc.start();
-    expect(scheduled).toHaveLength(1);
-    scheduled[0].fn(); // pollLoop starts, then awaits the gate
-    // Let the in-flight poll reach its first await before reconfiguring.
-    await Promise.resolve();
+    svc.start(); // 0ms tick → poll #1 starts and blocks on the gate
+    await until(() => urls.length === 1);
 
+    // Settings save while poll #1 is in flight: stop()+start() schedules a 0ms
+    // restart tick. Synchronously (no timer has fired yet) the poll is released,
+    // so the restart tick is GUARANTEED to be still pending when the poll
+    // finishes — the exact interleaving the review reproduced with a real
+    // scheduler, without depending on timer jitter.
     svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
-    // stop() + start(): the old chain is marked not running and one new poll is
-    // scheduled. The stale in-flight poll must not add a second schedule.
-    expect(scheduled).toHaveLength(2);
-    expect(scheduled[1].ms).toBe(0);
-
     (release as unknown as () => void)();
-    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5));
-    // Still exactly one chain: the finished stale poll saw `running === false`
-    // after its (simulated) await and returned without scheduling.
-    expect(scheduled).toHaveLength(2);
 
-    // Running the surviving chain schedules exactly one next tick at the new cadence.
-    scheduled[1].fn();
-    for (let i = 0; i < 50 && scheduled.length < 3; i++) await new Promise((r) => setTimeout(r, 5));
-    expect(scheduled).toHaveLength(3);
-    expect(scheduled[2].ms).toBe(7000);
+    // Poll #1 resumes, sees its generation superseded and returns without
+    // scheduling; before the fix the still-pending restart tick then woke up,
+    // saw `polling === true` and bailed → no second GET ever. The hand-over in
+    // pollLoop's finally is what makes the restart tick usable.
+    await until(() => urls.length >= 2);
+    expect(urls.length).toBeGreaterThanOrEqual(2);
     cleanup();
   });
+
+  /**
+   * The REAL setTimeout, wrapped so tests can count live handles. The engine
+   * still decides when timers fire (so the 0ms restart tick races the cached
+   * DOMjudge response exactly like production); the registry only observes.
+   * Returns handles through the same `typeof setTimeout` shape the service
+   * uses, which is what makes cancelSchedule work.
+   */
+  function countingTimeout() {
+    const live = new Set<ReturnType<typeof setTimeout>>();
+    const schedule = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => {
+      const handle = setTimeout(() => {
+        live.delete(handle);
+        fn();
+      }, ms);
+      live.add(handle);
+      return handle;
+    };
+    return {
+      schedule,
+      cancelSchedule: (handle: ReturnType<typeof setTimeout>) => {
+        live.delete(handle);
+        clearTimeout(handle);
+      },
+      liveCount: () => live.size,
+      clear: () => {
+        for (const h of live) clearTimeout(h);
+        live.clear();
+      },
+    };
+  }
+
+  test("reconfigure during an in-flight poll leaves exactly one scheduled chain", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) await gate;
+      return new Response(JSON.stringify([]));
+    }) as unknown as typeof fetch;
+    const timers = countingTimeout();
+    const dir = mkdtempSync(join(tmpdir(), "balloon-chain-"));
+    const svc = new BalloonService({
+      client: makeClient(fetchImpl),
+      store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
+      bus: new SseBus(),
+      contestId: "c1",
+      pollIntervalSeconds: 60,
+      teams: TEAMS,
+      schedule: timers.schedule,
+      cancelSchedule: timers.cancelSchedule,
+    });
+    try {
+      svc.start(); // one 0ms tick → poll #1 starts and blocks on the gate
+      await until(() => urls.length === 1);
+      // That tick fired and was consumed: no timer is outstanding mid-poll.
+      expect(timers.liveCount()).toBe(0);
+
+      // Three settings saves while poll #1 is in flight. Each is a stop()+start();
+      // stop() cancels the previous restart tick, so only the last survives.
+      svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 30 });
+      svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 20 });
+      svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 10 });
+      expect(timers.liveCount()).toBe(1);
+
+      (release as unknown as () => void)();
+      // Poll #1 finishes superseded: the restart tick it could not have used is
+      // re-armed (still exactly one outstanding), and poll #2 starts.
+      await until(() => urls.length >= 2);
+      expect(timers.liveCount()).toBeLessThanOrEqual(1);
+
+      // The chain is alive one full cadence later (10s), with ONE outstanding
+      // tick: a duplicate chain would have armed two, a dead one zero.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(timers.liveCount()).toBe(1);
+    } finally {
+      svc.stop();
+      timers.clear();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a restart tick that fires while the poll is still awaited cannot start a second chain", async () => {
+    // The jitter case: reconfigure()'s 0ms tick wins the race and runs BEFORE
+    // the in-flight poll resolves. It must bail on the guard, and a further save
+    // in that window must still leave exactly one outstanding timer (this is
+    // what caught three un-cancelled restart ticks leaking per triple save).
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) await gate;
+      return new Response(JSON.stringify([]));
+    }) as unknown as typeof fetch;
+    const timers = countingTimeout();
+    const dir = mkdtempSync(join(tmpdir(), "balloon-jitter-"));
+    const svc = new BalloonService({
+      client: makeClient(fetchImpl),
+      store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
+      bus: new SseBus(),
+      contestId: "c1",
+      pollIntervalSeconds: 60,
+      teams: TEAMS,
+      schedule: timers.schedule,
+      cancelSchedule: timers.cancelSchedule,
+    });
+    try {
+      svc.start();
+      await until(() => urls.length === 1);
+      svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 30 });
+      // Let the 0ms restart tick fire while poll #1 still hangs.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(timers.liveCount()).toBe(0); // it ran and was dropped by the guard
+      // A second save re-arms a hand-over tick; the old approach lost it.
+      svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 20 });
+      expect(timers.liveCount()).toBe(1);
+
+      (release as unknown as () => void)();
+      await until(() => urls.length >= 2);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(timers.liveCount()).toBe(1);
+    } finally {
+      svc.stop();
+      timers.clear();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Real setTimeout, but a 0ms tick armed while a poll is in flight is HELD
+   * until the test releases it — the interleaving the review reproduced (the
+   * restart tick wakes up against the `polling` guard) without depending on how
+   * fast this machine's timers happen to be. Any non-0ms tick armed while a
+   * poll is in flight (the scheduled regular interval) is DROPPED: if that one
+   * survives, the chain is alive via a tick the restart never touches, which is
+   * not the scenario under test.
+   */
+  function holdingTimeout(inFlight: () => boolean) {
+    const held: Array<() => void> = [];
+    const schedule = (fn: () => void, ms: number): ReturnType<typeof setTimeout> => {
+      if (inFlight()) {
+        if (ms === 0) held.push(fn);
+        return setTimeout(() => {}, 0);
+      }
+      return setTimeout(fn, ms);
+    };
+    return {
+      schedule,
+      release: () => held.splice(0).forEach((fn) => fn()),
+      heldCount: () => held.length,
+    };
+  }
+
+  test("a restart tick that outlives the in-flight poll still leaves one live chain", async () => {
+    // The in-flight poll is released through a MICROTASK (a bare promise
+    // continuation), so it is guaranteed to settle before any timer can run:
+    // the restart tick start() armed is still pending at that moment, exactly
+    // the interleaving the review reproduced and the one a real DOMjudge with a
+    // warm connection produces.
+    let inFlight = false;
+    const timers = holdingTimeout(() => inFlight);
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) {
+        inFlight = true;
+        await gate;
+        inFlight = false;
+      }
+      // No further await: the response is produced in the same microtask turn
+      // the gate is released in.
+      return new Response(JSON.stringify([]));
+    }) as unknown as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "balloon-held-"));
+    const svcReal = new BalloonService({
+      client: makeClient(fetchImpl),
+      store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
+      bus: new SseBus(),
+      contestId: "c1",
+      pollIntervalSeconds: 60,
+      teams: TEAMS,
+      schedule: timers.schedule,
+      cancelSchedule: (h) => clearTimeout(h),
+    });
+    try {
+      svcReal.start();
+      await until(() => urls.length === 1);
+      svcReal.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
+      // The restart tick is held: it has NOT run when the poll resolves.
+      expect(timers.heldCount()).toBe(1);
+
+      (release as unknown as () => void)();
+      await null; // drain microtasks: poll #1 has now finished
+      // Pre-fix: the superseded poll returns without scheduling, and the held
+      // tick then runs against `polling === false`… but it was armed for the
+      // OLD chain, so this is where "hand over" vs "drop" decides the outcome.
+      timers.release();
+      await until(() => urls.length >= 2, 500);
+      expect(urls.length).toBeGreaterThanOrEqual(2);
+      // Exactly one chain: the held tick and a hand-over tick must not BOTH poll
+      // in quick succession at this 7s cadence.
+      const n = urls.length;
+      await new Promise((r) => setTimeout(r, 50));
+      expect(urls.length).toBe(n);
+    } finally {
+      svcReal.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("purge (stop) during an in-flight poll leaves the store empty", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) await gate;
+      return new Response(
+        JSON.stringify([{ balloonid: 7, teamid: "t1", contestproblem: { label: "A" }, done: false }]),
+      );
+    }) as unknown as typeof fetch;
+
+    const dir = mkdtempSync(join(tmpdir(), "balloon-purge-"));
+    const store = new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []);
+    const bus = new SseBus();
+    const events: unknown[] = [];
+    bus.subscribe("admin", (e) => events.push(e));
+    const svc = new BalloonService({
+      client: makeClient(fetchImpl),
+      store,
+      bus,
+      contestId: "c1",
+      pollIntervalSeconds: 60,
+      teams: TEAMS,
+    });
+
+    // A poll is in flight (GET hanging)…
+    const inFlight = svc.pollOnce();
+    await until(() => urls.length === 1);
+    // …the operator clicks 清空数据: the store is emptied, then the poller is
+    // stopped (server.ts does exactly this order).
+    store.save([]);
+    svc.stop();
+    // DOMjudge answers the old poll. Its snapshot predates the purge, so with
+    // no generation guard it writes the old row straight back.
+    (release as unknown as () => void)();
+    expect(await inFlight).toBe(0);
+    expect(store.load()).toEqual([]);
+    expect(events).toHaveLength(0);
+    expect(svc.list()).toEqual([]);
+
+    svc.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
+

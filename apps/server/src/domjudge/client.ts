@@ -28,64 +28,6 @@ export type DjContest = {
   name: string;
 };
 
-/**
- * A submission from the contest API. Two shapes occur in the wild:
- * - CLICS/external API (verified live against
- *   https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/submissions):
- *   `{"language_id":"cpp","time":"...","contest_time":"...","team_id":"domjudge",
- *   "account_id":"tobi","problem_id":"arcadecrane","files":[...],"id":"997",
- *   "entry_point":null,"import_error":null}`
- * - DOMjudge internal API: `problem`/`team`/`language` directly.
- * getSubmissions normalizes both to the canonical `problem`/`team`/`language`
- * while preserving the original `*_id` fields.
- */
-export type DjSubmission = {
-  id: string;
-  /** Canonical problem id (from `problem_id` on the external API). */
-  problem: string;
-  /** Canonical language id (from `language_id` on the external API). */
-  language: string;
-  /** Canonical team id (from `team_id` on the external API). */
-  team: string;
-  time: string;
-  // Raw external-API fields, preserved for callers that read them directly.
-  problem_id?: string;
-  team_id?: string;
-  language_id?: string;
-  contest_time?: string;
-  account_id?: string;
-  files?: Array<{ href: string; mime: string }>;
-  entry_point?: string | null;
-  import_error?: string | null;
-};
-
-/**
- * A judging from the contest API. Two shapes occur in the wild:
- * - CLICS/external API (verified live against
- *   https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/judgements):
- *   `{"start_time":...,"end_time":...,"submission_id":"997","current":true,
- *   "max_run_time":2.994,"id":"1814","valid":true,"score":"0.000000000",
- *   "judgement_type_id":"TLE","simplified_judgement_type_id":"RE"}`
- * - DOMjudge internal API: `submission` directly.
- * getJudgings populates the canonical `submission` from `submission_id`.
- */
-export type DjJudging = {
-  id: string;
-  /** Canonical submission id (from `submission_id` on the external API). */
-  submission: string;
-  judgement_type_id: string;
-  verified?: boolean;
-  start_time?: string;
-  // Raw external-API fields, preserved for callers that read them directly.
-  submission_id?: string;
-  end_time?: string;
-  current?: boolean;
-  max_run_time?: number;
-  valid?: boolean;
-  score?: string;
-  simplified_judgement_type_id?: string;
-};
-
 export class DjApiError extends Error {
   readonly url: string;
   readonly status: number;
@@ -97,15 +39,6 @@ export class DjApiError extends Error {
     this.status = status;
   }
 }
-
-export type DjJudgementType = {
-  id: string;
-  name?: string;
-  penalty?: boolean;
-  /** True when this verdict counts as solved/correct (real DOMjudge external API). */
-  solved?: boolean;
-  sorting_key?: string;
-};
 
 export type DjProblem = {
   id: string;
@@ -308,35 +241,8 @@ export class DjClient {
     return this.get<DjTeam[]>(`contests/${contestId}/teams`);
   }
 
-  getSubmissions(contestId: string): Promise<DjSubmission[]> {
-    return this.get<DjSubmission[]>(`contests/${contestId}/submissions`).then((subs) =>
-      // Normalize CLICS/external field names (problem_id/team_id/language_id)
-      // to the canonical internal ones; internal shapes pass through unchanged.
-      subs.map((item) => ({
-        ...item,
-        problem: item.problem ?? item.problem_id!,
-        team: item.team ?? item.team_id!,
-        language: item.language ?? item.language_id!,
-      })),
-    );
-  }
-
-  getJudgementTypes(contestId: string): Promise<DjJudgementType[]> {
-    return this.get<DjJudgementType[]>(`contests/${contestId}/judgement-types`);
-  }
-
   getProblems(contestId: string): Promise<DjProblem[]> {
     return this.get<DjProblem[]>(`contests/${contestId}/problems`);
-  }
-
-  getJudgings(contestId: string, since?: string): Promise<DjJudging[]> {
-    const path = `contests/${contestId}/judgements`;
-    return this.get<DjJudging[]>(since ? `${path}?since=${encodeURIComponent(since)}` : path).then(
-      (judgings) =>
-        // Normalize CLICS/external `submission_id` to the canonical
-        // `submission`; internal shapes pass through unchanged.
-        judgings.map((item) => ({ ...item, submission: item.submission ?? item.submission_id! })),
-    );
   }
 
   getBalloons(contestId: string): Promise<DjBalloon[]> {

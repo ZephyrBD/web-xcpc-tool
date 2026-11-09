@@ -5,19 +5,26 @@ import { streamSSE } from "hono/streaming";
 import type { Config } from "./config";
 import { SseBus } from "./sse/bus";
 import { verifyTeamCode } from "./domjudge/verify";
-import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import { buildSourceHtml } from "./print/sourceHtml";
-import type { BalloonService, BalloonTask } from "./balloon/service";import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
+import type { BalloonService, BalloonTask } from "./balloon/service";
+import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
 import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
-import { randomInt } from "node:crypto";import { applySettingsPatch, assertContestIdMutable, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
-import { appPath } from "./domjudge/proxy";
+import { randomInt } from "node:crypto";
+import { appPath, handleDjProxy } from "./domjudge/proxy";
+import {
+  applySettingsPatch,
+  assertContestIdMutable,
+  safeSettingsView,
+  settingsPathFor,
+  settingsPatchSchema,
+} from "./admin/settings";
 import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPage } from "./pages/teamPages";
 import { signTeamToken } from "./auth/token";
 import { LoginRequestStore } from "./auth/loginRequests";

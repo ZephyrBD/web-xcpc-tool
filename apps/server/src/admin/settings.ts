@@ -21,7 +21,13 @@ export const settingsPatchSchema = z.object({
     .optional(),
   balloon: z
     .object({
-      contestId: z.string().optional(),
+      /**
+       * Trimmed server-side: the field is write-once, so a stray `"  C1  "`
+       * would be stored verbatim and then locked (a later `"C1"` is a
+       * different value and gets 403 forever). Trimming here also keeps the
+       * lock comparison below meaningful.
+       */
+      contestId: z.string().trim().optional(),
       pollIntervalSeconds: z.number().int().positive().optional(),
     })
     .optional(),
@@ -131,7 +137,14 @@ export function applySettingsPatch(
     const { adminPassword, ...rest } = patch.domjudge;
     base.domjudge = { ...current.domjudge, ...rest, ...(adminPassword ? { adminPassword } : {}) };
   }
-  if (patch.balloon) base.balloon = { ...current.balloon, ...patch.balloon };
+  if (patch.balloon) {
+    // Trimmed again here so a caller that bypassed the schema (tests, a future
+    // non-HTTP writer) cannot store a padded id that the write-once lock then
+    // makes impossible to correct.
+    const balloon = { ...patch.balloon };
+    if (balloon.contestId !== undefined) balloon.contestId = balloon.contestId.trim();
+    base.balloon = { ...current.balloon, ...balloon };
+  }
   if (patch.print) {
     base.print = { ...current.print, ...(patch.print.token ? { token: patch.print.token } : {}) };
   }

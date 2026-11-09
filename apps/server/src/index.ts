@@ -51,6 +51,11 @@ const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
 cfg.admin = adminCfg.admin;
 // The generated plaintext is printed by the banner and masked in the log file.
 registerSecret(cfg.admin.password);
+// The DOMjudge admin password travels in an Authorization header the proxy
+// builds; a proxy/DOMjudge error that echoes it must never land in the log
+// file in clear. Registering it here and on every change below keeps that true
+// for a password set through the admin UI too.
+registerSecret(cfg.domjudge.adminPassword);
 
 // Runtime config store: every request reads `configStore.current`, and the
 // admin settings PUT calls replace() so edits apply without a restart.
@@ -85,10 +90,12 @@ const balloonService = new BalloonService({
 // untouched). A change stops and restarts the loop; an empty contestId leaves
 // it stopped, exactly like start() at boot.
 configStore.onChange((next) => {
-  // A settings PUT or a purge can install a new plaintext admin password; the
-  // file log must mask it too, so every rotated value joins the secret list
-  // (registerSecret ignores empty and absurdly short values).
+  // A settings PUT or a purge can install a new plaintext admin password (and
+  // a new DOMjudge admin password); the file log must mask both, so every
+  // rotated value joins the secret list (registerSecret ignores empty and
+  // absurdly short values).
   registerSecret(next.admin.password);
+  registerSecret(next.domjudge.adminPassword);
   balloonService.reconfigure({
     contestId: next.balloon.contestId,
     pollIntervalSeconds: next.balloon.pollIntervalSeconds,
