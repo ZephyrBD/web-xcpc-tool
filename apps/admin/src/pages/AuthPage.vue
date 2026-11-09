@@ -5,6 +5,7 @@ import { apiFetch } from '@/api'
 import { usePagination } from '@/composables/usePagination'
 import { loginHistoryLabel } from '@/types'
 import type { LoginHistoryEntry, TeamCodeRow, TeamCodesResponse } from '@/types'
+import LoginRequestsCard from './LoginRequestsCard.vue'
 
 const activeTab = ref<'codes' | 'history'>('codes')
 
@@ -239,7 +240,8 @@ onMounted(() => void refresh())
 </script>
 
 <template>
-  <div class="team-codes page-fill">
+  <div class="auth-page page-fill">
+    <LoginRequestsCard />
     <ElTabs v-model="activeTab" class="code-tabs" @tab-change="onTabChange">
       <ElTabPane label="队伍码" name="codes">
         <div class="tab-toolbar">
@@ -289,7 +291,7 @@ onMounted(() => void refresh())
           />
         </div>
         <el-empty v-else-if="unassigned > 0" description="所有队伍都还没有队伍码，用上方「为未分配队伍批量生成」一键分配" />
-        <el-empty v-else description="还没有队伍，先在「队伍」页从 DOMjudge 同步或导入 Excel" />
+        <el-empty v-else description="还没有队伍，先在「队伍」页从 DOMjudge 同步" />
       </ElTabPane>
 
       <ElTabPane label="登录历史" name="history">

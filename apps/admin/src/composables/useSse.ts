@@ -3,7 +3,7 @@ import { useSessionStore } from '@/stores/session'
 
 export type SseHandler = (event: string, data: unknown) => void
 
-const EVENT_NAMES = ['auth-task', 'print-task', 'balloon-task'] as const
+const EVENT_NAMES = ['auth-task', 'print-task', 'balloon-task', 'login-request'] as const
 
 /**
  * Opens one EventSource to /admin/api/events using the session's SSE token

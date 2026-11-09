@@ -18,8 +18,16 @@ export interface BalloonTask {
   location: string | null
   status: 'pending' | 'delivered'
   createdAt: string
-  /** DOMjudge balloon id matched at poll time; null/absent when unmatched. */
-  balloonId?: number | null
+  /** DOMjudge balloon id; equals `id` since Task 4 (absent on legacy rows). */
+  balloonId?: string | number | null
+  /**
+   * Same as `status` but the last DOMjudge /balloons poll no longer returned it
+   * (e.g. hidden by a scoreboard freeze). Not delivered — just not handable yet:
+   * the task leaves the pending queue until DOMjudge lists it again.
+   */
+  stale?: boolean
+  /** ISO time of the last poll that returned the balloon (absent while stale). */
+  lastSeenAt?: string
 }
 
 export interface Team {
@@ -59,4 +67,25 @@ export interface LoginHistoryEntry {
 export function loginHistoryLabel(e: Pick<LoginHistoryEntry, 'icpcId' | 'teamName' | 'djUsername'>): string {
   if (e.teamName && e.djUsername) return `${e.teamName}（${e.djUsername}）`
   return e.teamName || e.djUsername || e.icpcId
+}
+
+export type LoginRequestStatus = 'pending' | 'approved' | 'rejected' | 'claimed'
+
+/** Login approval request raised when a team logs in outside the allowed window.
+ *  pending → approved / rejected; approved → claimed once the team actually lands. */
+export interface LoginRequest {
+  id: string
+  icpcId: string
+  teamCode: string
+  teamName: string
+  ip: string | null
+  requestedAt: string
+  status: LoginRequestStatus
+  decidedAt: string | null
+}
+
+/** Payload of GET /admin/api/login-requests. */
+export interface LoginRequestsResponse {
+  pending: LoginRequest[]
+  recent: LoginRequest[]
 }

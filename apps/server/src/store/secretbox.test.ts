@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SecretBox, ensureKeyFile } from "./secretbox";
@@ -51,5 +51,26 @@ describe("ensureKeyFile", () => {
     expect(readFileSync(path, "utf8").trim()).toBe(first);
     const second = ensureKeyFile(path);
     expect(second).toBe(first);
+  });
+
+  it("creates a fresh key with 0o600 so it is not world-readable (POSIX)", () => {
+    if (process.platform === "win32") return; // Windows ignores POSIX modes
+    const dir = mkdtempSync(join(tmpdir(), "secretbox-"));
+    const path = join(dir, "secret.key");
+    ensureKeyFile(path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("works for a bare filename in the cwd (dirname is '.', which already exists)", () => {    const dir = mkdtempSync(join(tmpdir(), "secretbox-"));
+    const prev = process.cwd();
+    try {
+      process.chdir(dir);
+      // mkdirSync(".") throws EEXIST; a fresh bare path must still create the key.
+      const key = ensureKeyFile("secret.key");
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+      expect(readFileSync(join(dir, "secret.key"), "utf8").trim()).toBe(key);
+    } finally {
+      process.chdir(prev);
+    }
   });
 });

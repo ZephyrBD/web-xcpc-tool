@@ -109,7 +109,7 @@ describe('DashboardPage', () => {
     expect(wrapper.text()).toContain('现在一切正常，没有待办事项')
   })
 
-  test('renders the latest login rows with a link to /team-codes', async () => {
+  test('renders the latest login rows with a link to /auth', async () => {
     loginHistory = [
       makeEntry('t6', { at: '2026-11-07T09:00:00.000Z' }),
       makeEntry('t5', { at: '2026-11-07T08:55:00.000Z' }),
@@ -129,7 +129,7 @@ describe('DashboardPage', () => {
     expect(wrapper.text()).not.toContain('t1')
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    expect(hrefs).toContain('/team-codes')
+    expect(hrefs).toContain('/auth')
   })
 
   test('最近登录 renders 「队名（账号名）」 with graceful fallbacks', async () => {
@@ -182,13 +182,13 @@ describe('DashboardPage', () => {
     expect(wrapper.text()).toContain('打印和气球队列都空着')
   })
 
-  test('stat cards link to their sections, 已发队伍码 goes to /team-codes', async () => {
+  test('stat cards link to their sections, 已发队伍码 goes to /auth', async () => {
     teamCodeRows = [makeCodeRow('t1', true)]
     const wrapper = await mountPage()
     await flush()
     await flush()
 
     const cards = wrapper.findAll('.stat-card').map((c) => c.attributes('href'))
-    expect(cards).toEqual(['/team-codes', '/jobs', '/jobs', '/team-codes'])
+    expect(cards).toEqual(['/auth', '/jobs', '/jobs', '/auth'])
   })
 })

@@ -17,6 +17,12 @@ describe('tokens.css', () => {
     }
   })
 
+  test('declares a darker danger text color (body-size error copy)', () => {
+    expect(css).toContain('--danger-text: #c2311a')
+    // 亮红仍然保留给图标 / 描边。
+    expect(css).toContain('--brand-red: #ff7262')
+  })
+
   test('declares radius values', () => {
     expect(css).toContain('--radius-card: 16px')
     expect(css).toContain('--radius-control: 8px')

@@ -47,9 +47,21 @@ export function ensureKeyFile(path: string): string {
   if (existsSync(path)) {
     return readFileSync(path, "utf8").trim();
   }
-  // Fresh checkouts/deployments may not have the data dir yet.
-  mkdirSync(dirname(path), { recursive: true });
+  // Fresh checkouts/deployments may not have the data dir yet. "." (a bare
+  // "secret.key" path) already exists, and mkdirSync(".") throws EEXIST.
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const keyHex = randomBytes(KEY_BYTES).toString("hex");
-  writeFileSync(path, keyHex + "\n", "utf8");
-  return keyHex;
+  // exclusive: never clobber a key another process just created. 0o600: the key
+  // decrypts every stored team password and should not be world-readable
+  // (no-op where the platform ignores POSIX modes; existing files are left as-is).
+  try {
+    writeFileSync(path, keyHex + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    return keyHex;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "EEXIST") {
+      return readFileSync(path, "utf8").trim();
+    }
+    throw e;
+  }
 }

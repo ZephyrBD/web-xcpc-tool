@@ -5,6 +5,10 @@
  * Palette mirrors the admin UI (Design-md).
  */
 import { getVersionInfo } from "../version";
+import { CONTEXT_PATH } from "../config";
+
+/** URL of the team verify entry point (always under the fixed /wxt mount). */
+const VERIFY_PATH = `${CONTEXT_PATH}/public/verify`;
 
 const PALETTE = {
   green: "#0acf83",
@@ -74,7 +78,6 @@ function loginWindowLine(teamLogin?: { start: string; end: string }): string {
 
 /** Team code typed on the form page (HTTP 200). `next` is preserved as a hidden field. */
 export function verifyFormPage(
-  contextPath: string,
   hint?: string,
   next?: string | null,
   teamLogin?: { start: string; end: string },
@@ -85,7 +88,7 @@ export function verifyFormPage(
     `<h1>队伍登录</h1>
 <p>请输入屏幕上显示的队伍码开始登录</p>
 ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
-<form method="get" action="${escapeHtml(contextPath)}/dj/verify">
+<form method="get" action="${VERIFY_PATH}">
 ${next ? `<input type="hidden" name="next" value="${escapeHtml(next)}">` : ""}
 <input name="code" placeholder="请输入队伍码">
 <button type="submit">开始登录</button>
@@ -107,6 +110,75 @@ export function verifyMissPage(): Response {
   return new Response(res.body, { status: 403, headers: res.headers });
 }
 
+/**
+ * Embeds a value inside an inline <script> string literal. HTML entities are
+ * NOT decoded inside <script>, so this must not go through escapeHtml —
+ * instead the string is JS-escaped (no quote can break out) and every "<" is
+ * unicode-escaped so a "</" sequence can never close the script tag early.
+ */
+function jsString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/</g, "\\u003c");
+}
+
+/**
+ * Login request submitted while the window is closed — HTTP 200. Inline JS
+ * polls /wxt/public/verify/status every 5s and redirects to
+ * /wxt/public/verify/claim once an admin approves; all values are
+ * server-rendered, none user-typed.
+ */
+export function verifyWaitingPage(reqId: string, next: string | null): Response {
+  const nextParam = next ? `&next=${encodeURIComponent(next)}` : "";
+  return page(
+    "等待登录审批",
+    PALETTE.green,
+    `<h1>等待管理员审批</h1>
+<p>已收到登录请求，请等待监考人员在管理端批准后自动进入比赛系统</p>
+<p id="msg" class="hint">等待审批中…</p>
+<script>
+(function () {
+  var base = "${jsString(VERIFY_PATH)}";
+  var reqId = "${jsString(reqId)}";
+  var nextParam = "${jsString(nextParam)}";
+  var msg = document.getElementById("msg");
+  var timer = setInterval(function () {
+    fetch(base + "/status?req=" + encodeURIComponent(reqId))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        if (d.status === "approved") {
+          clearInterval(timer);
+          msg.textContent = "管理员已批准，正在进入比赛系统…";
+          location.href = base + "/claim?req=" + encodeURIComponent(reqId) + nextParam;
+        } else if (d.status === "rejected") {
+          clearInterval(timer);
+          msg.innerHTML = '管理员拒绝了本次登录，可<a href="' + base + '">重新提交</a>';
+        } else if (d.status === "claimed") {
+          clearInterval(timer);
+          msg.textContent = "本次登录已完成，请返回比赛系统";
+        }
+      })
+      .catch(function () {});
+  }, 5000);
+})();
+</script>`,
+  );
+}
+
+/** The claim link was invalid, already used, or not approved — HTTP 403. */
+export function verifyClaimDeniedPage(): Response {
+  const res = page(
+    "队伍登录",
+    PALETTE.red,
+    `<h1>队伍登录</h1>
+<p>本次登录请求无法继续</p>
+<p>请<a href="${VERIFY_PATH}">重新提交登录请求</a>或联系监考人员</p>`,
+  );
+  return new Response(res.body, { status: 403, headers: res.headers });
+}
+
 /** Upstream (DOMjudge) is unreachable — HTTP 502 with a refresh link for teams. */
 export function upstreamErrorPage(): Response {
   const res = page(
@@ -117,28 +189,4 @@ export function upstreamErrorPage(): Response {
 <button type="button" onclick="location.reload()">刷新重试</button>`,
   );
   return new Response(res.body, { status: 502, headers: res.headers });
-}
-
-function friendlyTime(iso: string): string {
-  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
-}
-
-/** The code matched but the current time is outside the allowed login window — HTTP 403. */
-export function verifyWindowPage(window: { start: string; end: string }): Response {
-  let span: string;
-  if (window.start && window.end) {
-    span = `${friendlyTime(window.start)} ~ ${friendlyTime(window.end)}`;
-  } else if (window.start) {
-    span = `${friendlyTime(window.start)} 之后`;
-  } else {
-    span = `${friendlyTime(window.end)} 之前`;
-  }
-  const res = page(
-    "队伍登录",
-    PALETTE.red,
-    `<h1>队伍登录</h1>
-<p>当前不在允许登录的时段内</p>
-<p>允许登录时段：${escapeHtml(span)}</p>`,
-  );
-  return new Response(res.body, { status: 403, headers: res.headers });
 }

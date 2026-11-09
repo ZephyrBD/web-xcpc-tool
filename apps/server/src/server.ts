@@ -5,21 +5,32 @@ import { streamSSE } from "hono/streaming";
 import type { Config } from "./config";
 import { SseBus } from "./sse/bus";
 import { verifyTeamCode } from "./domjudge/verify";
-import { handleDjProxy } from "./domjudge/proxy";
 import { PrintQueue } from "./print/queue";
 import { handlePrintCallback } from "./print/callback";
 import { buildSourceHtml } from "./print/sourceHtml";
-import type { BalloonService } from "./balloon/service";
+import type { BalloonService, BalloonTask } from "./balloon/service";
 import { DjClient, teamAccountKey, type DjTeam, type DjUser } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
-import { importTeamsFromExcel, syncTeamsFromDomjudge } from "./teams/import";
+import { syncTeamsFromDomjudge } from "./teams/sync";
 import { createAdminLoginHandler, requireAdmin } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
-import { randomInt } from "node:crypto";import { applySettingsPatch, safeSettingsView, settingsPathFor, settingsPatchSchema } from "./admin/settings";
+import { randomInt } from "node:crypto";
 import { appPath } from "./domjudge/proxy";
-import { verifyFormPage, verifyMissPage, verifyWindowPage } from "./pages/teamPages";
+import {
+  applySettingsPatch,
+  assertContestIdMutable,
+  safeSettingsView,
+  settingsPathFor,
+  settingsPatchSchema,
+} from "./admin/settings";
+import { verifyFormPage, verifyMissPage, verifyWaitingPage, verifyClaimDeniedPage } from "./pages/teamPages";
+import { signTeamToken } from "./auth/token";
+import { LoginRequestStore } from "./auth/loginRequests";
+import { ConfigStore } from "./store/configStore";
+import { purgePulledData, type PurgeReport } from "./admin/purge";
+import { log } from "./log/logger";
 
 export type Deps = {
   dataDir: string;
@@ -33,6 +44,13 @@ export type Deps = {
   server?: { requestIP(req: Request): { address: string } | null };
   /** Login history store. Defaults to <dataDir>/login-history.json with a 2000-entry cap. */
   loginHistory?: LoginHistoryStore;
+  /** Approval requests for logins outside the window. Defaults to <dataDir>/login-requests.json. */
+  loginRequests?: LoginRequestStore;
+  /**
+   * Raw balloon-task store. Defaults to <dataDir>/balloon-tasks.json, the same
+   * path index.ts hands to BalloonService. Only used by the purge endpoint.
+   */
+  balloonTasks?: JsonStore<BalloonTask[]>;
   /** Admin frontend build output directory. Defaults to apps/server/static. */
   staticDir?: string;
 };
@@ -60,8 +78,20 @@ export function resolveStaticDir(opts?: {
   return resolve(cwdDir);
 }
 
-export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
-  const dataDir = deps?.dataDir ?? "data";
+/**
+ * `cfg` may be a plain Config (tests, scripts: frozen for the app's lifetime)
+ * or a ConfigStore, whose `current` is re-read on every request so admin
+ * settings edits apply without a restart. Pass a ConfigStore to enable hot
+ * reload — a plain Config is wrapped once and never replaced.
+ */
+export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): Hono {
+  const configStore = config instanceof ConfigStore ? config : new ConfigStore(config);
+  // Always the live values: baseUrl/teamLogin/jwt.secret may all change at
+  // runtime, so nothing derived from it is hoisted out of a handler.
+  const cfg = (): Config => configStore.current;
+  // Absolute, matching index.ts: everything derived here is joined onto it, so
+  // a relative default would let JsonStore join a second time (data/data/).
+  const dataDir = resolve(deps?.dataDir ?? "data");
   const staticDir = deps?.staticDir ? resolve(deps.staticDir) : resolveStaticDir();
   const app = new Hono();
 
@@ -76,10 +106,25 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
 
   const teamsStore = deps?.teamsStore ?? new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
   const loginHistory = deps?.loginHistory ?? new LoginHistoryStore(join(dataDir, "login-history.json"));
+  const loginRequests = deps?.loginRequests ?? new LoginRequestStore(join(dataDir, "login-requests.json"));
+  // Balloon tasks live behind the service, which owns the store (index.ts
+  // builds both); expose the raw rows so the purge can clear and count them.
+  const balloonTasks = deps?.balloonTasks ?? new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks.json"), []);
+
+  // One at a time: a manual sync racing an auto-sync would double-refresh the
+  // balloon service for no benefit.
+  let teamSyncInFlight = false;
+  const syncTeamsAndRefresh = async (client: DjClient, contestId: string): Promise<number> => {
+    const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
+    // Balloon tasks are read straight from DOMjudge's balloons API, whose
+    // contestproblem.label is the display label — no problems fetch (and no
+    // problemsMapped flag) is involved any more. The refreshed team table is
+    // all pollOnce() needs for names and locations.
+    deps?.balloonService?.refresh(teamsStore.load());
+    return count;
+  };
 
   app.get("/health", (c) => c.json({ ok: true }));
-
-  const djRoot = `${cfg.contextPath.replace(/\/+$/, "")}/dj`;
 
   /**
    * A `next` target is honored only as an absolute-path relative URL:
@@ -95,19 +140,34 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       ? raw
       : null;
 
-  app.get("/dj/verify", async (c) => {
+  app.get("/public/verify", async (c) => {
     const raw = c.req.query("code");
     const next = safeNext(c.req.query("next"));
     // No code in the URL → the team types it on the form page.
     if (raw === undefined || raw.trim() === "") {
       const hint = raw !== undefined ? "队伍码不能为空" : undefined;
-      return verifyFormPage(cfg.contextPath, hint, next, cfg.teamLogin);
+      return verifyFormPage(hint, next, cfg().teamLogin);
     }
-    const result = await verifyTeamCode(raw.trim(), teamStore, cfg);
+    const result = await verifyTeamCode(raw.trim(), teamStore, cfg(), new Date(), loginRequests, {
+      ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
+      teamNameOf: (icpcId) => {
+        const team = teamsStore.load().find((t) => teamAccountKey(t) === icpcId);
+        return team?.display_name?.trim() || team?.name || icpcId;
+      },
+      // Live admin nudge: the admin page refreshes from this SSE event (debounced)
+      // and from the manual 刷新 button — there is no polling loop.
+      onRequestCreated: (request) => bus.publish("admin", "login-request", request),
+    });
     if (!result.ok) {
       // Team-facing paths always answer humans with HTML (Accept-agnostic);
       // HTTP status codes keep their semantics (403 on both failures).
-      return result.reason === "bad-code" ? verifyMissPage() : verifyWindowPage(cfg.teamLogin);
+      if (result.reason === "waiting") {
+        return verifyWaitingPage(result.request.id, next);
+      }
+      // With the approval flow wired, a closed window has already looked the
+      // code up: not-found lands here and shows the (unchanged) miss page,
+      // while a found code took the waiting branch above.
+      return verifyMissPage();
     }
     // Successful team-code logins are recorded (only who/when/from-where).
     const matched = teamStore.findByTeamCode(raw.trim());
@@ -117,21 +177,53 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       at: new Date().toISOString(),
       ip: deps?.server?.requestIP(c.req.raw)?.address ?? null,
     });
-    // Path=/ covers both the /dj/* proxy and the root DOMjudge proxy.
+    // Path=/ so the token also reaches DOMjudge's root-proxied pages.
     c.header(
       "Set-Cookie",
       `cxtool-token=${result.token}; Path=/; HttpOnly; SameSite=Lax`,
     );
-    return c.redirect(next ?? `${djRoot}/`, 302);
+    return c.redirect(next ?? "/", 302);
   });
 
-  // Print callback must be registered BEFORE the /dj/* catch-all proxy.
-  app.post("/dj/print", (c) => handlePrintCallback(c, cfg, printQueue, dataDir));
+  // Waiting page for an existing approval request (shared link / manual revisit).
+  app.get("/public/verify/wait", (c) => {
+    const id = c.req.query("req") ?? "";
+    if (!loginRequests.get(id)) {
+      return verifyFormPage("登录请求不存在或已过期，请重新输入队伍码", null, cfg().teamLogin);
+    }
+    return verifyWaitingPage(id, safeNext(c.req.query("next")));
+  });
 
-  // Catch-all proxy must be registered AFTER /dj/verify so verify is not shadowed.
-  app.all("/dj/*", (c) => handleDjProxy(c, cfg, teamStore));
+  // Polled by the waiting page's inline JS; id is a server-issued uuid.
+  app.get("/public/verify/status", (c) => {
+    const req = loginRequests.get(c.req.query("req") ?? "");
+    if (!req) return c.json({ error: "login request not found" }, 404);
+    return c.json({ status: req.status });
+  });
+
+  // Approval is valid ONCE: consume turns approved → claimed, so a replayed
+  // claim link (or a pending/rejected request) always lands on the 403 page.
+  app.get("/public/verify/claim", async (c) => {
+    const next = safeNext(c.req.query("next"));
+    const consumed = loginRequests.consume(c.req.query("req") ?? "");
+    if (!consumed) return verifyClaimDeniedPage();
+    const token = await signTeamToken(cfg().jwt.secret, cfg().jwt.ttlSeconds, consumed.icpcId);
+    loginHistory.append({
+      icpcId: consumed.icpcId,
+      teamCode: consumed.teamCode,
+      at: new Date().toISOString(),
+      ip: consumed.ip ?? deps?.server?.requestIP(c.req.raw)?.address ?? null,
+    });
+    // Path=/ so the token also reaches DOMjudge's root-proxied pages.
+    c.header("Set-Cookie", `cxtool-token=${token}; Path=/; HttpOnly; SameSite=Lax`);
+    return c.redirect(next ?? "/", 302);
+  });
+
+  // Print callback: DOMjudge is configured to POST to /wxt/print.
+  app.post("/print", (c) => handlePrintCallback(c, cfg(), printQueue, dataDir));
 
   // Admin login is registered before the /admin/api/* middleware, which skips it explicitly.
+  // Both read the live config per request (auth can change).
   app.post("/admin/api/login", createAdminLoginHandler(cfg, deps));
   app.use("/admin/api/*", requireAdmin(cfg));
 
@@ -199,16 +291,18 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     const svc = deps?.balloonService;
     if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
     const status = c.req.query("status");
-    const valid = ["pending", "delivered"] as const;
+    const valid = ["pending", "delivered", "stale"] as const;
     return c.json(svc.list(valid.includes(status as never) ? (status as never) : undefined));
   });
 
   app.post("/admin/api/balloon-tasks/:id/ack", async (c) => {
     const svc = deps?.balloonService;
     if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
-    const t = await svc.ack(c.req.param("id"));
-    if (!t) return c.json({ error: "task not found" }, 404);
-    return c.json(t);
+    const result = await svc.ack(c.req.param("id"));
+    // Not in the last poll's balloon list (typo, stale/removed balloon, legacy
+    // row): nothing was POSTed or written, and DOMjudge's /done would 404 anyway.
+    if ("error" in result) return c.json(result, 404);
+    return c.json(result.task);
   });
 
   app.get("/admin/api/teams", (c) => {
@@ -225,46 +319,15 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       return c.json({ error: "contestId required" }, 400);
     }
     try {
-      const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
-      let problemsMapped = true;
-      if (deps?.balloonService) {
-        let problems: Awaited<ReturnType<typeof client.getProblems>>;
-        try {
-          problems = await client.getProblems(contestId);
-        } catch (err) {
-          // A silent failure here leaves balloon tasks with raw problem ids as
-          // labels; the response must tell the operator mapping did not happen.
-          problemsMapped = false;
-          console.error(
-            `team sync: could not fetch problems for contest ${contestId}, balloon tasks will fall back to raw ids:`,
-            err instanceof Error ? err.message : err,
-          );
-          problems = [];
-        }
-        deps.balloonService.refresh(teamsStore.load(), problems);
-      }
-      return c.json({ count, problemsMapped });
+      const count = await syncTeamsAndRefresh(client, contestId);
+      return c.json({ count });
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
     }
   });
 
-  app.post("/admin/api/teams/import-excel", async (c) => {
-    const form = await c.req.formData().catch(() => null);
-    const file = form?.get("file");
-    if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
-    const buffer = Buffer.from(await file.arrayBuffer());
-    let result;
-    try {
-      result = await importTeamsFromExcel(buffer, teamsStore.load(), teamStore);
-    } catch {
-      return c.json({ ok: false, reason: "invalid excel file" }, 400);
-    }
-    return c.json(result);
-  });
-
   app.get("/admin/api/settings", (c) => {
-    return c.json(safeSettingsView(cfg));
+    return c.json(safeSettingsView(cfg()));
   });
 
   app.put("/admin/api/settings", async (c) => {
@@ -278,18 +341,106 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     if (newPassword !== undefined && newPassword !== "" && newPassword.trim() === "") {
       return c.json({ error: "密码不能是空白字符，请输入至少 6 个非空白字符" }, 400);
     }
-    let updated;
+    const before = cfg();
+    // The contest id is write-once: refuse a different value before anything is
+    // written, otherwise the balloon poller would silently switch contests.
+    const mutable = assertContestIdMutable(before, parsed.data);
+    if (!mutable.ok) {
+      return c.json(
+        {
+          error: "contest id locked",
+          message: "比赛 ID 已锁定，设置后不可修改；如需更换请先清空比赛数据",
+        },
+        403,
+      );
+    }
+    let updated: Config;
     try {
-      updated = applySettingsPatch(cfg, parsed.data, settingsPathFor(dataDir));
+      updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir));
     } catch (err) {
-      console.error("settings update failed:", err instanceof Error ? err.message : err);
+      log.error("admin", "settings update failed:", err instanceof Error ? err.message : err);
       return c.json({ error: "保存失败，请稍后重试" }, 500);
     }
+    // Hot reload: the file is already written above, so a failing listener must
+    // never turn a successful save into an error response (ConfigStore logs it).
+    configStore.replace(updated);
+    // First time the contest id lands (empty → non-empty, or a new id after a
+    // purge): pull the team table once in the background. The PUT must not wait
+    // on DOMjudge, and a failure here must not fail the save.
+    const beforeId = before.balloon?.contestId?.trim() ?? "";
+    const afterId = updated.balloon?.contestId?.trim() ?? "";
+    const client = deps?.djClient;
+    if (afterId && afterId !== beforeId && client) {
+      // A sync already running for the old id can't be repurposed: the team
+      // table would stay stale for the new id, so at least say so.
+      if (teamSyncInFlight) {
+        log.warn("admin", "上一次队伍同步仍在进行，本次变更未触发自动同步，请稍后手动同步");
+      } else {
+        teamSyncInFlight = true;
+        void syncTeamsAndRefresh(client, afterId)
+          .then((count) => log.info("admin", `比赛 ID 已设置，后台自动同步队伍完成：共 ${count} 支队伍`))
+          .catch((err) => log.warn("admin", "后台自动同步队伍失败:", err instanceof Error ? err.message : err))
+          .finally(() => {
+            teamSyncInFlight = false;
+          });
+      }
+    }
     // Password fields are write-only and never echoed back.
-    return c.json({ ...safeSettingsView(updated), note: "已保存，重启服务后生效" });
+    return c.json({ ...safeSettingsView(updated), note: "已保存，立即生效" });
   });
 
-  /** Teams joined with their login codes. Only teams holding a code are listed;
+  /**
+   * Wipe every value pulled from DOMjudge and unlock the contest id: the
+   * balloon poller stops (contestId is now "") and a different contest can be
+   * configured. settings.json and secret.key survive — only the balloon id is
+   * reset. Gated by the /admin/api/* admin middleware, which also rejects any
+   * mutating request whose Origin/Referer is not this server.
+   *
+   * The purge is not transactional: an archive dir may already be gone while
+   * the settings rewrite fails. The error copy therefore says part of the data
+   * is gone and asks the operator to click purge again (it is safe to repeat).
+   */
+  app.post("/admin/api/data/purge", (c) => {
+    const teamCredentials = teamStore.store as JsonStore<Record<string, unknown>>;
+    let report: PurgeReport | null = null;
+    let partialError: unknown = null;
+    // Stop the poller BEFORE the wipe: stopping only after balloonTasks.save([])
+    // left a window in which a poll that was already past its generation check
+    // could write its stale snapshot back over the emptied file. stop() is
+    // synchronous and bumps the generation, so from here on no poll can reach a
+    // store write (the reconcile loop and refresh()/ack() all re-check it).
+    deps?.balloonService?.stop();
+    try {
+      report = purgePulledData({
+        dataDir,
+        liveCfg: cfg(),
+        teams: teamsStore,
+        teamCredentials,
+        printTasks: printQueue.store,
+        balloonTasks,
+        loginHistory: loginHistory.store,
+        loginRequests: loginRequests.store,
+        // Live config: adopt the rewritten settings.json so every request sees
+        // an empty contestId and the onChange listener reconfigures the poller.
+        contestIdReset: (next) => configStore.replace(next),
+      });
+    } catch (err) {
+      partialError = err;
+    }
+    // The emptied id already stops reconfigure(); this also covers the case
+    // where the live store was out of step with disk, and guarantees nothing
+    // is scheduled when the response returns (it is idempotent: the first
+    // stop() above is the one the race argument depends on).
+    deps?.balloonService?.stop();
+    if (partialError || !report) {
+      log.error("admin", "data purge failed:", partialError instanceof Error ? partialError.message : partialError);
+      return c.json({ error: "清空数据失败，已清空部分数据，请再次点击清空" }, 500);
+    }
+    return c.json(report);
+  });
+
+  /**
+   * Teams joined with their login codes. Only teams holding a code are listed;
    *  the rest are summarized so the UI can keep the 已发 X / Y counter meaningful. */
   app.get("/admin/api/team-codes", (c) => {
     const all = teamsStore.load().map((t) => {
@@ -438,6 +589,36 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
     return c.json(rows);
   });
 
+  /**
+   * Approval requests for logins outside the window (see auth/loginRequests):
+   * `pending` is the admin's work queue, `recent` the decided history
+   * (newest first, capped so the payload stays small mid-contest).
+   */
+  app.get("/admin/api/login-requests", (c) => {
+    const all = loginRequests.listAll();
+    // Stable: requestedAt desc, ties keep store order (newest created first).
+    const recent = all
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.status !== "pending")
+      .sort((a, b) => b.r.requestedAt.localeCompare(a.r.requestedAt) || a.i - b.i)
+      .slice(0, 50)
+      .map(({ r }) => r);
+    return c.json({ pending: all.filter((r) => r.status === "pending"), recent });
+  });
+
+  app.post("/admin/api/login-requests/:id/decision", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const decision = body?.decision;
+    if (decision !== "approved" && decision !== "rejected") {
+      return c.json({ error: "decision must be approved or rejected" }, 400);
+    }
+    // decide() only mutates pending requests, so an already-decided (or unknown)
+    // id surfaces as 404 instead of silently overwriting a previous decision.
+    const updated = loginRequests.decide(c.req.param("id"), decision);
+    if (!updated) return c.json({ error: "login request not found" }, 404);
+    return c.json(updated);
+  });
+
   app.get("/admin/api/events", (c) => {
     return streamSSE(c, async (stream) => {
       const unsub = bus.subscribe("admin", (e) => {
@@ -489,9 +670,17 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
       // Validate the decoded form (URL-encoded traversal like %2e%2e must not
       // survive decoding into a ".." segment); also reject raw suspicious
       // sequences in case decoding already happened upstream.
-      const raw = appPath(c, cfg);
+      const raw = appPath(c);
       if (/(^|\/)\.\.?(\/|$)/.test(raw) || /%2e|%2f|%5c/i.test(raw)) {
         return c.json({ ok: false, reason: "forbidden" }, 403);
+      }
+      // The old /wxt/dj/* proxy layer is gone (DOMjudge lives at the site root).
+      // Answer 404 instead of the SPA index, so a stale bookmark fails loudly
+      // rather than rendering the admin shell at a DOMjudge-looking URL.
+      // Normalized first: `//dj`, `/DJ/` and `/dj//verify` must match too.
+      const normalized = raw.replace(/\/{2,}/g, "/").toLowerCase();
+      if (normalized === "/dj" || normalized.startsWith("/dj/")) {
+        return c.notFound();
       }
       const decodedPath = raw === "/" ? "" : safeDecode(raw);
       if (decodedPath === null) return c.json({ ok: false, reason: "forbidden" }, 403);

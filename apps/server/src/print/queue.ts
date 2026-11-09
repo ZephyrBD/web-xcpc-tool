@@ -17,7 +17,8 @@ export type PrintTask = {
 };
 
 export class PrintQueue {
-  private readonly store: JsonStore<PrintTask[]>;
+  /** Underlying store; exposed for maintenance flows (admin purge). */
+  readonly store: JsonStore<PrintTask[]>;
   private readonly listeners: Array<(t: PrintTask) => void> = [];
 
   constructor(filePath = "print-tasks.json") {

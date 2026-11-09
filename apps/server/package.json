@@ -11,7 +11,6 @@
     "bcryptjs": "^3.0.3",
     "hono": "^4.0.0",
     "pdfkit": "^0.20.2",
-    "xlsx": "^0.18.5",
     "zod": "^3.24.0"
   },
   "devDependencies": {

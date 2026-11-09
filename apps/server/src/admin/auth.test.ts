@@ -67,12 +67,11 @@ describe("admin auth", () => {
     expect(setCookie).toContain(`${ADMIN_COOKIE}=${token}`);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
-    expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("Path=/wxt/");
   });
 
-  test("cookie path follows the contextPath", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
-    const app = createApp(cfg, { dataDir });
+  test("cookie path is pinned to the fixed /wxt mount", async () => {
+    const app = createApp(await makeCfg(), { dataDir });
     const res = await login(app, { username: "admin", password: PASSWORD });
     expect(res.headers.get("set-cookie")).toContain("Path=/wxt/");
   });
@@ -102,7 +101,6 @@ describe("admin auth", () => {
       ["/admin/api/balloon-tasks", {}],
       ["/admin/api/teams", {}],
       ["/admin/api/teams/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }],
-      ["/admin/api/teams/import-excel", { method: "POST" }],
       ["/admin/api/print-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/balloon-tasks/t1/ack", { method: "POST" }],
       ["/admin/api/events", {}],
@@ -160,7 +158,7 @@ describe("admin auth", () => {
   });
 
   test("401 applies through a /wxt mount too", async () => {
-    const cfg = { ...(await makeCfg()), contextPath: "/wxt" };
+    const cfg = await makeCfg();
     const mounted = new Hono().route("/wxt", createApp(cfg, { dataDir }));
     const res = await mounted.request("/wxt/admin/api/settings");
     expect(res.status).toBe(401);
@@ -171,6 +169,47 @@ describe("admin auth", () => {
     });
     expect(loginRes.status).toBe(200);
     expect(loginRes.headers.get("set-cookie")).toContain("Path=/wxt/");
+  });
+
+  // Production mounts the whole app at /wxt, so these paths carry the prefix:
+  // an unmounted-only test would hide a path comparison that never matches.
+  test("SSE events accepts ?token= query param through the /wxt mount", async () => {
+    const cfg = await makeCfg();
+    const mounted = new Hono().route("/wxt", createApp(cfg, { dataDir }));
+    const { token } = await (
+      await mounted.request("/wxt/admin/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: PASSWORD }),
+      })
+    ).json();
+    const controller = new AbortController();
+    const res = await mounted.request(`/wxt/admin/api/events?token=${encodeURIComponent(token)}`, {
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+    controller.abort();
+  });
+
+  test("SSE events still rejects a bad ?token= through the /wxt mount", async () => {
+    const mounted = new Hono().route("/wxt", createApp(await makeCfg(), { dataDir }));
+    const controller = new AbortController();
+    const res = await mounted.request("/wxt/admin/api/events?token=bogus", {
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(401);
+    controller.abort();
+  });
+
+  test("a mounted POST /wxt/admin/api/login is not gated by requireAdmin", async () => {
+    const mounted = new Hono().route("/wxt", createApp(await makeCfg(), { dataDir }));
+    const res = await mounted.request("/wxt/admin/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: PASSWORD }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toContain(`${ADMIN_COOKIE}=`);
   });
 });
 

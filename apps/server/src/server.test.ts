@@ -1,20 +1,26 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
+import { hashSync } from "bcryptjs";
 import { loadConfig } from "./config";
+import { CONTEXT_PATH } from "./config";
 import { createApp, resolveStaticDir } from "./server";
+import { makeRootDispatch } from "./domjudge/proxy";
 import { adminAuthHeaders } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
-import { DjClient } from "./domjudge/client";
+import { DjClient, type DjTeam } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
+import type { BalloonTask } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
 import { JsonStore } from "./store/store";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { TeamStore } from "./store/teams";
 import { SseBus } from "./sse/bus";
 import { verifyTeamToken } from "./auth/token";
+import { LoginRequestStore } from "./auth/loginRequests";
+import { ConfigStore } from "./store/configStore";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
@@ -68,15 +74,565 @@ describe("createApp", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  // An id that exists in the store but is not in the last balloon poll (a
+  // legacy/manual row) must 404 with the balloon-not-found body, and get no POST.
+  test("balloon ack for an id the last poll did not return returns 404 and POSTs nothing", async () => {
+    const cfg = loadConfigWithSecret();
+    const posted: string[] = [];
+    const client = {
+      getBalloons: async () => [],
+      markBalloonDone: async (_cid: string, id: string) => {
+        posted.push(id);
+        return null;
+      },
+    } as unknown as DjClient;
+    const store = new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks-stale.json"), []);
+    store.save([
+      {
+        id: "legacy-9",
+        contestId: "C1",
+        problemLabel: "A",
+        teamName: "Team X",
+        location: null,
+        status: "pending",
+        createdAt: "x",
+        // Current schema: an id the last poll never returned, not an old row
+        // (old rows are discarded at construction, see discardForeignRows).
+        balloonId: null,
+      },
+    ]);
+    const balloonService = new BalloonService({
+      client,
+      store,
+      bus: new SseBus(),
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {},
+    });
+    const app = createApp(cfg, { dataDir, balloonService });
+
+    const res = await app.request("/admin/api/balloon-tasks/legacy-9/ack", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "balloon not found" });
+    expect(posted).toEqual([]);
+    expect(store.load()[0].status).toBe("pending");
+  });
+
+  test("GET /admin/api/balloon-tasks?status=stale returns only stale rows", async () => {
+    const cfg = loadConfigWithSecret();
+    const balloonService = new BalloonService({
+      client: {} as DjClient,
+      store: new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks-stale-list.json"), []),
+      bus: new SseBus(),
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {},
+    });
+    const app = createApp(cfg, { dataDir, balloonService });
+    const res = await app.request("/admin/api/balloon-tasks?status=stale", {
+      headers: await adminAuthHeaders(cfg),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+});
+
+describe("login approval flow (outside the login window)", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-approval-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // end in the past → the window is permanently closed for these tests.
+  const makeCfg = () => ({
+    ...loadConfigWithSecret(),
+    teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
+  });
+
+  const setup = () => {
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const bus = new SseBus();
+    const app = createApp(makeCfg(), { dataDir, teamStore, loginRequests, bus });
+    return { app, teamCode, loginRequests, bus };
+  };
+
+  test("correct code outside the window returns the waiting page and creates one pending request", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    const res = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(res.status).toBe(200);
+    const pending = loginRequests.listPending();
+    expect(pending.length).toBe(1);
+    expect(pending[0].icpcId).toBe("icpc1");
+    expect(await res.text()).toContain(pending[0].id);
+    // resubmitting the same team code reuses the existing pending request
+    await app.request(`/public/verify?code=${teamCode}`);
+    expect(loginRequests.listAll().length).toBe(1);
+  });
+
+  test("approved request claims a token exactly once; a replayed claim is 403", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    const id = loginRequests.listPending()[0].id;
+
+    const statusRes = await app.request(`/public/verify/status?req=${id}`);
+    expect(await statusRes.json()).toEqual({ status: "pending" });
+    expect(loginRequests.decide(id, "approved")?.status).toBe("approved");
+
+    const claim = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(claim.status).toBe(302);
+    expect(claim.headers.get("location")).toBe("/");
+    const setCookie = claim.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("cxtool-token=");
+    expect(setCookie).toContain("Path=/; HttpOnly; SameSite=Lax");
+    const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    expect((await verifyTeamToken("test-secret", token))?.sub).toBe("icpc1");
+
+    const again = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(again.status).toBe(403);
+    expect(await again.text()).toContain("队伍登录");
+  });
+
+  test("a rejected request cannot claim and the status poll reports it", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    const id = loginRequests.listPending()[0].id;
+    loginRequests.decide(id, "rejected");
+
+    const statusRes = await app.request(`/public/verify/status?req=${id}`);
+    expect(await statusRes.json()).toEqual({ status: "rejected" });
+    const claim = await app.request(`/public/verify/claim?req=${id}`, { redirect: "manual" });
+    expect(claim.status).toBe(403);
+    expect(claim.headers.get("set-cookie")).toBeNull();
+  });
+
+  test("waiting page keeps a deep-link next value in the poll JS and claim honors it", async () => {
+    const { app, teamCode, loginRequests } = setup();
+    // encodeURIComponent escapes every ? & = / here — the JS literal must hold
+    // the encoded form as-is (HTML entities would corrupt the claim URL).
+    const next = "/scoreboard?tab=full&x=1";
+    const res = await app.request(
+      `/public/verify?code=${teamCode}&next=${encodeURIComponent(next)}`,
+      { redirect: "manual" },
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("&next=%2Fscoreboard%3Ftab%3Dfull%26x%3D1");
+    expect(html).not.toContain("&amp;next=");
+    const id = loginRequests.listPending()[0].id;
+    loginRequests.decide(id, "approved");
+    const claim = await app.request(
+      `/public/verify/claim?req=${id}&next=${encodeURIComponent(next)}`,
+      { redirect: "manual" },
+    );
+    expect(claim.status).toBe(302);
+    expect(claim.headers.get("location")).toBe(next);
+  });
+
+  test("wrong code outside the window still returns the 403 miss page and creates no request", async () => {
+    const { app, loginRequests } = setup();
+    const res = await app.request("/public/verify?code=zzzzzzzzzzzz");
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("队伍码不正确");
+    expect(loginRequests.listAll().length).toBe(0);
+  });
+
+  test("inside the login window no approval request is ever created", async () => {
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const cfg = { ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } };
+    const app = createApp(cfg, { dataDir, teamStore, loginRequests });
+
+    const res = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(loginRequests.listAll().length).toBe(0);
+  });
+});
+
+describe("settings hot reload", () => {
+  let dataDir: string;
+  /** bcrypt hash of "live-pass": stands in for a password bootstrapped at boot. */
+  const liveHash = hashSync("live-pass", 4);
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-hot-reload-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test("a PUT that closes the login window takes effect on the same app instance", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } });
+    const teamStore = makeTeamStore(dataDir);
+    const teamCode = teamStore.setTeamCode("icpc1");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const app = createApp(store, { dataDir, teamStore, loginRequests });
+
+    // Window open: the valid code logs in directly.
+    const open = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(open.status).toBe(302);
+    expect(loginRequests.listAll().length).toBe(0);
+
+    // Close the window in the past through the admin API (same instance).
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ teamLogin: { start: "", end: "2000-01-01T00:00:00Z" } }),
+    });
+    expect(put.status).toBe(200);
+    expect((await put.json() as { note?: string }).note).toBe("已保存，立即生效");
+
+    const closed = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
+    expect(closed.status).toBe(200);
+    expect(await closed.text()).toContain("等待管理员审批");
+    expect(loginRequests.listPending().length).toBe(1);
+
+    // GET reflects the live values too.
+    const view = await (await app.request("/admin/api/settings", { headers: await adminAuthHeaders(store.current) })).json();
+    expect((view as { teamLogin: unknown }).teamLogin).toEqual({ start: "", end: "2000-01-01T00:00:00Z" });
+  });
+
+  test("a ConfigStore passed to createApp is updated in place by a PUT", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), teamLogin: { start: "", end: "" } });
+    const app = createApp(store, { dataDir });
+    const changes: string[] = [];
+    store.onChange((next) => changes.push(next.teamLogin.end));
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ teamLogin: { end: "2001-01-01T00:00:00Z" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.teamLogin.end).toBe("2001-01-01T00:00:00Z");
+    expect(changes).toEqual(["2001-01-01T00:00:00Z"]);
+  });
+
+  test("a PUT that sets a new contest id auto-syncs teams once in the background", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), balloon: { contestId: "", pollIntervalSeconds: 30 } });
+    const teamsStore = new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+    const contestIds: string[] = [];
+    const client = {
+      getTeams: async (cid: string) => {
+        contestIds.push(cid);
+        return [{ id: "1", icpc_id: "t1", name: "Team One" }];
+      },
+    } as unknown as DjClient;
+    const app = createApp(store, { dataDir, djClient: client, teamsStore });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { contestId: "C1" } }),
+    });
+    expect(put.status).toBe(200);
+
+    // The sync runs in the background; poll until the team table lands.
+    const deadline = Date.now() + 2000;
+    while (teamsStore.load().length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(contestIds).toEqual(["C1"]);
+    expect(teamsStore.load()[0]).toMatchObject({ name: "Team One" });
+
+    // A second PUT with the same id must not trigger another sync.
+    const again = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { contestId: "C1" } }),
+    });
+    expect(again.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(contestIds).toEqual(["C1"]);
+  });
+
+  test("a PUT that only changes the poll interval does not sync teams", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), balloon: { contestId: "C1", pollIntervalSeconds: 30 } });
+    const contestIds: string[] = [];
+    const client = {
+      getTeams: async (cid: string) => {
+        contestIds.push(cid);
+        return [];
+      },
+    } as unknown as DjClient;
+    const app = createApp(store, { dataDir, djClient: client });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { pollIntervalSeconds: 60 } }),
+    });
+    expect(put.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(contestIds).toEqual([]);
+  });
+
+
+  test("replacing print.token hot-reloads the print callback auth", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), print: { token: "old-token" } });
+    const app = createApp(store, { dataDir });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ print: { token: "new-token" } }),
+    });
+    expect(put.status).toBe(200);
+
+    const form = () => {
+      const fd = new FormData();
+      fd.set("file", new File([Buffer.from("%PDF-1.4 test")], "a.pdf"));
+      return fd;
+    };
+    const stale = await app.request("/print", { method: "POST", headers: { "org.domjudge.print-token": "old-token" }, body: form() });
+    expect(stale.status).toBe(403);
+    const fresh = await app.request("/print", { method: "POST", headers: { "org.domjudge.print-token": "new-token" }, body: form() });
+    expect(fresh.status).toBe(200);
+  });
+
+  test("an admin password change is usable for login on the same instance", async () => {
+    const store = new ConfigStore({
+      ...loadConfigWithSecret(),
+      admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 },
+    });
+    const app = createApp(store, { dataDir });
+    // No hash configured yet → bootstrap one via PUT with a known password.
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ admin: { password: "brand-new-pass", username: "chief" } }),
+    });
+    expect(put.status).toBe(200);
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "chief", password: "brand-new-pass" }),
+    });
+    expect(login.status).toBe(200);
+  });
+
+  test("a username-only PUT on a complete settings.json keeps the stored password", async () => {
+    // Same assertion against the steady-state file (hash already on disk): the
+    // guard is a no-op here and the rename must simply work.
+    const diskCfg = {
+      ...loadConfigWithSecret(),
+      admin: { username: "admin", passwordHash: liveHash, password: "live-pass", sessionTtlSeconds: 28800 },
+    };
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskCfg));
+    const store = new ConfigStore(diskCfg);
+    const app = createApp(store, { dataDir });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ admin: { username: "chief" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.admin.username).toBe("chief");
+    expect(store.current.admin.passwordHash).toBe(liveHash);
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "chief", password: "live-pass" }),
+    });
+    expect(login.status).toBe(200);
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.username).toBe("chief");
+    expect(saved.admin.passwordHash).toBe(liveHash);
+  });
+});
+
+describe("admin login-request review API", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "server-login-req-api-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const makeCfg = () => ({
+    ...loadConfigWithSecret(),
+    teamLogin: { start: "", end: "2000-01-01T00:00:00Z" },
+  });
+
+  /** Two teams so the "recent" ordering (requestedAt desc) is meaningful. */
+  const setup = () => {
+    const teamStore = makeTeamStore(dataDir);
+    const code1 = teamStore.setTeamCode("icpc1");
+    const code2 = teamStore.setTeamCode("icpc2");
+    const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
+    const bus = new SseBus();
+    const cfg = makeCfg();
+    const app = createApp(cfg, { dataDir, teamStore, loginRequests, bus });
+    const teamLogin = (code: string) => app.request(`/public/verify?code=${code}`, { redirect: "manual" });
+    const auth = () => adminAuthHeaders(cfg);
+    const decide = async (id: string, decision: unknown) =>
+      app.request(`/admin/api/login-requests/${id}/decision`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await auth()) },
+        body: JSON.stringify({ decision }),
+      });
+    return { app, cfg, teamStore, loginRequests, bus, code1, code2, teamLogin, auth, decide };
+  };
+
+  test("both endpoints reject unauthenticated requests with 401", async () => {
+    const { app } = setup();
+    const list = await app.request("/admin/api/login-requests");
+    expect(list.status).toBe(401);
+    const post = await app.request("/admin/api/login-requests/any/decision", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(post.status).toBe(401);
+  });
+
+  test("GET returns pending and recent lists; decisions move requests to recent, newest first", async () => {
+    const { app, teamLogin, auth, decide, code1, code2, loginRequests } = setup();
+    await teamLogin(code1);
+    await teamLogin(code2);
+    const [r2, r1] = loginRequests.listPending(); // store prepends: newest first
+    expect(r1.icpcId).toBe("icpc1");
+    expect(r2.icpcId).toBe("icpc2");
+
+    const initial = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(initial.pending.map((r: { icpcId: string }) => r.icpcId).sort()).toEqual(["icpc1", "icpc2"]);
+    expect(initial.recent).toEqual([]);
+
+    const approvedRes = await decide(r1.id, "approved");
+    expect(approvedRes.status).toBe(200);
+    const approved = await approvedRes.json();
+    expect(approved.id).toBe(r1.id);
+    expect(approved.status).toBe("approved");
+    expect(typeof approved.decidedAt).toBe("string");
+    await decide(r2.id, "rejected");
+
+    const after = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(after.pending).toEqual([]);
+    // both are stamped "now", so ordering is decided by requestedAt desc; r2 was created last.
+    expect(after.recent.map((r: { icpcId: string }) => r.icpcId)).toEqual(["icpc2", "icpc1"]);
+    const times = after.recent.map((r: { requestedAt: string }) => Date.parse(r.requestedAt));
+    expect(times[0]).toBeGreaterThanOrEqual(times[1]);
+  });
+
+  test("recent is capped at 50 and holds every decided request, claimed included", async () => {
+    const { app, auth, loginRequests } = setup();
+    // 55 decided + 1 still pending; seeding the store directly keeps this fast.
+    for (let i = 0; i < 55; i++) {
+      const r = loginRequests.create({ icpcId: `icpc${i}`, teamCode: `code${i}`, teamName: `Team ${i}`, ip: null });
+      loginRequests.decide(r.id, i % 2 === 0 ? "approved" : "rejected");
+    }
+    loginRequests.create({ icpcId: "pending-team", teamCode: "pending-code", teamName: "Pending", ip: null });
+    // A claimed (already consumed) request stays in history: it is decided, not pending.
+    const claimed = loginRequests.create({ icpcId: "claimed-team", teamCode: "claimed-code", teamName: "Claimed", ip: null });
+    loginRequests.decide(claimed.id, "approved");
+    loginRequests.consume(claimed.id);
+
+    const body = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
+    expect(body.pending.length).toBe(1);
+    expect(body.pending[0].icpcId).toBe("pending-team");
+    // 56 decided entries, newest (the claimed one) first, capped at 50.
+    expect(body.recent.length).toBe(50);
+    expect(body.recent[0]).toMatchObject({ icpcId: "claimed-team", status: "claimed" });
+    expect(body.recent.every((r: { status: string }) => r.status !== "pending")).toBe(true);
+  });
+
+  test("decision on an unknown id is 404 and a bad decision value is 400", async () => {
+    const { teamLogin, decide, code1, loginRequests } = setup();
+    await teamLogin(code1);
+    const id = loginRequests.listPending()[0].id;
+
+    expect((await decide("no-such-request", "approved")).status).toBe(404);
+    for (const bad of ["pending", "claimed", "", 42, null]) {
+      const res = await decide(id, bad);
+      expect(res.status).toBe(400);
+    }
+    // no bad decision leaked through: the request is still pending
+    expect(loginRequests.get(id)?.status).toBe("pending");
+
+    const okRes = await decide(id, "rejected");
+    expect((await okRes.json()).status).toBe("rejected");
+    // already decided: the store only mutates pending requests, so the
+    // request is unchanged and there is no pending request left to decide
+    expect((await decide(id, "approved")).status).toBe(404);
+    expect(loginRequests.get(id)?.status).toBe("rejected");
+  });
+
+  test("a new approval request publishes a login-request event on the admin channel", async () => {
+    const { app, bus, teamLogin, code1, code2, loginRequests } = setup();
+    const events: Array<{ event: string; data: unknown }> = [];
+    const off = bus.subscribe("admin", (e) => events.push(e));
+
+    await teamLogin(code1);
+    expect(events.length).toBe(1);
+    expect(events[0].event).toBe("login-request");
+    expect(events[0].data).toMatchObject({ icpcId: "icpc1", status: "pending" });
+
+    // re-submitting the same code reuses the pending request → no second event
+    await teamLogin(code1);
+    expect(events.length).toBe(1);
+    // …but another team's request does publish
+    await teamLogin(code2);
+    expect(events.length).toBe(2);
+
+    // wrong codes never reach the approval store
+    await teamLogin("zzzzzzzzzzzz");
+    expect(events.length).toBe(2);
+    expect(loginRequests.listAll().length).toBe(2);
+    off();
+  });
+
+  test("the admin SSE stream carries the login-request event", async () => {
+    const { app, cfg, teamLogin, code1 } = setup();
+    const token = (await adminAuthHeaders(cfg)).authorization.slice("Bearer ".length);
+    const controller = new AbortController();
+    const res = await app.request(`/admin/api/events?token=${encodeURIComponent(token)}`, {
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+
+    await teamLogin(code1);
+    const reader = res.body!.getReader();
+    let text = "";
+    // The ping frame is written first, so the login-request frame follows it.
+    while (!text.includes("login-request")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += new TextDecoder().decode(value);
+    }
+    controller.abort();
+    expect(text).toContain("event: login-request");
+    expect(text).toContain(`"icpcId":"icpc1"`);
+  });
 });
 
 const TEAMS_JSON = [
   { id: "t1", icpc_id: "icpc1", name: "Team X", location: { description: "A-101" } },
 ];
 const PROBLEMS_JSON = [{ id: "p1", label: "A", name: "Alpha" }];
+const BALLOONS_JSON = [
+  { balloonid: 1, time: "2026-01-01T00:00:00Z", problem: "p1", contestproblem: { id: "p1", label: "A" }, teamid: "t1", done: false },
+];
 const CONTEST_API: Record<string, unknown> = {
   "/api/v4/contests/C1/teams": TEAMS_JSON,
   "/api/v4/contests/C1/problems": PROBLEMS_JSON,
+  // Balloon tasks come from this endpoint only (Task 4); the judgements /
+  // submissions entries stay so any accidental synthesis would still show.
+  "/api/v4/contests/C1/balloons": BALLOONS_JSON,
   "/api/v4/contests/C1/judgements": [
     { id: "j1", submission: "s1", judgement_type_id: "correct" },
   ],
@@ -112,7 +668,6 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
 
   const makeCfg = () => ({
     ...loadConfigWithSecret(),
-    contextPath: "",
     jwt: { secret: "dod-test-secret", ttlSeconds: 3600 },
     domjudge: {
       baseUrl: `http://127.0.0.1:${upstream.port}`,
@@ -132,17 +687,19 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     const app = createApp(makeCfg(), { dataDir, teamStore, printQueue });
 
     // 1. verify issues the team-token cookie carrying the icpcId
-    const verifyRes = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const verifyRes = await app.request(`/public/verify?code=${teamCode}`, { redirect: "manual" });
     expect(verifyRes.status).toBe(302);
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cxtool-token=");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
     expect((await verifyTeamToken("dod-test-secret", token))?.sub).toBe("icpc1");
 
-    // 2. the cookie lets /dj/* reach the mock upstream
-    const proxied = await app.request("/dj/anything", {
-      headers: { cookie: `cxtool-token=${token}` },
-    });
+    // 2. the cookie lets the root DOMjudge proxy reach the mock upstream
+    const serving = new Hono().route(CONTEXT_PATH, app);
+    const dispatch = makeRootDispatch(serving, makeCfg(), teamStore);
+    const proxied = await dispatch(
+      new Request("http://s.test/anything", { headers: { cookie: `cxtool-token=${token}` } }),
+    );
     expect(proxied.status).toBe(200);
     expect(await proxied.text()).toBe("upstream-ok");
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
@@ -153,7 +710,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     form.set("location", "A-101");
     form.set("teamname", "Team X");
     form.set("teamid", "t1");
-    const printRes = await app.request("/dj/print", {
+    const printRes = await app.request("/print", {
       method: "POST",
       headers: { "org.domjudge.print-token": "print-tok" },
       body: form,
@@ -172,22 +729,28 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     expect(tasks[0].pdfPath).toBeUndefined();
   });
 
-  test("verify → proxy chain works through a /wxt mount", async () => {
+  test("verify → proxy chain works through the fixed /wxt mount", async () => {
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc2");
-    const cfg = { ...makeCfg(), contextPath: "/wxt" };
-    const app = new Hono().route("/wxt", createApp(cfg, { dataDir, teamStore }));
+    const cfg = makeCfg();
+    const serving = new Hono().route(CONTEXT_PATH, createApp(cfg, { dataDir, teamStore }));
+    const dispatch = makeRootDispatch(serving, cfg, teamStore);
 
-    const verifyRes = await app.request(`/wxt/dj/verify?code=${teamCode}`, { redirect: "manual" });
+    const verifyRes = await dispatch(
+      new Request(`http://s.test${CONTEXT_PATH}/public/verify?code=${teamCode}`, { redirect: "manual" }),
+    );
     expect(verifyRes.status).toBe(302);
-    expect(verifyRes.headers.get("location")).toBe("/wxt/dj/");
+    expect(verifyRes.headers.get("location")).toBe("/");
     const setCookie = verifyRes.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("Path=/");
     const token = /cxtool-token=([^;]+)/.exec(setCookie)?.[1] ?? "";
 
-    const proxied = await app.request("/wxt/dj/anything", {
-      headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
-    });
+    // DOMjudge lives at the site root now; the mounted /wxt app is not involved.
+    const proxied = await dispatch(
+      new Request("http://s.test/anything", {
+        headers: { cookie: `cxtool-token=${token}; DOMjudgeSID=keep` },
+      }),
+    );
     expect(proxied.status).toBe(200);
     expect(await proxied.text()).toBe("upstream-ok");
     expect(upstreamRequests).toContainEqual({ method: "GET", path: "/anything" });
@@ -200,8 +763,8 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     const history = new LoginHistoryStore(join(dataDir, "hist.json"));
     const app = createApp(makeCfg(), { dataDir, teamStore, loginHistory: history });
 
-    await app.request(`/dj/verify?code=${code1}`, { redirect: "manual" });
-    await app.request(`/dj/verify?code=${code2}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${code1}`, { redirect: "manual" });
+    await app.request(`/public/verify?code=${code2}`, { redirect: "manual" });
 
     const res = await app.request("/admin/api/login-history", {
       headers: await adminAuthHeaders(makeCfg()),
@@ -216,26 +779,12 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
   test("wrong team code never issues a cookie", async () => {
     const teamStore = makeTeamStore(dataDir);
     const app = createApp(makeCfg(), { dataDir, teamStore });
-    const res = await app.request("/dj/verify?code=zzzzzzzzzzzz");
+    const res = await app.request("/public/verify?code=zzzzzzzzzzzz");
     expect(res.status).toBe(403);
     expect(res.headers.get("set-cookie")).toBeNull();
   });
 
-  test("import-excel with an invalid file returns 400 invalid excel file", async () => {
-    const teamStore = makeTeamStore(dataDir);
-    const app = createApp(makeCfg(), {
-      dataDir,
-      teamStore,
-      teamsStore: new JsonStore(join(dataDir, "teams.json"), []),
-    });
-    const form = new FormData();
-    form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])], "bad.xlsx"));
-    const res = await app.request("/admin/api/teams/import-excel", { method: "POST", headers: await adminAuthHeaders(makeCfg()), body: form });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ ok: false, reason: "invalid excel file" });
-  });
-
-  test("team sync refreshes the balloon service label/name lookups", async () => {
+  test("team sync refreshes the balloon service team lookups", async () => {
     const cfg = makeCfg();
     const client = new DjClient(cfg.domjudge);
     const bus = new SseBus();
@@ -260,32 +809,44 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       body: JSON.stringify({ contestId: "C1" }),
     });
     expect(syncRes.status).toBe(200);
-    expect(await syncRes.json()).toEqual({ count: 1, problemsMapped: true });
+    expect(await syncRes.json()).toEqual({ count: 1 });
 
-    // balloon service must resolve team/problem ids via refreshed lookups
+    // pollOnce reads the balloons API and resolves team name/location plus the
+    // contestproblem label from the local team table.
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
     const tasks = await (await app.request("/admin/api/balloon-tasks", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
-    expect(tasks[0].teamName).toBe("Team X");
-    expect(tasks[0].problemLabel).toBe("A");
-    expect(tasks[0].location).toBe("A-101");
+    expect(tasks[0]).toMatchObject({
+      id: "1",
+      teamName: "Team X",
+      problemLabel: "A",
+      location: "A-101",
+      status: "pending",
+    });
+    expect(tasks[0].createdAt).toBe("2026-01-01T00:00:00.000Z");
   });
 
-  // Demo-debugged regression: a silently swallowed getProblems failure left
-  // balloon tasks with raw problem ids as labels (1095 demo tasks).
-  test("team sync still returns teams count with problemsMapped=false when the problems fetch fails", async () => {
+  // Old behaviour synthesized tasks from AC judgements; Task 4 reads DOMjudge's
+  // balloons API instead, so a problems-endpoint failure cannot affect them
+  // (there is no label mapping left to silently skip) and the failed endpoint
+  // is simply never called.
+  test("team sync tolerates a problems endpoint failure without touching balloon tasks", async () => {
     const cfg = makeCfg();
-    let problemsFail = true;
+    let problemsCalled = 0;
     const client = {
       getTeams: async () => TEAMS_JSON,
       getProblems: async () => {
-        if (problemsFail) throw new Error("problems endpoint down");
-        return PROBLEMS_JSON;
+        problemsCalled++;
+        throw new Error("problems endpoint down");
       },
-      getJudgementTypes: async () => CONTEST_API["/api/v4/contests/C1/judgement-types"],
-      getJudgings: async () => CONTEST_API["/api/v4/contests/C1/judgements"],
-      getSubmissions: async () => CONTEST_API["/api/v4/contests/C1/submissions"],
+      getBalloons: async () => BALLOONS_JSON,
+      getJudgements: async () => {
+        throw new Error("balloon tasks must not be synthesized from judgements");
+      },
+      getSubmissions: async () => {
+        throw new Error("balloon tasks must not be synthesized from submissions");
+      },
     } as unknown as DjClient;
     const bus = new SseBus();
     const balloonService = new BalloonService({
@@ -309,24 +870,12 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
       body: JSON.stringify({ contestId: "C1" }),
     });
     expect(syncRes.status).toBe(200);
-    expect(await syncRes.json()).toEqual({ count: 1, problemsMapped: false });
+    expect(await syncRes.json()).toEqual({ count: 1 });
+    expect(problemsCalled).toBe(0);
 
-    // The balloon service must have received EMPTY problems: a subsequent
-    // poll falls back to the raw problem id (and logs, not silently maps).
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
-    expect(balloonService.list()[0].problemLabel).toBe("p1");
-
-    // A later successful sync re-labels the pending task to the real label.
-    problemsFail = false;
-    const retryRes = await app.request("/admin/api/teams/sync", {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
-      body: JSON.stringify({ contestId: "C1" }),
-    });
-    expect(retryRes.status).toBe(200);
-    expect(await retryRes.json()).toEqual({ count: 1, problemsMapped: true });
-    expect(balloonService.list()[0].problemLabel).toBe("A");
+    expect(balloonService.list()[0]).toMatchObject({ id: "1", problemLabel: "A", teamName: "Team X" });
   });
 });
 
@@ -348,7 +897,7 @@ describe("static hosting", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const makeCfg = () => ({ ...loadConfigWithSecret(), contextPath: "/wxt" });
+  const makeCfg = () => loadConfigWithSecret();
   const makeApp = () => new Hono().route("/wxt", createApp(makeCfg(), { dataDir: mkdtempSync(join(tmpdir(), "static-data-")), staticDir }));
 
   test("GET /wxt/ serves index.html as text/html", async () => {
@@ -395,11 +944,54 @@ describe("static hosting", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
   });
 
-  test("SPA fallback does not swallow /dj 404s", async () => {
-    const res = await makeApp().request("/wxt/dj/no-such-route", { redirect: "manual" });
-    // Team paths redirect humans to the type-in verify form.
+  test("SPA deep link /wxt/settings falls back to index.html", async () => {
+    const res = await makeApp().request("/wxt/settings");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("ADMIN-INDEX");
+  });
+
+  test("team verify page is served, not swallowed by the SPA fallback", async () => {
+    const res = await makeApp().request("/wxt/public/verify");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("请输入屏幕上显示的队伍码开始登录");
+    expect(html).not.toContain("ADMIN-INDEX");
+  });
+
+  test("POST /wxt/print is reachable (no token → PROXY 403, not the SPA)", async () => {
+    const res = await makeApp().request("/wxt/print", { method: "POST" });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "invalid print token" });
+  });
+
+  test("legacy /dj/verify is no longer a route and goes through the root proxy", async () => {
+    const dispatch = makeRootDispatch(makeApp(), makeCfg());
+    const res = await dispatch(new Request("http://s.test/dj/verify", { redirect: "manual" }));
+    // No team token: the root proxy sends humans to the new verify page.
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/wxt/dj/verify");
+    expect(res.headers.get("location")).toContain("/wxt/public/verify?next=");
+  });
+
+  test.each(["/wxt/dj", "/wxt/dj/", "/wxt/dj/verify", "/wxt/dj/verify/claim", "/wxt/dj/print"])(
+    "retired %s answers 404 instead of the SPA index",
+    async (path) => {
+      const res = await makeApp().request(path);
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toContain("ADMIN-INDEX");
+    },
+  );
+
+  test.each([
+    "/wxt//dj/verify",
+    "/wxt/DJ/verify",
+    "/wxt/dj//verify",
+    "/wxt/Dj/Print",
+  ])("retired path variant %s is normalized and answers 404", async (path) => {
+    const res = await makeApp().request(path);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("ADMIN-INDEX");
   });
 
   test("non-GET miss does not fall back to index.html", async () => {

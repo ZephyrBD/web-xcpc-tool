@@ -117,6 +117,17 @@ describe("JsonStore", () => {
     store.save(5);
     expect(JSON.parse(readFileSync(file, "utf8"))).toBe(5);
   });
+
+  it("an absolute data dir joined by the caller yields exactly one level (no data/data/)", () => {
+    // mirrors index.ts: setDataDir(<root>/data) plus join(<root>/data, name)
+    const root = makeDir();
+    const dataRoot = join(root, "data");
+    setDataDir(dataRoot);
+    const store = new JsonStore<{ ok: boolean }>(join(dataRoot, "teams.json"), { ok: false });
+    store.save({ ok: true });
+    expect(existsSync(join(dataRoot, "teams.json"))).toBe(true);
+    expect(existsSync(join(dataRoot, "data"))).toBe(false);
+  });
 });
 
 describe("leftover tmp handling on save", () => {

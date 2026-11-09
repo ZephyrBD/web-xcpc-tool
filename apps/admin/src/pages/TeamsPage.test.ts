@@ -1,25 +1,41 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
 import type { DjTeam } from '@/pages/TeamsPage.vue'
 
+// bun 的模块 mock 是进程级的，会漏到后续文件（App.test 会挂载真实路由页），
+// 先留一份未被污染的命名空间，本文件跑完恢复。
+const pristineElementPlus = { ...elementPlus }
 const messageMock = {
   error: mock(() => ({})),
   success: mock(() => ({})),
 }
 mock.module('element-plus', () => ({
-  ...elementPlus,
-  ElMessage: { ...elementPlus.ElMessage, ...messageMock },
+  ...pristineElementPlus,
+  ElMessage: { ...pristineElementPlus.ElMessage, ...messageMock },
 }))
 
 const { default: TeamsPage } = await import('./TeamsPage.vue')
 
+afterAll(() => {
+  mock.module('element-plus', () => ({ ...pristineElementPlus }))
+})
+
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 let teams: DjTeam[] = []
-let syncResult: { count: number } | { error: string; status: number } | null = null
-let importResult: { imported: number; skipped: number } | { ok: false; reason: string; status: number } | null = null
+// The contest id comes from 设置 → 比赛设置 now, so sync reads it from GET /admin/api/settings.
+let settingsContestId = 'c1'
+/** Non-null makes GET /admin/api/settings fail with this Chinese error. */
+let settingsError: string | null = null
+let settingsErrorStatus = 500
+let syncResult:
+  | { count: number }
+  | { error?: string; message?: string; status: number }
+  | null = null
+/** Non-null makes GET /admin/api/teams fail with this Chinese error. */
+let teamsError: string | null = null
 const calls: Array<{ method: string; path: string; body: unknown; contentType?: string }> = []
 
 function mockFetch() {
@@ -36,31 +52,44 @@ function mockFetch() {
     calls.push({ method, path, body, contentType })
 
     if (method === 'GET' && path === '/admin/api/teams') {
+      if (teamsError) {
+        return new Response(JSON.stringify({ error: teamsError }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       return new Response(JSON.stringify(teams), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
     }
+    if (method === 'GET' && path === '/admin/api/settings') {
+      if (settingsError) {
+        return new Response(JSON.stringify({ error: settingsError }), {
+          status: settingsErrorStatus,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          domjudge: { baseUrl: 'http://dj.old', adminUser: 'djadmin', timeoutSeconds: 10 },
+          balloon: { contestId: settingsContestId, pollIntervalSeconds: 30, locked: !!settingsContestId },
+          print: { tokenMasked: '' },
+          teamLogin: { start: '', end: '' },
+          admin: { username: 'admin' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
     if (method === 'POST' && path === '/admin/api/teams/sync') {
-      if (syncResult && 'error' in syncResult) {
-        return new Response(JSON.stringify({ error: syncResult.error }), {
-          status: syncResult.status,
+      if (syncResult && !('count' in syncResult)) {
+        const { error, message, status } = syncResult
+        return new Response(JSON.stringify({ ...(error ? { error } : {}), ...(message ? { message } : {}) }), {
+          status,
           headers: { 'content-type': 'application/json' },
         })
       }
       return new Response(JSON.stringify(syncResult ?? { count: 0 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    }
-    if (method === 'POST' && path === '/admin/api/teams/import-excel') {
-      if (importResult && 'ok' in importResult) {
-        return new Response(JSON.stringify({ ok: false, reason: importResult.reason }), {
-          status: importResult.status,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      return new Response(JSON.stringify(importResult ?? { imported: 0, skipped: 0 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
@@ -94,8 +123,11 @@ describe('TeamsPage', () => {
     messageMock.error.mockClear()
     messageMock.success.mockClear()
     teams = [makeTeam('t1'), makeTeam('t2', { display_name: '展示名t2', members: undefined, location: undefined })]
+    settingsContestId = 'c1'
+    settingsError = null
+    settingsErrorStatus = 500
     syncResult = { count: 2 }
-    importResult = { imported: 3, skipped: 1 }
+    teamsError = null
     calls.length = 0
     mockFetch()
   })
@@ -123,18 +155,28 @@ describe('TeamsPage', () => {
     expect(wrapper.text()).toContain('还没有队伍')
   })
 
-  test('sync button posts contestId from the input and toasts the count', async () => {
+  test('no contest id input: the id lives in 设置 → 比赛设置', async () => {
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const input = wrapper.find('input[type="text"]')
-    await input.setValue('c1')
+    expect(wrapper.find('input[placeholder*="比赛 ID"]').exists()).toBe(false)
+    // 剩下的文本框只有 ElPagination 的页码框：位于分页条内，不在工具栏里。
+    expect(wrapper.find('.teams-toolbar').findAll('input').length).toBe(0)
+    expect(wrapper.text()).not.toContain('比赛 ID')
+  })
+
+  test('sync button posts the configured contestId and toasts the count', async () => {
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
     const btn = findButton(wrapper, '从 DOMjudge 同步')
     await btn.trigger('click')
     await flush()
     await flush()
 
+    expect(messageMock.error).not.toHaveBeenCalled()
     const syncCall = calls.find((c) => c.method === 'POST' && c.path === '/admin/api/teams/sync')
     expect(syncCall).toBeDefined()
     expect(syncCall!.body).toEqual({ contestId: 'c1' })
@@ -142,70 +184,85 @@ describe('TeamsPage', () => {
     expect(calls.some((c) => c.method === 'GET' && c.path === '/admin/api/teams')).toBe(true)
   })
 
-  test('sync without a contest id shows a validation error and does not call the API', async () => {
+  test('sync in a contest without a configured id shows a hint and does not call the API', async () => {
+    settingsContestId = ''
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const btn = findButton(wrapper, '从 DOMjudge 同步')
-    await btn.trigger('click')
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()
     await flush()
 
-    expect(messageMock.error).toHaveBeenCalled()
+    expect(messageMock.error).toHaveBeenCalledWith(expect.stringContaining('设置'))
     expect(calls.some((c) => c.path === '/admin/api/teams/sync')).toBe(false)
   })
 
-  test('sync failure shows a friendly error and still refreshes the list', async () => {
+  test('sync failure surfaces the server message and still refreshes the list', async () => {
     syncResult = { error: 'domjudge sync failed', status: 502 }
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    await wrapper.find('input[type="text"]').setValue('c1')
     const getsBefore = calls.filter((c) => c.method === 'GET').length
     await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()
     await flush()
 
-    expect(messageMock.error).toHaveBeenCalledWith('同步没成功，请检查 DOMjudge 是否可用后再试')
+    // 服务端说了什么就展示什么，通用文案只在服务端什么都没给时兜底。
+    expect(messageMock.error).toHaveBeenCalledWith('domjudge sync failed')
     expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(getsBefore)
   })
 
-  test('uploading an excel file posts FormData field "file" and shows imported/skipped', async () => {
+  test('sync failure prefers the server message field over error', async () => {
+    syncResult = { error: 'sync_failed', message: 'DOMjudge 暂时连不上，请稍后重试', status: 502 }
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const file = new File(['fake-excel'], 'teams.xlsx', { type: 'application/vnd.ms-excel' })
-    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
-    Object.defineProperty(input, 'files', { value: [file] })
-    await wrapper.find('input[type="file"]').trigger('change')
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()
     await flush()
 
-    const up = calls.find((c) => c.method === 'POST' && c.path === '/admin/api/teams/import-excel')
-    expect(up).toBeDefined()
-    expect(up!.body).toBe('[FormData]')
-    expect(up!.contentType).toBeUndefined()
-    expect(messageMock.success).toHaveBeenCalledWith('成功导入 3 个队伍，跳过 1 条')
+    expect(messageMock.error).toHaveBeenCalledWith('DOMjudge 暂时连不上，请稍后重试')
   })
 
-  test('an invalid excel file surfaces the server reason as a friendly message', async () => {
-    importResult = { ok: false, reason: 'invalid excel file', status: 400 }
+  test('sync failure with an empty body falls back to the friendly copy', async () => {
+    syncResult = { status: 502 }
     const wrapper = mountPage()
     await flush()
     await flush()
 
-    const file = new File(['nope'], 'teams.xlsx', { type: 'application/vnd.ms-excel' })
-    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
-    Object.defineProperty(input, 'files', { value: [file] })
-    await wrapper.find('input[type="file"]').trigger('change')
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
     await flush()
     await flush()
 
-    expect(messageMock.error).toHaveBeenCalled()
-    expect(messageMock.success).not.toHaveBeenCalled()
+    expect(messageMock.error).toHaveBeenCalledWith('同步没成功，请检查 DOMjudge 是否可用后再试')
+  })
+
+  test('a settings failure while reading the contest id is not mistaken for a missing id', async () => {
+    settingsError = '读取设置失败，请稍后重试'
+    settingsErrorStatus = 500
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    await findButton(wrapper, '从 DOMjudge 同步').trigger('click')
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('读取设置失败，请稍后重试')
+    expect(messageMock.error).not.toHaveBeenCalledWith(expect.stringContaining('还没有设置比赛 ID'))
+    expect(calls.some((c) => c.path === '/admin/api/teams/sync')).toBe(false)
+  })
+
+  test('the list load failure also surfaces the server message', async () => {
+    teamsError = '队伍数据损坏，请联系管理员'
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    expect(messageMock.error).toHaveBeenCalledWith('队伍数据损坏，请联系管理员')
   })
 
   test('paginates: 25 teams show 20 rows on page 1 and the rest on page 2', async () => {

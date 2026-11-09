@@ -1,91 +1,154 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import { setDataDir } from "./store/store";
-import { ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
+import { warnLegacyDataDir } from "./store/dataRoot";
+import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig, normalizeContextPathFile, CONTEXT_PATH } from "./config";
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
 import { PrintQueue } from "./print/queue";
-import { BalloonService } from "./balloon/service";
+import { BalloonService, type BalloonTask } from "./balloon/service";
 import { DjClient, type DjTeam } from "./domjudge/client";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
 import { JsonStore } from "./store/store";
 import { TeamStore } from "./store/teams";
-import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
+import { makeRootDispatch } from "./domjudge/proxy";
+import { getVersionInfo } from "./version";
+import { ConfigStore } from "./store/configStore";
+import { initLogger, log, registerSecret } from "./log/logger";
 
-const CONFIG_PATH = "data/settings.json";
-const DATA_DIR = "data";
+/**
+ * Single data root, relative to the process cwd (so `bun run dev` in
+ * apps/server and a root-level launch each get their own checkout-local dir).
+ * Every path below is anchored to it — via `setDataDir` or an explicit
+ * `storePath(...)` — so there is exactly one `data/`, never `data/data/`.
+ */
+const DATA_ROOT = "data";
+const STORE_DIR = resolve(DATA_ROOT);
+const storePath = (name: string): string => join(STORE_DIR, name);
 
-mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(DATA_ROOT, { recursive: true });
+// One log file per run: truncated here, appended to by every module via `log`.
+initLogger({ logFilePath: storePath(join("logs", "latest.log")) });
+// Older builds could leave stores one level deeper; nothing is migrated —
+// the operator moves or deletes the directory by hand (one WARN at startup).
+warnLegacyDataDir(DATA_ROOT);
+const CONFIG_PATH = storePath("settings.json");
 if (!existsSync(CONFIG_PATH)) {
   writeDefaultConfig(CONFIG_PATH);
 }
 const cfg = loadConfig(CONFIG_PATH);
+// The mount is the constant /wxt: rewrite a stale settings.json value so the
+// file and the running config agree (parseConfig logged the one INFO line).
+normalizeContextPathFile(CONFIG_PATH);
 cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
+// First launch: generate a readable admin password (hash + plaintext persisted);
+// a configured hash is never replaced.
+const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
+cfg.admin = adminCfg.admin;
+// The generated plaintext is printed by the banner and masked in the log file.
+registerSecret(cfg.admin.password);
+// The DOMjudge admin password travels in an Authorization header the proxy
+// builds; a proxy/DOMjudge error that echoes it must never land in the log
+// file in clear. Registering it here and on every change below keeps that true
+// for a password set through the admin UI too.
+registerSecret(cfg.domjudge.adminPassword);
 
-setDataDir(DATA_DIR);
+// Runtime config store: every request reads `configStore.current`, and the
+// admin settings PUT calls replace() so edits apply without a restart.
+// Long-lived services (e.g. balloon polling) hook replace() through onChange.
+const configStore = new ConfigStore(cfg);
+
+// Absolute, so resolvePath returns store paths untouched (no second join).
+setDataDir(STORE_DIR);
 
 const bus = new SseBus();
-const printQueue = new PrintQueue(join(DATA_DIR, "print-tasks.json"));
-const djClient = new DjClient(cfg.domjudge, undefined, cfg.domjudge.timeoutSeconds * 1000);
-const teamsStore = new JsonStore<DjTeam[]>(join(DATA_DIR, "teams.json"), []);
+const printQueue = new PrintQueue(storePath("print-tasks.json"));
+// A getter keeps DOMjudge URL/credentials/timeout in step with the store.
+const djClient = new DjClient(() => configStore.current.domjudge);
+const teamsStore = new JsonStore<DjTeam[]>(storePath("teams.json"), []);
 const teamStore = new TeamStore(
-  join(DATA_DIR, "team-passwords.json"),
-  new SecretBox(ensureKeyFile(join(DATA_DIR, "secret.key"))),
+  storePath("team-passwords.json"),
+  new SecretBox(ensureKeyFile(storePath("secret.key"))),
 );
+// Shared with BalloonService and the purge endpoint so all three see one file.
+const balloonTasksStore = new JsonStore<BalloonTask[]>(storePath("balloon-tasks.json"), []);
 const balloonService = new BalloonService({
   client: djClient,
-  store: new JsonStore(join(DATA_DIR, "balloon-tasks.json"), []),
+  store: balloonTasksStore,
   bus,
   contestId: cfg.balloon.contestId,
   pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
   teams: [],
-  problems: [],
+});
+
+// Settings hot reload for the balloon poller: contestId/pollIntervalSeconds are
+// the only balloon inputs that can change without a restart (pollOnce is
+// untouched). A change stops and restarts the loop; an empty contestId leaves
+// it stopped, exactly like start() at boot.
+configStore.onChange((next) => {
+  // A settings PUT or a purge can install a new plaintext admin password (and
+  // a new DOMjudge admin password); the file log must mask both, so every
+  // rotated value joins the secret list (registerSecret ignores empty and
+  // absurdly short values).
+  registerSecret(next.admin.password);
+  registerSecret(next.domjudge.adminPassword);
+  balloonService.reconfigure({
+    contestId: next.balloon.contestId,
+    pollIntervalSeconds: next.balloon.pollIntervalSeconds,
+  });
 });
 
 let server: Bun.Server<never> | null = null;
-const app = createApp(cfg, {
+const app = createApp(configStore, {
+  dataDir: STORE_DIR,
   bus,
   printQueue,
   djClient,
   teamsStore,
   teamStore,
   balloonService,
+  balloonTasks: balloonTasksStore,
   server: { requestIP: (req) => server?.requestIP(req) ?? null },
 });
-const serving = cfg.contextPath ? new Hono().route(cfg.contextPath, app) : app;
+// Mounting and the port are fixed at boot: Hono routes and Bun.serve cannot be
+// re-pointed at runtime, so a port edit needs a restart (the admin settings
+// page warns about this). Everything else hot-reloads. The mount path itself
+// is the constant /wxt and is never configurable.
+const serving = new Hono().route(CONTEXT_PATH, app);
 
-// Everything outside the admin contextPath is reverse-proxied straight to
-// DOMjudge with the same team-token semantics as /dj/*; the admin UI keeps
-// its own prefix untouched.
-const fetch_ = makeRootDispatch(serving, cfg, teamStore);
-const fetchWithLegacyRedirect = (req: Request) =>
-  legacyContextPathRedirect(cfg.contextPath, req) ?? fetch_(req);
-
-// Cached old admin SPAs still request /cxtool/*, which now falls into the
-// DOMjudge root proxy and 404s. 301 them onto the current contextPath.
-const LEGACY_PREFIX = "/cxtool";
-const redirectToContextPath = (req: Request): Response | null => {
-  if (req.method !== "GET") return null;
-  const url = new URL(req.url);
-  if (url.pathname !== LEGACY_PREFIX && !url.pathname.startsWith(`${LEGACY_PREFIX}/`)) {
-    return null;
-  }
-  const rest = url.pathname.slice(LEGACY_PREFIX.length);
-  const target = `${cfg.contextPath.replace(/\/+$/, "")}${rest}` || "/";
-  return Response.redirect(new URL(`${target}${url.search}`, url).toString(), 301);
-};
+// Everything outside /wxt is reverse-proxied straight to DOMjudge with the same
+// team-token semantics; the admin UI keeps its own prefix untouched.
+const fetch_ = makeRootDispatch(serving, () => configStore.current, teamStore);
 
 server = Bun.serve({
-  fetch: fetchWithLegacyRedirect,
+  fetch: fetch_,
   port: cfg.port,
 });
 balloonService.start();
-console.log(`cuitxcpctool server listening on :${cfg.port}${cfg.contextPath}`);
+
+/**
+ * Startup banner: everything needed to reach the tool and log in, so a fresh
+ * install never needs to hand-edit settings.json. Re-printed on every start;
+ * the plaintext password comes from settings.json (admin.password) and is
+ * masked in data/logs/latest.log (registered as a secret above).
+ */
+const printBanner = (): void => {
+  // getVersionInfo().hash is the full version string (build tag, env, or git hash).
+  const version = getVersionInfo().hash;
+  const base = `http://localhost:${cfg.port}${CONTEXT_PATH}`;
+  log.info("startup", `Web XCPC Tool ${version}`);
+  log.info("startup", `服务    ${base}/admin`);
+  log.info("startup", `账号    ${cfg.admin.username} / ${cfg.admin.password || "未保存明文（请在管理台「设置」页重设密码）"}`);
+  log.info("startup", `DOMjudge ${cfg.domjudge.baseUrl || "未配置"}`);
+  log.info("startup", `气球    ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`);
+};
+printBanner();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     balloonService.stop();
+    log.info("startup", `收到 ${signal}，正在退出`);
     process.exit(0);
   });
 }

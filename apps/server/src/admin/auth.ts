@@ -2,7 +2,9 @@ import { compare } from "bcryptjs";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import type { Config } from "../config";
+import { CONTEXT_PATH } from "../config";
 import { signAdminToken, verifyAdminToken } from "../auth/token";
+import { appPath } from "../domjudge/proxy";
 import type { Deps } from "../server";
 
 export { verifyAdminToken };
@@ -55,13 +57,16 @@ export function clientIpOf(c: Context, deps?: Partial<Deps>): string {
   );
 }
 
+/**
+ * `cfg` is a getter rather than a snapshot so username/password/jwt.secret
+ * edits apply immediately (runtime config store). The cookie path is pinned
+ * to the fixed /wxt mount.
+ */
 export function createAdminLoginHandler(
-  cfg: Config,
+  cfg: () => Config,
   deps?: Partial<Deps>,
   limiter: LoginRateLimiter = new LoginRateLimiter(),
 ): MiddlewareHandler {
-  const cookiePath = `${cfg.contextPath.replace(/\/+$/, "")}/`;
-
   return async (c) => {
     const ip = clientIpOf(c, deps);
     if (limiter.isBlocked(ip)) {
@@ -74,22 +79,90 @@ export function createAdminLoginHandler(
       limiter.recordFailure(ip);
       return c.json({ error: LOGIN_FAILED }, 401);
     };
-    if (!cfg.admin.passwordHash) {
+    if (!cfg().admin.passwordHash) {
       limiter.recordFailure(ip);
       return c.json({ error: LOGIN_UNAVAILABLE }, 401);
     }
-    if (username !== cfg.admin.username) return fail();
-    if (!(await compare(password, cfg.admin.passwordHash))) return fail();
-    const token = await signAdminToken(cfg.jwt.secret, cfg.admin.sessionTtlSeconds, username);
+    const current = cfg();
+    if (username !== current.admin.username) return fail();
+    if (!(await compare(password, current.admin.passwordHash))) return fail();
+    const token = await signAdminToken(current.jwt.secret, current.admin.sessionTtlSeconds, username);
+    // The admin UI always lives under /wxt, so the cookie is scoped there.
+    const cookiePath = `${CONTEXT_PATH}/`;
     c.header("Set-Cookie", `${ADMIN_COOKIE}=${token}; Path=${cookiePath}; HttpOnly; SameSite=Strict`);
     return c.json({ token });
   };
 }
 
+/**
+ * CSRF guard for every mutating (non-GET/HEAD) /admin/api/* request, whose
+ * auth may come from the admin cookie. The cookie is SameSite=Strict, but a
+ * same-site sibling (or a browser that drops the attribute) can still fire a
+ * cross-origin form/fetch, so the browser-supplied Origin (or Referer when
+ * Origin is absent) must name this very scheme+host — a cross-origin page
+ * could otherwise purge a contest's data or rewrite its settings.
+ *
+ * Expected hosts: the Host header, x-forwarded-host (set by a reverse proxy
+ * that rewrites Host), and always the request URL's own host — HTTP/1.1
+ * requires Host but an HTTP/1.0 client may omit it, and the URL still knows.
+ * Expected scheme: x-forwarded-proto when a reverse proxy set it, else the
+ * request URL's own protocol.
+ *
+ * A request with neither Origin nor Referer (curl, server-side callers) is
+ * not a browser cross-site request and is allowed — those callers already
+ * hold the token. Returns false when the request must be rejected.
+ */
+export function isSameOriginRequest(req: Request): boolean {
+  const source = req.headers.get("origin") ?? req.headers.get("referer");
+  if (!source) return true;
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(req.url);
+  } catch {
+    // Without a parseable request URL there is nothing to compare against.
+    return false;
+  }
+  const hosts = [
+    req.headers.get("host"),
+    req.headers.get("x-forwarded-host"),
+    requestUrl.host,
+  ].filter((h): h is string => !!h);
+  const proto = (
+    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    requestUrl.protocol.replace(/:$/, "")
+  ).toLowerCase();
+  try {
+    const url = new URL(source);
+    return hosts.includes(url.host) && url.protocol.replace(/:$/, "").toLowerCase() === proto;
+  } catch {
+    // "null" (sandboxed iframe, data: URL) or a malformed value: never
+    // treat it as same-origin.
+    return false;
+  }
+}
+
+/** Methods that can change server state and therefore need the origin check. */
+export function isMutatingMethod(method: string): boolean {
+  const m = method.toUpperCase();
+  return m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
+}
+
+/** Same 403 body for every rejected cross-origin mutation. */
+export const CROSS_ORIGIN_FORBIDDEN = "cross-origin forbidden";
+
+/**
+ * Hono routes under the fixed /wxt mount, so `c.req.path` there is
+ * `/wxt/admin/api/...` while the handlers compare against `/admin/api/...`.
+ * `appPath` strips the mount (no-op when served unmounted), keeping every
+ * path comparison correct in both shapes.
+ */
+const adminPath = (c: Context): string => appPath(c);
+
 /** Auth for every /admin/api/* route except POST /admin/api/login. */
-export function requireAdmin(cfg: Config): MiddlewareHandler {
+export function requireAdmin(cfg: () => Config): MiddlewareHandler {
   return async (c, next) => {
-    if (c.req.method === "POST" && c.req.path === "/admin/api/login") {
+    const path = adminPath(c);
+    if (c.req.method === "POST" && path === "/admin/api/login") {
       return next();
     }
     let token = "";
@@ -97,11 +170,16 @@ export function requireAdmin(cfg: Config): MiddlewareHandler {
     if (auth?.startsWith("Bearer ")) token = auth.slice(7);
     if (!token) token = getCookie(c, ADMIN_COOKIE) ?? "";
     // EventSource cannot set headers, so SSE also accepts ?token=.
-    if (!token && c.req.method === "GET" && c.req.path === "/admin/api/events") {
+    if (!token && c.req.method === "GET" && path === "/admin/api/events") {
       token = c.req.query("token") ?? "";
     }
-    const payload = token ? await verifyAdminToken(cfg.jwt.secret, token) : null;
+    const payload = token ? await verifyAdminToken(cfg().jwt.secret, token) : null;
     if (!payload) return c.json({ error: UNAUTHORIZED }, 401);
+    // CSRF: every other mutating admin call must come from this very origin.
+    // Checked AFTER auth so an anonymous probe learns nothing about its token.
+    if (isMutatingMethod(c.req.method) && !isSameOriginRequest(c.req.raw)) {
+      return c.json({ error: CROSS_ORIGIN_FORBIDDEN }, 403);
+    }
     await next();
   };
 }

@@ -28,64 +28,6 @@ export type DjContest = {
   name: string;
 };
 
-/**
- * A submission from the contest API. Two shapes occur in the wild:
- * - CLICS/external API (verified live against
- *   https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/submissions):
- *   `{"language_id":"cpp","time":"...","contest_time":"...","team_id":"domjudge",
- *   "account_id":"tobi","problem_id":"arcadecrane","files":[...],"id":"997",
- *   "entry_point":null,"import_error":null}`
- * - DOMjudge internal API: `problem`/`team`/`language` directly.
- * getSubmissions normalizes both to the canonical `problem`/`team`/`language`
- * while preserving the original `*_id` fields.
- */
-export type DjSubmission = {
-  id: string;
-  /** Canonical problem id (from `problem_id` on the external API). */
-  problem: string;
-  /** Canonical language id (from `language_id` on the external API). */
-  language: string;
-  /** Canonical team id (from `team_id` on the external API). */
-  team: string;
-  time: string;
-  // Raw external-API fields, preserved for callers that read them directly.
-  problem_id?: string;
-  team_id?: string;
-  language_id?: string;
-  contest_time?: string;
-  account_id?: string;
-  files?: Array<{ href: string; mime: string }>;
-  entry_point?: string | null;
-  import_error?: string | null;
-};
-
-/**
- * A judging from the contest API. Two shapes occur in the wild:
- * - CLICS/external API (verified live against
- *   https://www.domjudge.org/demoweb/api/v4/contests/nwerc2025/judgements):
- *   `{"start_time":...,"end_time":...,"submission_id":"997","current":true,
- *   "max_run_time":2.994,"id":"1814","valid":true,"score":"0.000000000",
- *   "judgement_type_id":"TLE","simplified_judgement_type_id":"RE"}`
- * - DOMjudge internal API: `submission` directly.
- * getJudgings populates the canonical `submission` from `submission_id`.
- */
-export type DjJudging = {
-  id: string;
-  /** Canonical submission id (from `submission_id` on the external API). */
-  submission: string;
-  judgement_type_id: string;
-  verified?: boolean;
-  start_time?: string;
-  // Raw external-API fields, preserved for callers that read them directly.
-  submission_id?: string;
-  end_time?: string;
-  current?: boolean;
-  max_run_time?: number;
-  valid?: boolean;
-  score?: string;
-  simplified_judgement_type_id?: string;
-};
-
 export class DjApiError extends Error {
   readonly url: string;
   readonly status: number;
@@ -97,15 +39,6 @@ export class DjApiError extends Error {
     this.status = status;
   }
 }
-
-export type DjJudgementType = {
-  id: string;
-  name?: string;
-  penalty?: boolean;
-  /** True when this verdict counts as solved/correct (real DOMjudge external API). */
-  solved?: boolean;
-  sorting_key?: string;
-};
 
 export type DjProblem = {
   id: string;
@@ -123,41 +56,99 @@ export type DjUser = {
   team_id?: string;
 };
 
-/** An entry of GET /contests/{cid}/balloons (DOMjudge balloon API). */
+/**
+ * An entry of GET /contests/{cid}/balloons (DOMjudge balloon API), mirroring
+ * `App\DataTransferObject\Balloon` in domjudge/domjudge. There is no
+ * `problemid`/`contesttime`/`submitted` on this endpoint — `problem` is the
+ * contest shortname and `time` is the submission time.
+ */
 export type DjBalloon = {
-  balloonid: string;
-  teamid: string;
-  problem?: string;
-  problemid?: string;
-  /** Problem object carrying the display label on real DOMjudge responses. */
-  contestproblem?: { label?: string; id?: string; name?: string };
-  contesttime?: string;
+  balloonid: string | number;
   time?: string;
-  submitted?: string;
+  /** Contest shortname of the problem (DOMjudge's `probshortname`). */
+  problem?: string;
+  /** The contest problem; its `label` is the problem letter shown in the UI. */
+  contestproblem?: { label?: string; id?: string; name?: string };
+  team?: string;
+  teamid: string;
+  /** Team seat as configured on the team ("A-101"); null when unset. */
+  location?: string | null;
+  affiliation?: string | null;
+  affiliationid?: string | null;
+  category?: string | null;
+  categoryid?: string | null;
+  /** Per-team balloon totals; unused by the task mirror, kept for completeness. */
+  total?: Record<string, unknown>;
   done?: boolean;
 };
 
 export class DjClient {
+  private readonly cfg: () => Config["domjudge"];
+  /** False when constructed from a plain config: URL/auth/timeout stay frozen. */
+  private readonly live: boolean;
+  private readonly fetchImpl: typeof fetch;
+  /** Constructor-derived values, used only when `live` is false. */
   private readonly baseUrl: string;
   private readonly authHeader: string;
-  private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  /** Constructor override (tests pin a short timeout); live config never touches it. */
+  private readonly explicitTimeoutMs: number | undefined;
 
-  constructor(cfg: Config["domjudge"], fetchImpl?: typeof fetch, timeoutMs?: number) {
-    this.baseUrl = cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/";
+  /**
+   * `cfg` may be a live getter (the runtime config store) so DOMjudge URL and
+   * credentials edits apply without a restart; a plain object is frozen.
+   * `timeoutMs` is the URL/auth-independent timeout (overrides any getter).
+   */
+  constructor(cfg: Config["domjudge"] | (() => Config["domjudge"]), fetchImpl?: typeof fetch, timeoutMs?: number) {
+    const initial = typeof cfg === "function" ? cfg() : cfg;
+    this.cfg = typeof cfg === "function" ? cfg : () => initial;
+    this.live = typeof cfg === "function";
+    this.baseUrl = initial.baseUrl.replace(/\/+$/, "") + "/api/v4/";
     this.authHeader =
-      "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64");
+      "Basic " + Buffer.from(`${initial.adminUser}:${initial.adminPassword}`).toString("base64");
     this.fetchImpl = fetchImpl ?? fetch;
     this.timeoutMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.explicitTimeoutMs = timeoutMs;
+  }
+
+  /**
+   * Re-derive URL/credentials/timeout from the live config (or once, for a
+   * plain-config client). Called per request — cheap: one concat + base64 — so
+   * a settings PUT is visible on the very next API call. An explicit
+   * constructor `timeoutMs` always wins over the config value.
+   *
+   * Pure: returns fresh values and never writes back to the fields derived
+   * from the constructor config, so a getter that throws (or returns junk)
+   * cannot leave the client holding a half-updated URL.
+   */
+  private sync(): { baseUrl: string; authHeader: string; timeoutMs: number } {
+    const explicit = this.explicitTimeoutMs;
+    if (!this.live) {
+      return {
+        baseUrl: this.baseUrl,
+        authHeader: this.authHeader,
+        timeoutMs: explicit ?? this.timeoutMs,
+      };
+    }
+    const cfg = this.cfg();
+    return {
+      baseUrl: cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/",
+      authHeader: "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64"),
+      // domjudge.timeoutSeconds is a live setting too: dropping it here is the
+      // regression the first version shipped (config timeout ignored whenever
+      // the client was built from a getter).
+      timeoutMs: explicit ?? cfg.timeoutSeconds * 1000,
+    };
   }
 
   private async get<T>(path: string): Promise<T> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
-        headers: { Authorization: this.authHeader, Accept: "application/json" },
-        signal: AbortSignal.timeout(this.timeoutMs),
+        headers: { Authorization: authHeader, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);
@@ -169,18 +160,19 @@ export class DjClient {
   }
 
   private async patch(path: string, body: unknown): Promise<unknown> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
         method: "PATCH",
         headers: {
-          Authorization: this.authHeader,
+          Authorization: authHeader,
           Accept: "application/json",
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);
@@ -196,18 +188,19 @@ export class DjClient {
   }
 
   private async post(path: string, body?: unknown): Promise<unknown> {
-    const url = this.baseUrl + path;
+    const { baseUrl, authHeader, timeoutMs } = this.sync();
+    const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
         method: "POST",
         headers: {
-          Authorization: this.authHeader,
+          Authorization: authHeader,
           Accept: "application/json",
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       throw new DjApiError(url, 0, err);
@@ -248,35 +241,8 @@ export class DjClient {
     return this.get<DjTeam[]>(`contests/${contestId}/teams`);
   }
 
-  getSubmissions(contestId: string): Promise<DjSubmission[]> {
-    return this.get<DjSubmission[]>(`contests/${contestId}/submissions`).then((subs) =>
-      // Normalize CLICS/external field names (problem_id/team_id/language_id)
-      // to the canonical internal ones; internal shapes pass through unchanged.
-      subs.map((item) => ({
-        ...item,
-        problem: item.problem ?? item.problem_id!,
-        team: item.team ?? item.team_id!,
-        language: item.language ?? item.language_id!,
-      })),
-    );
-  }
-
-  getJudgementTypes(contestId: string): Promise<DjJudgementType[]> {
-    return this.get<DjJudgementType[]>(`contests/${contestId}/judgement-types`);
-  }
-
   getProblems(contestId: string): Promise<DjProblem[]> {
     return this.get<DjProblem[]>(`contests/${contestId}/problems`);
-  }
-
-  getJudgings(contestId: string, since?: string): Promise<DjJudging[]> {
-    const path = `contests/${contestId}/judgements`;
-    return this.get<DjJudging[]>(since ? `${path}?since=${encodeURIComponent(since)}` : path).then(
-      (judgings) =>
-        // Normalize CLICS/external `submission_id` to the canonical
-        // `submission`; internal shapes pass through unchanged.
-        judgings.map((item) => ({ ...item, submission: item.submission ?? item.submission_id! })),
-    );
   }
 
   getBalloons(contestId: string): Promise<DjBalloon[]> {

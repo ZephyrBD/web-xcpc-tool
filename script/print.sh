@@ -17,15 +17,15 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
 
-# Parameter order: Location TeamName [teamid] FilePath OriginalFileName
+# Parameter order: Location TeamName teamid FilePath OriginalFileName
 LOCATION="$1"
 TEAMNAME="$2"
-EXAMNUM="$3"
+TEAMID="$3"
 FILE="$4"
 ORIGNAME="$5"
 
 # ================= Configuration =================
-PRINT_API="http://127.0.0.1/cxtool/admin/print/task"
+PRINT_API="http://127.0.0.1/wxt/print"
 API_TOKEN="3486dsay89x6786f87aerfbxncmbmghjf"
 DENIED_LOCATION="Online"
 # ==================================================
@@ -33,7 +33,7 @@ DENIED_LOCATION="Online"
 # Clean up input parameters (remove quotes and extra spaces)
 LOCATION=$(echo "$LOCATION" | tr -d "'\"" | xargs)
 TEAMNAME=$(echo "$TEAMNAME" | tr -d "'\"" | xargs)
-EXAMNUM=$(echo "$EXAMNUM" | tr -d "'\"" | xargs)
+TEAMID=$(echo "$TEAMID" | tr -d "'\"" | xargs)
 FILE=$(echo "$FILE" | tr -d "'\"" | xargs)
 ORIGNAME=$(echo "$ORIGNAME" | tr -d "'\"" | xargs)
 
@@ -41,7 +41,7 @@ ORIGNAME=$(echo "$ORIGNAME" | tr -d "'\"" | xargs)
 echo "====================="
 echo "Team Location: [${LOCATION}]"
 echo "Team Name: [${TEAMNAME}]"
-echo "Team ExamNum: [${EXAMNUM}]"
+echo "Team Id: [${TEAMID}]"
 echo "Source File Path: [${FILE}]"
 echo "Source File Name: [${ORIGNAME}]"
 echo "====================="
@@ -49,8 +49,8 @@ echo "====================="
 # --------------------------
 # Validation 1: Required fields
 # --------------------------
-if [ -z "$TEAMNAME" ] || [ -z "$LOCATION" ] || [ -z "$ORIGNAME" ] || [ -z "$EXAMNUM" ]; then
-    echo "Error: Team location/name/examNum and original file name cannot be empty."
+if [ -z "$TEAMNAME" ] || [ -z "$LOCATION" ] || [ -z "$ORIGNAME" ] || [ -z "$TEAMID" ]; then
+    echo "Error: Team location/name/id and original file name cannot be empty."
     exit 1
 fi
 
@@ -80,6 +80,9 @@ command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not insta
 # --------------------------
 echo "Submitting print task to server..."
 curl -X POST "$PRINT_API" \
--H "token: $API_TOKEN" \
+-H "org.domjudge.print-token: $API_TOKEN" \
 -F "file=@${FILE};filename=${ORIGNAME}" \
--F "printTeamDTO={\"examNum\":\"${EXAMNUM}\"};type=application/json"
+-F "original=${ORIGNAME}" \
+-F "location=${LOCATION}" \
+-F "teamname=${TEAMNAME}" \
+-F "teamid=${TEAMID}"

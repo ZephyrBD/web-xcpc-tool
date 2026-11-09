@@ -43,11 +43,11 @@ const cards = computed(() => [
     label: '已发队伍码',
     value: teamCodeRows.value.length ? `${teamCodeRows.value.filter((r) => r.teamCode).length}/${teamCodeRows.value.length}` : null,
     accent: 'var(--brand-purple)',
-    to: '/team-codes',
+    to: '/auth',
   },
   { label: '待打任务', value: printTasks.value.length, accent: 'var(--brand-orange)', to: '/jobs' },
   { label: '待发气球', value: balloonTasks.value.length, accent: 'var(--brand-green)', to: '/jobs' },
-  { label: '最近登录', value: loginHistory.value.length || null, accent: 'var(--brand-blue)', to: '/team-codes' },
+  { label: '最近登录', value: loginHistory.value.length || null, accent: 'var(--brand-blue)', to: '/auth' },
 ])
 
 const recentLogins = computed(() => loginHistory.value.slice(0, 5))
@@ -115,7 +115,7 @@ onUnmounted(() => {
       <section class="dash-panel">
         <div class="panel-head">
           <h2 class="panel-title">最近登录</h2>
-          <RouterLink to="/team-codes" class="panel-link">查看全部 →</RouterLink>
+          <RouterLink to="/auth" class="panel-link">查看全部 →</RouterLink>
         </div>
         <ul v-if="recentLogins.length" class="panel-list">
           <li v-for="entry in recentLogins" :key="entry.at" class="panel-row">

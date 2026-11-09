@@ -355,6 +355,25 @@ describe('JobsPage', () => {
     expect(balloonPane!.text()).toContain('—')
   })
 
+  test('a stale balloon shows 已隐藏 instead of its stored status', async () => {
+    // Hidden by DOMjudge (freeze/removal): still undelivered, but not handable.
+    balloonTasks = [makeBalloonTask('b1'), makeBalloonTask('b2', { stale: true })]
+    const wrapper = mountPage()
+    await flush()
+    await flush()
+
+    const balloonTab = wrapper.findAll('.el-tabs__item').find((t) => t.text().includes('气球'))!
+    await balloonTab.trigger('click')
+    await flush()
+
+    const balloonPane = wrapper.findAll('.el-tab-pane')[1]
+    expect(balloonPane!.text()).toContain('已隐藏')
+    expect(balloonPane!.text()).toContain('待派送')
+    // A stale row has no deliverable action.
+    const rowB2 = balloonPane!.findAll('.el-table__row').find((r) => r.text().includes('气球队b2'))!
+    expect(rowB2.text()).not.toContain('标记已送')
+  })
+
   test('blocked popup: the friendly 弹窗 toast shows and nothing acks (print task)', async () => {
     printPdfTaskMock.mockRejectedValueOnce(new Error('弹窗被拦截，请允许弹窗后重试'))
     const wrapper = mountPage()
