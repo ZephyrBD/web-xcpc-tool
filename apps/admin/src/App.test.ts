@@ -51,12 +51,14 @@ describe('App', () => {
     // the redirect record keeps old bookmarks working
     expect(routes.find((r) => r.path === '/team-codes')?.redirect).toBe('/auth')
 
-    // resolve only — mounting AuthPage here would depend on element-plus being
-    // unmocked process-wide, which other page specs intentionally violate.
+    // real navigation (not just resolve): the guard needs a token, then the
+    // redirect record normalizes the old URL to /auth.
+    setToken('tok')
     const router = createAppRouter(createMemoryHistory())
-    const resolved = router.resolve('/team-codes')
-    expect(resolved.matched[0]?.redirect).toBe('/auth')
-    expect(router.resolve('/auth').name).toBe('auth')
+    await router.push('/team-codes')
+    await router.isReady()
+    expect(router.currentRoute.value.path).toBe('/auth')
+    expect(router.currentRoute.value.name).toBe('auth')
   })
 
   test('router guard redirects unauthenticated visits to /login', async () => {

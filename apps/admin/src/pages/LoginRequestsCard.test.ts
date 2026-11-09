@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
+import { useSessionStore } from '@/stores/session'
 import type { LoginRequest } from '@/types'
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 5))
@@ -18,6 +20,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<boolean> 
 
 // 自动确认所有 confirm 弹窗（不能直接改写 ElMessageBox 对象，用模块级 mock）。
 const confirmMock = mock(async () => 'confirm')
+const ElMessageErrorMock = mock(() => ({}))
 // bun 的模块 mock 是进程级的：先留一份未受污染的命名空间，本文件跑完再恢复，
 // 否则其它页面测试（如 App.test 挂载真实路由页）会拿到被替换成普通对象的
 // ElMessageBox，进而挂掉。
@@ -25,6 +28,7 @@ const pristineElementPlus = { ...elementPlus }
 mock.module('element-plus', () => ({
   ...pristineElementPlus,
   ElMessageBox: { ...pristineElementPlus.ElMessageBox, confirm: confirmMock },
+  ElMessage: { ...pristineElementPlus.ElMessage, error: ElMessageErrorMock },
 }))
 
 const { default: LoginRequestsCard } = await import('./LoginRequestsCard.vue')
@@ -50,6 +54,8 @@ function makeRequest(id: string, overrides: Partial<LoginRequest> = {}): LoginRe
 let pending: LoginRequest[] = []
 let recent: LoginRequest[] = []
 let decisionShouldFail = false
+let decisionReturns404 = false
+let decisionGate: Promise<void> | null = null
 const calls: Array<{ method: string; path: string; body?: unknown }> = []
 
 function mockFetch() {
@@ -66,11 +72,16 @@ function mockFetch() {
       if (decisionShouldFail) {
         return new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } })
       }
+      if (decisionReturns404) {
+        return new Response(JSON.stringify({ error: 'unknown request' }), { status: 404, headers: { 'content-type': 'application/json' } })
+      }
       const { decision: value } = JSON.parse(String(init?.body)) as { decision: LoginRequest['status'] }
       const req = [...pending, ...recent].find((r) => r.id === decision[1])!
       const updated: LoginRequest = { ...req, status: value, decidedAt: '2026-11-09T10:05:00.000Z' }
       pending = pending.filter((r) => r.id !== req.id)
       recent = [updated, ...recent]
+      // 决定未决前不返回：测试可观察「任何决定进行中，全部按钮禁用」
+      if (decisionGate) await decisionGate
       return new Response(JSON.stringify(updated), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (method === 'GET' && path === '/admin/api/login-requests') {
@@ -80,8 +91,35 @@ function mockFetch() {
   }) as unknown as typeof fetch
 }
 
+class FakeEventSource {
+  static instances: FakeEventSource[] = []
+  url: string
+  closed = false
+  listeners: Record<string, Array<(e: { data: string }) => void>> = {}
+
+  constructor(url: string | URL) {
+    this.url = String(url)
+    FakeEventSource.instances.push(this)
+  }
+
+  addEventListener(name: string, fn: (e: { data: string }) => void) {
+    ;(this.listeners[name] ??= []).push(fn)
+  }
+
+  emit(name: string, data: unknown) {
+    for (const fn of this.listeners[name] ?? []) fn({ data: JSON.stringify(data) })
+  }
+
+  close() {
+    this.closed = true
+  }
+}
+
 function mountCard() {
-  return mount(LoginRequestsCard)
+  // useSse 需要会话里的 SSE token 才会建立连接。
+  const pinia = createPinia()
+  useSessionStore(pinia).sseToken = 'sse-tok-1'
+  return mount(LoginRequestsCard, { global: { plugins: [pinia] } })
 }
 
 describe('LoginRequestsCard', () => {
@@ -89,8 +127,13 @@ describe('LoginRequestsCard', () => {
     pending = []
     recent = []
     decisionShouldFail = false
+    decisionReturns404 = false
+    decisionGate = null
+    FakeEventSource.instances.length = 0
+    globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
     calls.length = 0
     confirmMock.mockClear()
+    ElMessageErrorMock.mockClear()
     mockFetch()
   })
 
@@ -203,5 +246,96 @@ describe('LoginRequestsCard', () => {
     expect(text).toContain('已同意')
     expect(text).toContain('已拒绝')
     expect(text).toContain('已使用')
+  })
+
+  test('a 404 from the decision API reports 该请求已被处理 instead of a generic failure', async () => {
+    decisionReturns404 = true
+    pending = [makeRequest('a')]
+    const wrapper = mountCard()
+    await waitFor(() => wrapper.findAll('.el-table__row').length >= 1)
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '同意')!
+    await btn.trigger('click')
+    await waitFor(() => calls.some((c) => c.method === 'POST' && c.path.endsWith('/a/decision')))
+    await flush()
+    await flush()
+
+    expect(ElMessageErrorMock).toHaveBeenCalledWith('该请求已被处理')
+  })
+
+  test('while one decision is in flight every 同意/拒绝 button is disabled', async () => {
+    let release: () => void = () => {}
+    decisionGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    pending = [makeRequest('a'), makeRequest('b')]
+    const wrapper = mountCard()
+    await waitFor(() => wrapper.findAll('.el-table__row').length >= 2)
+
+    const agreeButtons = () => wrapper.findAll('button').filter((b) => b.text() === '同意')
+    const rejectButtons = () => wrapper.findAll('button').filter((b) => b.text() === '拒绝')
+    expect(agreeButtons()[0].attributes('disabled')).toBeUndefined()
+
+    await agreeButtons()[0].trigger('click')
+    await waitFor(() => calls.some((c) => c.method === 'POST'))
+
+    // 两行的同意 + 拒绝共 4 个按钮全部禁用（不只当前行）
+    for (const btn of [...agreeButtons(), ...rejectButtons()]) {
+      expect(btn.attributes('disabled')).toBeDefined()
+    }
+
+    release()
+    await waitFor(() => wrapper.text().includes('暂无待审批') === false && calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length >= 2)
+  })
+
+  test('an SSE login-request event debounces a refresh of the list', async () => {
+    let first: () => void = () => {}
+    const loaded = new Promise<void>((resolve) => {
+      first = resolve
+    })
+    const baseFetch = globalThis.fetch
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const res = await (baseFetch as typeof fetch)(url, init)
+      if (String(url).includes('/admin/api/login-requests') && (init?.method ?? 'GET') === 'GET') first()
+      return res
+    }) as unknown as typeof fetch
+
+    const wrapper = mountCard()
+    await loaded
+    await flush()
+
+    const es = FakeEventSource.instances[0]
+    expect(es).toBeDefined()
+    expect(es.url).toContain('token=sse-tok-1')
+
+    const getsBefore = calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length
+    // 新申请到达：服务端推 SSE，页面防抖后自行刷新（无需手动点）
+    pending = [makeRequest('n1', { teamName: '新队伍' })]
+    es.emit('login-request', pending[0])
+    await waitFor(() => calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length === getsBefore + 1)
+    await waitFor(() => wrapper.text().includes('新队伍'))
+
+    // 连续多条事件合并成一次刷新
+    const getsAfter = calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length
+    es.emit('login-request', pending[0])
+    es.emit('login-request', pending[0])
+    es.emit('login-request', pending[0])
+    await waitFor(() => calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length === getsAfter + 1)
+    await new Promise((r) => setTimeout(r, 120))
+    expect(calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length).toBe(getsAfter + 1)
+  })
+
+  test('unmounting closes the SSE connection and drops a pending debounce', async () => {
+    const wrapper = mountCard()
+    await waitFor(() => calls.some((c) => c.method === 'GET' && c.path === '/admin/api/login-requests'))
+    const es = FakeEventSource.instances[0]
+
+    es.emit('login-request', makeRequest('x'))
+    wrapper.unmount()
+    await new Promise((r) => setTimeout(r, 450))
+
+    expect(es.closed).toBe(true)
+    // 防抖计时器已清理：卸载后不再发刷新请求
+    expect(calls.filter((c) => c.method === 'GET' && c.path === '/admin/api/login-requests').length).toBe(1)
   })
 })

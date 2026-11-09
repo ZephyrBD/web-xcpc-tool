@@ -114,7 +114,8 @@ export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
         const team = teamsStore.load().find((t) => teamAccountKey(t) === icpcId);
         return team?.display_name?.trim() || team?.name || icpcId;
       },
-      // Live admin nudge; the admin page also refreshes on its own poll/load.
+      // Live admin nudge: the admin page refreshes from this SSE event (debounced)
+      // and from the manual 刷新 button — there is no polling loop.
       onRequestCreated: (request) => bus.publish("admin", "login-request", request),
     });
     if (!result.ok) {

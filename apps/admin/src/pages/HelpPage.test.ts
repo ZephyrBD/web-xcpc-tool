@@ -27,6 +27,10 @@ describe('HelpPage', () => {
     expect(text).toContain('队伍码')
     expect(text).toContain('OMS 检测')
     expect(text).not.toContain('examNum')
+    // 登录审批流程：等待页 + 登录审批页同意 + 仅当次有效
+    expect(text).toContain('登录时段之外（未开始或已结束）队伍输入队伍码会进入等待页')
+    expect(text).toContain('「认证管理 → 登录审批」中同意后该队伍自动完成登录')
+    expect(text).toContain('审批仅当次有效')
     expect(text).toContain('DOMjudge 对接配置')
     expect(text).toContain('拼接规则')
     expect(text).toContain('气球流程')

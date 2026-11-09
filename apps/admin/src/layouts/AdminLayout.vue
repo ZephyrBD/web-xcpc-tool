@@ -32,7 +32,7 @@ const navItems = [
 
 const accents: Record<string, string> = {
   overview: 'var(--brand-purple)',
-  'team-codes': 'var(--brand-green)',
+  auth: 'var(--brand-green)',
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
   'api-list': 'var(--brand-red)',

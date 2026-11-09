@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { ElButton, ElCollapse, ElCollapseItem, ElMessage, ElMessageBox, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { apiFetch } from '@/api'
+import { apiFetch, ApiError } from '@/api'
+import { useSse } from '@/composables/useSse'
 import type { LoginRequest, LoginRequestsResponse, LoginRequestStatus } from '@/types'
 
 const pending = ref<LoginRequest[]>([])
@@ -37,13 +38,14 @@ async function refresh(): Promise<void> {
 
 async function decide(row: LoginRequest, decision: 'approved' | 'rejected'): Promise<void> {
   const label = decision === 'approved' ? '同意' : '拒绝'
+  const who = row.teamName || row.icpcId
   try {
     await ElMessageBox.confirm(
       decision === 'approved'
-        ? `同意队伍 ${row.teamName || row.icpcId} 的登录请求？同意后队伍会立即登录，一次性有效。`
-        : `拒绝队伍 ${row.teamName || row.icpcId} 的登录请求？该队伍需要重新输入队伍码发起申请。`,
+        ? `同意队伍 ${who} 的登录请求？同意后队伍会立即登录，仅当次有效。`
+        : `拒绝队伍 ${who} 的登录请求？该队伍需要重新输入队伍码发起申请。`,
       `${label}登录请求`,
-      { confirmButtonText: label, cancelButtonText: '取消', type: decision === 'approved' ? 'info' : 'warning' },
+      { confirmButtonText: label, cancelButtonText: '取消', type: 'warning' },
     )
   } catch {
     return
@@ -54,9 +56,10 @@ async function decide(row: LoginRequest, decision: 'approved' | 'rejected'): Pro
       method: 'POST',
       body: JSON.stringify({ decision }),
     })
-    ElMessage.success(decision === 'approved' ? `已同意 ${row.teamName || row.icpcId} 的登录` : `已拒绝 ${row.teamName || row.icpcId} 的登录请求`)
-  } catch {
-    ElMessage.error('操作没成功，请再试一次')
+    ElMessage.success(decision === 'approved' ? `已同意 ${who} 的登录` : `已拒绝 ${who} 的登录请求`)
+  } catch (e) {
+    // 404：该请求已被处理（被拒/已同意/已使用），列表刷新后会自然消失。
+    ElMessage.error(e instanceof ApiError && e.status === 404 ? '该请求已被处理' : '操作没成功，请再试一次')
   } finally {
     decidingId.value = null
     await refresh()
@@ -71,7 +74,22 @@ function recentLabel(status: LoginRequestStatus): string {
   return status === 'pending' ? '待审批' : recentStatusLabels[status]
 }
 
+// 新申请由服务端 SSE 实时推送：与 JobsPage 一致，300ms 防抖合并连续事件后刷新。
+// 刷新失败不打断页面，下一次事件或手动「刷新」会再拉一次。
+let sseTimer: ReturnType<typeof setTimeout> | null = null
+useSse((event) => {
+  if (event !== 'login-request') return
+  if (sseTimer) clearTimeout(sseTimer)
+  sseTimer = setTimeout(() => {
+    sseTimer = null
+    void refresh()
+  }, 300)
+})
+
 onMounted(() => void refresh())
+onUnmounted(() => {
+  if (sseTimer) clearTimeout(sseTimer)
+})
 </script>
 
 <template>
@@ -110,13 +128,14 @@ onMounted(() => void refresh())
               size="small"
               type="primary"
               :loading="decidingId === (row as LoginRequest).id"
+              :disabled="decidingId !== null"
               @click="decide(row as LoginRequest, 'approved')"
             >同意</el-button>
             <el-button
               size="small"
               type="danger"
               plain
-              :disabled="decidingId === (row as LoginRequest).id"
+              :disabled="decidingId !== null"
               @click="decide(row as LoginRequest, 'rejected')"
             >拒绝</el-button>
           </template>

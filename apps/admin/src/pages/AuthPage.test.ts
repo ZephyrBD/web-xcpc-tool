@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import * as elementPlus from 'element-plus'
@@ -23,12 +23,19 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<boolean> 
 }
 
 // 自动确认所有 confirm 弹窗（不能直接改写 ElMessageBox 对象，用模块级 mock）。
+// bun 的模块 mock 是进程级的：先留一份未受污染的命名空间，本文件跑完再恢复，
+// 否则后续挂载真实路由页的测试会拿到被替换成普通对象的 ElMessageBox。
+const pristineElementPlus = { ...elementPlus }
 mock.module('element-plus', () => ({
-  ...elementPlus,
-  ElMessageBox: { ...elementPlus.ElMessageBox, confirm: async () => 'confirm' },
+  ...pristineElementPlus,
+  ElMessageBox: { ...pristineElementPlus.ElMessageBox, confirm: async () => 'confirm' },
 }))
 
 const { default: AuthPage } = await import('./AuthPage.vue')
+
+afterAll(() => {
+  mock.module('element-plus', () => ({ ...pristineElementPlus }))
+})
 
 let teamCodeRows: TeamCodeRow[] = []
 let unassignedCount = 0
