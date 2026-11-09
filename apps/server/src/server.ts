@@ -111,6 +111,19 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
   // builds both); expose the raw rows so the purge can clear and count them.
   const balloonTasks = deps?.balloonTasks ?? new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks.json"), []);
 
+  // One at a time: a manual sync racing an auto-sync would double-refresh the
+  // balloon service for no benefit.
+  let teamSyncInFlight = false;
+  const syncTeamsAndRefresh = async (client: DjClient, contestId: string): Promise<number> => {
+    const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
+    // Balloon tasks are read straight from DOMjudge's balloons API, whose
+    // contestproblem.label is the display label — no problems fetch (and no
+    // problemsMapped flag) is involved any more. The refreshed team table is
+    // all pollOnce() needs for names and locations.
+    deps?.balloonService?.refresh(teamsStore.load());
+    return count;
+  };
+
   app.get("/health", (c) => c.json({ ok: true }));
 
   /**
@@ -306,12 +319,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
       return c.json({ error: "contestId required" }, 400);
     }
     try {
-      const count = await syncTeamsFromDomjudge(client, contestId, teamsStore);
-      // Balloon tasks are read straight from DOMjudge's balloons API, whose
-      // contestproblem.label is the display label — no problems fetch (and no
-      // problemsMapped flag) is involved any more. The refreshed team table is
-      // all pollOnce() needs for names and locations.
-      deps?.balloonService?.refresh(teamsStore.load());
+      const count = await syncTeamsAndRefresh(client, contestId);
       return c.json({ count });
     } catch {
       return c.json({ error: "domjudge sync failed" }, 502);
@@ -370,6 +378,21 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     // Hot reload: the file is already written above, so a failing listener must
     // never turn a successful save into an error response (ConfigStore logs it).
     configStore.replace(updated);
+    // First time the contest id lands (empty → non-empty, or a new id after a
+    // purge): pull the team table once in the background. The PUT must not wait
+    // on DOMjudge, and a failure here must not fail the save.
+    const beforeId = before.balloon?.contestId?.trim() ?? "";
+    const afterId = updated.balloon?.contestId?.trim() ?? "";
+    const client = deps?.djClient;
+    if (afterId && afterId !== beforeId && client && !teamSyncInFlight) {
+      teamSyncInFlight = true;
+      void syncTeamsAndRefresh(client, afterId)
+        .then((count) => log.info("admin", `比赛 ID 已设置，后台自动同步队伍完成：共 ${count} 支队伍`))
+        .catch((err) => log.warn("admin", "后台自动同步队伍失败:", err instanceof Error ? err.message : err))
+        .finally(() => {
+          teamSyncInFlight = false;
+        });
+    }
     // Password fields are write-only and never echoed back.
     return c.json({ ...safeSettingsView(updated), note: "已保存，立即生效" });
   });

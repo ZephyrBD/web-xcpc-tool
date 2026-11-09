@@ -10,7 +10,7 @@ import { createApp, resolveStaticDir } from "./server";
 import { makeRootDispatch } from "./domjudge/proxy";
 import { adminAuthHeaders } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
-import { DjClient } from "./domjudge/client";
+import { DjClient, type DjTeam } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
 import type { BalloonTask } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
@@ -320,6 +320,66 @@ describe("settings hot reload", () => {
     expect(store.current.teamLogin.end).toBe("2001-01-01T00:00:00Z");
     expect(changes).toEqual(["2001-01-01T00:00:00Z"]);
   });
+
+  test("a PUT that sets a new contest id auto-syncs teams once in the background", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), balloon: { contestId: "", pollIntervalSeconds: 30 } });
+    const teamsStore = new JsonStore<DjTeam[]>(join(dataDir, "teams.json"), []);
+    const contestIds: string[] = [];
+    const client = {
+      getTeams: async (cid: string) => {
+        contestIds.push(cid);
+        return [{ id: "1", icpc_id: "t1", name: "Team One" }];
+      },
+    } as unknown as DjClient;
+    const app = createApp(store, { dataDir, djClient: client, teamsStore });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { contestId: "C1" } }),
+    });
+    expect(put.status).toBe(200);
+
+    // The sync runs in the background; poll until the team table lands.
+    const deadline = Date.now() + 2000;
+    while (teamsStore.load().length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(contestIds).toEqual(["C1"]);
+    expect(teamsStore.load()[0]).toMatchObject({ name: "Team One" });
+
+    // A second PUT with the same id must not trigger another sync.
+    const again = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { contestId: "C1" } }),
+    });
+    expect(again.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(contestIds).toEqual(["C1"]);
+  });
+
+  test("a PUT that only changes the poll interval does not sync teams", async () => {
+    const store = new ConfigStore({ ...loadConfigWithSecret(), balloon: { contestId: "C1", pollIntervalSeconds: 30 } });
+    const contestIds: string[] = [];
+    const client = {
+      getTeams: async (cid: string) => {
+        contestIds.push(cid);
+        return [];
+      },
+    } as unknown as DjClient;
+    const app = createApp(store, { dataDir, djClient: client });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ balloon: { pollIntervalSeconds: 60 } }),
+    });
+    expect(put.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(contestIds).toEqual([]);
+  });
+
 
   test("replacing print.token hot-reloads the print callback auth", async () => {
     const store = new ConfigStore({ ...loadConfigWithSecret(), print: { token: "old-token" } });
