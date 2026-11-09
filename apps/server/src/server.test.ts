@@ -10,6 +10,7 @@ import { adminAuthHeaders } from "./admin/auth";
 import { LoginHistoryStore } from "./admin/loginHistory";
 import { DjClient } from "./domjudge/client";
 import { BalloonService } from "./balloon/service";
+import type { BalloonTask } from "./balloon/service";
 import { PrintQueue } from "./print/queue";
 import { JsonStore } from "./store/store";
 import { SecretBox, ensureKeyFile } from "./store/secretbox";
@@ -70,6 +71,69 @@ describe("createApp", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
+  });
+
+  // An id that exists in the store but is not in the last balloon poll (a
+  // legacy/manual row) must 404 with the balloon-not-found body, and get no POST.
+  test("balloon ack for an id the last poll did not return returns 404 and POSTs nothing", async () => {
+    const cfg = loadConfigWithSecret();
+    const posted: string[] = [];
+    const client = {
+      getBalloons: async () => [],
+      markBalloonDone: async (_cid: string, id: string) => {
+        posted.push(id);
+        return null;
+      },
+    } as unknown as DjClient;
+    const store = new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks-stale.json"), []);
+    store.save([
+      {
+        id: "legacy-9",
+        contestId: "C1",
+        problemLabel: "A",
+        teamName: "Team X",
+        location: null,
+        status: "pending",
+        createdAt: "x",
+      },
+    ]);
+    const balloonService = new BalloonService({
+      client,
+      store,
+      bus: new SseBus(),
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {},
+    });
+    const app = createApp(cfg, { dataDir, balloonService });
+
+    const res = await app.request("/admin/api/balloon-tasks/legacy-9/ack", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await adminAuthHeaders(cfg)) },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "balloon not found" });
+    expect(posted).toEqual([]);
+    expect(store.load()[0].status).toBe("pending");
+  });
+
+  test("GET /admin/api/balloon-tasks?status=stale returns only stale rows", async () => {
+    const cfg = loadConfigWithSecret();
+    const balloonService = new BalloonService({
+      client: {} as DjClient,
+      store: new JsonStore<BalloonTask[]>(join(dataDir, "balloon-tasks-stale-list.json"), []),
+      bus: new SseBus(),
+      contestId: "C1",
+      pollIntervalSeconds: 30,
+      schedule: () => {},
+    });
+    const app = createApp(cfg, { dataDir, balloonService });
+    const res = await app.request("/admin/api/balloon-tasks?status=stale", {
+      headers: await adminAuthHeaders(cfg),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
   });
 });
 
@@ -576,7 +640,7 @@ const TEAMS_JSON = [
 ];
 const PROBLEMS_JSON = [{ id: "p1", label: "A", name: "Alpha" }];
 const BALLOONS_JSON = [
-  { balloonid: "b1", teamid: "t1", problem: "p1", contestproblem: { id: "p1", label: "A" }, done: false },
+  { balloonid: 1, time: "2026-01-01T00:00:00Z", problem: "p1", contestproblem: { id: "p1", label: "A" }, teamid: "t1", done: false },
 ];
 const CONTEST_API: Record<string, unknown> = {
   "/api/v4/contests/C1/teams": TEAMS_JSON,
@@ -776,12 +840,13 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
     const tasks = await (await app.request("/admin/api/balloon-tasks", { headers: await adminAuthHeaders(cfg) })).json();
     expect(tasks.length).toBe(1);
     expect(tasks[0]).toMatchObject({
-      id: "b1",
+      id: "1",
       teamName: "Team X",
       problemLabel: "A",
       location: "A-101",
       status: "pending",
     });
+    expect(tasks[0].createdAt).toBe("2026-01-01T00:00:00.000Z");
   });
 
   // Old behaviour synthesized tasks from AC judgements; Task 4 reads DOMjudge's
@@ -832,7 +897,7 @@ describe("DoD: full verify → proxy → print → admin chain", () => {
 
     const created = await balloonService.pollOnce();
     expect(created).toBe(1);
-    expect(balloonService.list()[0]).toMatchObject({ id: "b1", problemLabel: "A", teamName: "Team X" });
+    expect(balloonService.list()[0]).toMatchObject({ id: "1", problemLabel: "A", teamName: "Team X" });
   });
 });
 

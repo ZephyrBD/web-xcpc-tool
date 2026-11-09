@@ -81,7 +81,7 @@ const sections: HelpSection[] = [
     accent: 'var(--brand-purple)',
     blocks: [
       {
-        note: '气球服务按轮询间隔调 DOMjudge judgements 接口，发现 AC（判题结果为 solved）后自动生成气球任务；管理端可在「打印 / 气球」页面打印小票、标记已送。任务实时推送到管理端 SSE 事件流（/admin/api/events），无需手动刷新页面。',
+        note: '气球队列直接读取 DOMjudge 的气球接口 /contests/{id}/balloons，不再由判题结果合成；管理端可在「打印 / 气球」页面打印小票、标记已送。同一场比赛的气球状态以 DOMjudge 为准，每次轮询双向同步。若某个气球在列表中消失（例如封榜后 DOMjudge 隐藏、或重测撤销了提交），它不会被标记为已派送，而是显示「已隐藏」并暂时离开待派送队列，等 DOMjudge 重新列出后自动恢复。任务实时推送到管理端 SSE 事件流（/admin/api/events），无需手动刷新页面。升级旧版本数据目录时，旧版本合成的气球任务会被丢弃并输出一行日志。',
         lines: [],
       },
     ],

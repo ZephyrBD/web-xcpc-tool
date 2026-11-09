@@ -261,8 +261,8 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="状态" min-width="110">
             <template #default="{ row }">
-              <span class="pill" :class="`pill--${row.status}`">
-                {{ balloonStatusLabels[row.status as string] ?? row.status }}
+              <span class="pill" :class="`pill--${row.stale ? 'stale' : row.status}`">
+                {{ row.stale ? '已隐藏' : (balloonStatusLabels[row.status as string] ?? row.status) }}
               </span>
             </template>
           </el-table-column>
@@ -271,7 +271,7 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="操作" min-width="170">
             <template #default="{ row }">
-              <template v-if="row.status === 'pending'">
+              <template v-if="row.status === 'pending' && !row.stale">
                 <el-button size="small" @click="printBalloonRow(row as BalloonTask)">打印</el-button>
                 <el-button size="small" type="primary" @click="ackBalloon(row as BalloonTask)">标记已送</el-button>
               </template>
@@ -365,6 +365,13 @@ onUnmounted(() => {
   color: var(--brand-red);
   border-color: color-mix(in srgb, var(--brand-red) 35%, transparent);
   background: color-mix(in srgb, var(--brand-red) 12%, transparent);
+}
+
+/* Balloon gone from DOMjudge's list (freeze/removal): status is unchanged. */
+.pill--stale {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--bg-alt);
 }
 
 .empty-state {

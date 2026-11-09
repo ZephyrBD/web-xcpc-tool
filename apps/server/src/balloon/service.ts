@@ -23,6 +23,18 @@ export type BalloonTask = {
    * `id`; kept nullable so old rows and the admin column keep rendering.
    */
   balloonId?: number | null;
+  /**
+   * True when the last poll did not return this balloon. DOMjudge hides
+   * balloons after a scoreboard freeze and drops them when a rejudging takes
+   * the submission away, so absence is NOT delivery: `status` is left exactly
+   * as the last poll that saw the balloon decided it. A stale pending row is
+   * kept out of the pending queue (nobody can hand out a balloon DOMjudge no
+   * longer lists) but still shows its real status. A balloon that reappears is
+   * un-staled by its next poll.
+   */
+  stale?: boolean;
+  /** ISO time of the last poll that returned this balloon (absent while stale). */
+  lastSeenAt?: string;
 };
 
 export type BalloonServiceDeps = {
@@ -80,6 +92,8 @@ export class BalloonService {
   private emptyWarned = false;
   /** Acks awaiting a poll that actually observed DOMjudge saying "not done". */
   private ackPending = new Map<string, AckRecord>();
+  /** Ids returned by the last successful poll: the only acks ack() accepts. */
+  private liveIds = new Set<string>();
 
   constructor(deps: BalloonServiceDeps) {
     this.client = deps.client;
@@ -91,6 +105,29 @@ export class BalloonService {
       this.timer = setTimeout(fn, ms);
     });
     this.teams = deps.teams ?? [];
+    this.discardForeignRows();
+  }
+
+  /**
+   * Pre-Task-4 rows were synthesized from AC judgements: their `id` is a
+   * submission id, never a `balloonid`, so no balloon API entry can ever match
+   * them and they would sit in the store forever (looking like undelivered
+   * balloons). Discard anything that does not belong to the live contest, and
+   * log one line so an operator upgrading a pre-refactor data dir knows the
+   * history was dropped (clear <dataDir>/balloon-tasks.json beforehand if the
+   * rows are not wanted at all — same outcome, without the log line).
+   */
+  private discardForeignRows(): void {
+    if (!this.contestId) return;
+    const rows = this.store.load();
+    const kept = rows.filter((t) => t.contestId === this.contestId);
+    const discarded = rows.length - kept.length;
+    if (discarded === 0) return;
+    this.store.save(kept);
+    console.info(
+      `balloon tasks: discarded ${discarded} legacy row(s) that do not belong to contest ${this.contestId}` +
+        ` (pre-refactor rows were synthesized from submissions; DOMjudge balloon ids cannot match them)`,
+    );
   }
 
   /**
@@ -163,9 +200,16 @@ export class BalloonService {
     this.start();
   }
 
-  list(status?: BalloonTask["status"]): BalloonTask[] {
+  /**
+   * Dispatch on a live balloon to the stored row. `stale` (the "此气球已从 DOMjudge
+   * 消失" list) wins over a stored status, so a balloon hidden by a freeze does
+   * not re-enter the delivery queue just because nobody has delivered it yet.
+   */
+  list(status?: BalloonTask["status"] | "stale"): BalloonTask[] {
     const tasks = this.store.load();
-    return status ? tasks.filter((t) => t.status === status) : tasks;
+    if (status === "stale") return tasks.filter((t) => t.stale === true);
+    if (status) return tasks.filter((t) => t.status === status && t.stale !== true);
+    return tasks;
   }
 
   /**
@@ -181,11 +225,23 @@ export class BalloonService {
    * `status === "pending"` is not a deliverable transition in the DOMjudge
    * model (use the DOMjudge UI to reopen a balloon); it only records the
    * request and returns the task unchanged.
+   *
+   * Only ids that the last poll actually returned are accepted: an ack for
+   * anything else (a typo, a removed balloon, a legacy row) returns null so the
+   * route can 404 — nothing is written and nothing is POSTed. DOMjudge itself
+   * rejects unknown balloon ids on `/done`, so inventing a pending ack for one
+   * would leave a banner row nobody can ever clear.
    */
-  async ack(id: string, status: BalloonTask["status"] = "delivered"): Promise<BalloonTask | null> {
+  async ack(
+    id: string,
+    status: BalloonTask["status"] = "delivered",
+  ): Promise<{ task: BalloonTask } | { error: "balloon not found" }> {
     const task = this.store.load().find((t) => t.id === id);
-    if (!task) return null;
-    if (status !== "delivered") return task;
+    // A stale row's balloon is (as far as this poller knows) gone from
+    // DOMjudge, and an id the last poll never returned is not a balloon at all:
+    // refuse both rather than POST into a 404 or invent a row.
+    if (!task || task.stale || !this.liveIds.has(id)) return { error: "balloon not found" };
+    if (status !== "delivered") return { task };
 
     const requestedAt = Date.now();
     // Registered before the POST so a poll that started earlier cannot win a
@@ -205,29 +261,33 @@ export class BalloonService {
         err instanceof Error ? err.message : err,
       );
     }
-    return task;
+    return { task };
   }
 
-  /** Label for a balloon: the contest problem label, else the raw problem id. */
+  /**
+   * Display label: `contestproblem.label` is where real DOMjudge responses put
+   * it (ContestProblem serializes its shortname as `label`); `problem` is the
+   * shortname DOMjudge puts on every balloon, kept as the fallback.
+   */
   private static problemLabelOf(b: DjBalloon): string {
-    return b.contestproblem?.label ?? b.problem ?? b.problemid ?? "";
+    return b.contestproblem?.label ?? b.problem ?? "";
   }
 
-  /** Earliest timestamp the balloon API offers, so rows keep a stable createdAt. */
-  private static submittedAtOf(b: DjBalloon, fallback: string): string {
-    const raw = b.time ?? b.contesttime ?? b.submitted;
-    if (!raw) return fallback;
-    const ms = Date.parse(raw);
+  /** Balloon time, ISO-normalized; the poll time when DOMjudge omits/breaks it. */
+  private static balloonTimeOf(b: DjBalloon, fallback: string): string {
+    const ms = b.time ? Date.parse(b.time) : Number.NaN;
     return Number.isFinite(ms) ? new Date(ms).toISOString() : fallback;
   }
 
   /**
    * One poll = one GET /balloons. Returns how many task rows changed (created,
-   * re-labelled or status-flipped). A missing balloon list (API error) throws,
-   * so the caller applies its backoff instead of pretending the queue emptied.
+   * re-labelled, status-flipped or newly marked stale). A missing balloon list
+   * (API error) throws, so the caller applies its backoff instead of pretending
+   * the queue emptied.
    */
   async pollOnce(): Promise<number> {
     const startedAt = Date.now();
+    const seenAt = new Date(startedAt).toISOString();
     const balloons = await this.client.getBalloons(this.contestId);
 
     if (balloons.length === 0) {
@@ -249,6 +309,7 @@ export class BalloonService {
     const existing = this.store.load();
     const existingById = new Map(existing.map((t) => [t.id, t]));
     const seen = new Set<string>();
+    const liveIds = new Set<string>();
     const created: BalloonTask[] = [];
     const changed: BalloonTask[] = [];
     const next: BalloonTask[] = [];
@@ -257,24 +318,36 @@ export class BalloonService {
       const id = String(b.balloonid);
       if (seen.has(id)) continue;
       seen.add(id);
+      liveIds.add(id);
       const team = teamById.get(b.teamid);
       const problemLabel = BalloonService.problemLabelOf(b);
+      // DOMjudge's `location` is the team's seat; the local team table is only
+      // a fallback for responses that omit it.
+      const location = b.location ?? team?.location?.description ?? null;
       const prev = existingById.get(id);
       let task: BalloonTask;
 
       if (prev) {
+        const wasStale = prev.stale === true;
         const base: BalloonTask = {
           ...prev,
           problemLabel: problemLabel || prev.problemLabel,
           teamName: team ? team.name : prev.teamName,
-          location: team ? (team.location?.description ?? null) : prev.location,
+          location,
+          stale: false,
+          lastSeenAt: seenAt,
         };
         task = { ...base, status: this.reconciledStatus(base, b, startedAt) };
+        // A row that was never stale has no lastSeenAt to write: it only exists
+        // to say "was gone since". Avoids rewriting every row on every poll.
+        if (!wasStale && prev.lastSeenAt === undefined) delete task.lastSeenAt;
         const touched =
           task.status !== prev.status ||
           task.problemLabel !== prev.problemLabel ||
           task.teamName !== prev.teamName ||
-          task.location !== prev.location;
+          task.location !== prev.location ||
+          wasStale ||
+          task.lastSeenAt !== prev.lastSeenAt;
         if (touched) changed.push(task);
       } else {
         // A balloon DOMjudge already reports as done needs no delivery; it is
@@ -290,27 +363,37 @@ export class BalloonService {
           contestId: this.contestId,
           problemLabel,
           teamName: team ? team.name : b.teamid,
-          location: team?.location?.description ?? null,
+          location,
           status,
-          createdAt: BalloonService.submittedAtOf(b, new Date(startedAt).toISOString()),
+          createdAt: BalloonService.balloonTimeOf(b, seenAt),
           balloonId: Number.isFinite(Number(id)) ? Number(id) : null,
+          stale: false,
         };
         created.push(task);
       }
       next.push(task);
     }
 
-    // Balloons DOMjudge no longer returns (removed/cancelled in DOMjudge).
-    // Kept, not dropped: they are the delivery history the Operations UI shows,
-    // and a DOMjudge hiccup must not erase it. Kept out of the pending queue
-    // and marked "delivered" so no ack can be sent to a balloon id that 404s.
+    // Balloons this poll no longer returned. Absence is not delivery: DOMjudge
+    // hides post-freeze balloons from GET /balloons (they come back when the
+    // scoreboard unfreezes) and drops balloons whose submission a rejudging
+    // took away. So keep the row, keep the status the last sighting decided,
+    // and only flag it stale — inventing "delivered" would tell the team's
+    // runner a balloon was handed out when nobody has it.
     for (const t of existing) {
-      if (t.contestId !== this.contestId || seen.has(t.id)) continue; // kept with its own copy above
-      this.ackPending.delete(t.id);
-      const stale = t.status === "pending" ? { ...t, status: "delivered" as const } : t;
-      if (stale !== t) changed.push(stale);
+      if (t.contestId !== this.contestId || seen.has(t.id)) continue;
+      const alreadyStale = t.stale === true;
+      const stale: BalloonTask = { ...t, stale: true };
+      delete stale.lastSeenAt;
+      if (!alreadyStale) {
+        // A pending ack for a balloon that vanished can no longer land.
+        this.ackPending.delete(t.id);
+        changed.push(stale);
+      }
       next.push(stale);
     }
+
+    this.liveIds = liveIds;
 
     if (created.length > 0 || changed.length > 0) {
       this.store.save(next);

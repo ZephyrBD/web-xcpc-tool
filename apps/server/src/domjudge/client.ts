@@ -123,17 +123,29 @@ export type DjUser = {
   team_id?: string;
 };
 
-/** An entry of GET /contests/{cid}/balloons (DOMjudge balloon API). */
+/**
+ * An entry of GET /contests/{cid}/balloons (DOMjudge balloon API), mirroring
+ * `App\DataTransferObject\Balloon` in domjudge/domjudge. There is no
+ * `problemid`/`contesttime`/`submitted` on this endpoint — `problem` is the
+ * contest shortname and `time` is the submission time.
+ */
 export type DjBalloon = {
-  balloonid: string;
-  teamid: string;
-  problem?: string;
-  problemid?: string;
-  /** Problem object carrying the display label on real DOMjudge responses. */
-  contestproblem?: { label?: string; id?: string; name?: string };
-  contesttime?: string;
+  balloonid: string | number;
   time?: string;
-  submitted?: string;
+  /** Contest shortname of the problem (DOMjudge's `probshortname`). */
+  problem?: string;
+  /** The contest problem; its `label` is the problem letter shown in the UI. */
+  contestproblem?: { label?: string; id?: string; name?: string };
+  team?: string;
+  teamid: string;
+  /** Team seat as configured on the team ("A-101"); null when unset. */
+  location?: string | null;
+  affiliation?: string | null;
+  affiliationid?: string | null;
+  category?: string | null;
+  categoryid?: string | null;
+  /** Per-team balloon totals; unused by the task mirror, kept for completeness. */
+  total?: Record<string, unknown>;
   done?: boolean;
 };
 

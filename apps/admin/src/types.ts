@@ -20,6 +20,14 @@ export interface BalloonTask {
   createdAt: string
   /** DOMjudge balloon id; equals `id` since Task 4 (absent on legacy rows). */
   balloonId?: string | number | null
+  /**
+   * Same as `status` but the last DOMjudge /balloons poll no longer returned it
+   * (e.g. hidden by a scoreboard freeze). Not delivered — just not handable yet:
+   * the task leaves the pending queue until DOMjudge lists it again.
+   */
+  stale?: boolean
+  /** ISO time of the last poll that returned the balloon (absent while stale). */
+  lastSeenAt?: string
 }
 
 export interface Team {

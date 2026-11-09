@@ -278,16 +278,18 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     const svc = deps?.balloonService;
     if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
     const status = c.req.query("status");
-    const valid = ["pending", "delivered"] as const;
+    const valid = ["pending", "delivered", "stale"] as const;
     return c.json(svc.list(valid.includes(status as never) ? (status as never) : undefined));
   });
 
   app.post("/admin/api/balloon-tasks/:id/ack", async (c) => {
     const svc = deps?.balloonService;
     if (!svc) return c.json({ error: "balloon service unavailable" }, 503);
-    const t = await svc.ack(c.req.param("id"));
-    if (!t) return c.json({ error: "task not found" }, 404);
-    return c.json(t);
+    const result = await svc.ack(c.req.param("id"));
+    // Not in the last poll's balloon list (typo, stale/removed balloon, legacy
+    // row): nothing was POSTed or written, and DOMjudge's /done would 404 anyway.
+    if ("error" in result) return c.json(result, 404);
+    return c.json(result.task);
   });
 
   app.get("/admin/api/teams", (c) => {
