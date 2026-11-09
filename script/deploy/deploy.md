@@ -1,6 +1,6 @@
 # 部署指南
 
-CUIT XCPC TOOL 使用 **Bun** 直接运行，无需打包 exe，无需 nginx、数据库。
+Web XCPC Tool 使用 **Bun** 直接运行，无需打包 exe，无需 nginx、数据库。
 单个进程同时提供：`/wxt` 管理端（静态页面 + API）与站点根路径 `/` 下的 DOMjudge 反向代理（DOMjudge 所有页面流量走根路径，baseUrl 自带路径前缀时会自动剥掉）。
 
 ## 前置条件
@@ -24,8 +24,8 @@ curl -fsSL https://bun.sh/install | bash
 ### 获取代码
 
 ```bash
-git clone https://github.com/<org>/CUITXCPCTool.git
-cd CUITXCPCTool
+git clone https://github.com/ZephyrBD/web-xcpc-tool.git
+cd web-xcpc-tool
 ```
 
 ## 构建与启动
@@ -49,7 +49,7 @@ bun install
 bun run server
 ```
 
-两种方式的工作目录都是 `apps/server`，运行时数据统一落在 `apps/server/data/`（`settings.json`、各 JSON 存储与密钥同处一个目录；旧版本遗留的 `data/data/` 会在启动时自动上移一级）。
+两种方式的工作目录都是 `apps/server`，运行时数据统一落在 `apps/server/data/`（`settings.json`、各 JSON 存储与密钥同处一个目录）。旧版本遗留的 `data/data/` **不会自动迁移**：启动时只打一行 WARN 提示，需要手动把其中的文件移到 `data/` 下或直接删除该目录。
 
 启动后：
 
@@ -65,7 +65,7 @@ bun run server
 | 字段 | 说明 |
 |---|---|
 | `port` | 监听端口，默认 `8080` |
-| `contextPath` | 上下文路径，默认 `/wxt`，一般不改 |
+| `contextPath` | **固定常量** `/wxt`，不可配置。字段保留在 `settings.json` 里只为兼容旧文件：启动时会自动把它重写回 `/wxt`，若原值不同则打一行 INFO |
 | `domjudge.baseUrl` | DOMjudge 站点地址，例如 `https://domjudge.example.com` |
 | `domjudge.adminUser` / `domjudge.adminPassword` | DOMjudge 管理员账号，供代理与 API 拉取使用 |
 | `domjudge.timeoutSeconds` | DOMjudge API 请求超时秒数，默认 `10`；官方 demo 等慢站点建议调大（如 `65`） |
@@ -104,13 +104,14 @@ bun run server
 首次启动会自动生成一个随机管理端密码，并在启动横幅中打印，例如：
 
 ```
-09 14:03:07   startup [I] Web XCPC Tool <version>
-                          服务    http://localhost:8080/wxt
-                          管理台  http://localhost:8080/wxt/admin   用户名: admin
-                          密码    NE5vetKj8kJmhr6V
-                          DOMjudge https://domjudge.example.com
-                          气球    未启用（未配置赛题 ID）
+10 00:39:00    startup [I] Web XCPC Tool <version>
+10 00:39:00    startup [I] 服务    http://localhost:8080/wxt/admin
+10 00:39:00    startup [I] 账号    admin / NE5vetKj8kJmhr6V
+10 00:39:00    startup [I] DOMjudge https://domjudge.example.com
+10 00:39:00    startup [I] 气球    未启用（未配置赛题 ID）
 ```
+
+（每行是一次独立的 logger 调用；`DOMjudge` 行未配置 baseUrl 时显示 `未配置`，`气球` 行未配置赛题 ID 时显示 `未启用（未配置赛题 ID）`。）
 
 密码同时以明文保存在 `data/settings.json` 的 `admin.password` 字段（对应的 `admin.passwordHash` 为 bcrypt 哈希）。**无需手工生成或填写哈希**。
 
@@ -140,7 +141,8 @@ bun run server
 - **气球数据来源**：气球任务**只来自** `GET /api/v4/contests/{id}/balloons`，不再拉取 judgements/submissions 自行合成。 DOMjudge 是唯一权威：每条任务的「已派送」完全由该接口的 `done` 字段双向同步。
 - **「已隐藏」（stale）语义**：某次轮询没再返回的气球**不会被标成已派送**，而是保留上次的状态并标记「已隐藏」——封榜期间 DOMjudge 会隐藏气球，重测也可能让气球消失，把「消失」当成「已送出」会让志愿者去追一个已经派出的气球。隐藏中的待派送气球会退出派送队列，DOMjudge 重新列出后自动恢复；已隐藏的气球不能标记已派送。注意：单次空响应（例如 DOMjudge 短暂异常返回空数组）会让当轮所有任务瞬间变为「已隐藏」。
 - **标记已派送只接受最近一轮轮询里出现过的气球**：对不存在的 id 调用会返回 404 `balloon not found`，既不写盘也不会向 DOMjudge 发请求。
-- **升级旧数据目录（重要）**：本版本的气球任务 id 就是 DOMjudge 的 `balloonid`，旧数据里由判题结果合成的行永远匹配不上。启动时会丢弃**不属于当前比赛**的旧行并打一行 INFO；携带当前比赛 ID 的旧行不会被自动清理，只会在界面上永远显示为「已隐藏」。**升级前请先清空数据**（管理台「设置 → 比赛设置 → 清空数据」，或停机删掉 `data/balloon-tasks.json`），然后再填写比赛 ID。
+- **排障：`balloon [E] poll failed ... The operation timed out`**：这几乎总是网络/防火墙问题——服务器所在主机进程连不上 DOMjudge（例如本机安全软件直接 RST 掉了连接），而不是配置错误。排查顺序：先在服务器主机上 `curl` 一下 `domjudge.baseUrl` 确认可达性；如果只有 bun 被拦，可以用本地 node 起一个中继（把 baseUrl 转发一层）或走代理绕开。`baseUrl` 在管理端「设置」页可热修改，改完立即生效。
+- **升级旧数据目录（重要）**：本版本的气球任务 id 就是 DOMjudge 的 `balloonId`，旧数据里由判题结果合成的行（缺少 `balloonId` 字段）永远匹配不上。启动时会**丢弃所有旧格式行**——不管属于哪个比赛、即使是当前比赛 ID 的行也一样——并打一行 INFO（`已丢弃 N 条旧版气球任务`）；只有携带 `balloonId` 字段（值可以为 `null`）的当前格式行会保留。因此升级时**可以什么都不做**（旧行会被自动丢弃），也可以先清空数据（管理台「设置 → 比赛设置 → 清空数据」）或停机删掉 `data/balloon-tasks.json`，效果相同且更干净。
 
 ## 打包发布与静态目录解析
 
@@ -154,19 +156,23 @@ bun run server
 
 本地编译示例（版本号注入为 `dev-local`）：在 `apps/server` 下 `bun run compile`，输出 `dist/web-xcpc-tool(.exe)`，配合 `apps/server/static` 运行。
 
+### zip 部署（免构建，推荐现场使用）
+
+不想装 Bun / 构建前端时，直接从 GitHub Releases 下载对应平台的 zip，解压后在**包根目录**运行 `web-xcpc-tool`（Windows 为 `web-xcpc-tool.exe`，Linux/macOS 先 `chmod +x`）：`static/` 与可执行文件同包分发，无需额外准备。首次启动会在包根目录生成 `data/settings.json`，并在终端横幅打印管理端密码。静态目录解析顺序见上文（zip 包内命中第 3 项 `./static`）。
+
 ## Linux：systemd 常驻
 
-`/etc/systemd/system/cuitxcpctool.service`：
+`/etc/systemd/system/web-xcpc-tool.service`：
 
 ```ini
 [Unit]
-Description=CUIT XCPC Tool (TS)
+Description=Web XCPC Tool
 After=network.target
 
 [Service]
 Type=simple
 User=xcpc
-WorkingDirectory=/opt/CUITXCPCTool/apps/server
+WorkingDirectory=/opt/web-xcpc-tool/apps/server
 ExecStart=/home/xcpc/.bun/bin/bun run src/index.ts
 Restart=on-failure
 RestartSec=3
@@ -175,20 +181,21 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-> `WorkingDirectory` 必须是 `apps/server`：运行时数据目录 `data/`（相对工作目录）与静态资源 `static/` 都从这里解析。
+> 源码布局下 `WorkingDirectory` 必须是 `apps/server`：运行时数据目录 `data/`（相对工作目录）与静态资源 `static/` 都从这里解析。
 > `ExecStart` 中 bun 路径按实际安装位置调整（`which bun`）。
+> 若用上面的 zip 部署，`WorkingDirectory` 改为解压出来的包根目录、`ExecStart` 直接指向单文件可执行程序即可。
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now cuitxcpctool
-systemctl status cuitxcpctool
+sudo systemctl enable --now web-xcpc-tool
+systemctl status web-xcpc-tool
 ```
 
 ## Windows：常驻
 
 两种任选：
 
-- **NSSM**：`nssm install cuitxcpctool "C:\Users\<you>\.bun\bin\bun.exe" "run src/index.ts"`，并把 AppDirectory 设为 `<仓库>\apps\server`。
+- **NSSM**：`nssm install web-xcpc-tool "C:\Users\<you>\.bun\bin\bun.exe" "run src/index.ts"`，并把 AppDirectory 设为 `<仓库>\apps\server`。
 - **计划任务**：开机触发运行 `start.ps1`（见下）。
 
 ## 启动脚本（可选）
@@ -208,7 +215,7 @@ powershell -File script/deploy/start.ps1   # Windows
 3. 打开「设置 → 比赛设置」：填写本场比赛的比赛 ID 与气球轮询间隔（保存即锁定），按需设置登录时段；保存后 `data/logs/latest.log` 里应出现 `balloon` 模块的轮询记录。
 4. 升级安装（沿用旧的 `data/`）先点「清空数据」，再填写比赛 ID。
 5. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向本工具的站点根路径 `http://<host>:<port>/`（除 /wxt 外的路径都反代到 DOMjudge，页面流量走站点根路径）。
-6. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/wxt/public/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
+6. 给队伍分配队伍码：在管理端「认证管理」页生成/导出队伍码（`POST /admin/api/team-codes/generate`），把队伍码投屏给各队；保存比赛 ID 后队伍列表会自动从 DOMjudge 同步一次，无需手动点同步。用一台队伍机器在 `/wxt/public/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
 
 ## 安全说明
 
@@ -231,4 +238,4 @@ proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header X-Forwarded-Host  $http_host;
 ```
 
-`script/nginx.conf` 与 `script/2026.conf` 的相关 location 都已带上 `Host $http_host` 与 `X-Forwarded-Proto $scheme`；自建反代（Caddy、Traefik、云厂商负载均衡）请确认同样转发这两项。注意这两份配置里的 location 前缀（`/cxtool`、`/dj-verify`、`/auth-check` 等）是历史站点布局，本服务的路由都在 `/wxt` 下，落地时请把 `proxy_pass` 指向本服务并把前缀改为 `/wxt`，务必保留上面四个 `proxy_set_header`。
+仓库不再提供 nginx conf 模板，自建反代（nginx、Caddy、Traefik、云厂商负载均衡）请按上面的头自行配置，尤其是 **Host + X-Forwarded-Proto**——缺了它们 TLS 在 nginx 终结时协议对不上，所有保存操作都会 403。

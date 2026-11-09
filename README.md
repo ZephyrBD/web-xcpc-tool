@@ -35,7 +35,7 @@ cd ../server && bun install && bun run dev                                     #
 |---|---|
 | `apps/server/` | TypeScript/Bun 后端（Hono + zod，无数据库，`data/` 下 JSON 存储） |
 | `apps/admin/` | 管理端前端（Vue 3 + Element Plus + Vite，构建产物输出到 `apps/server/static/`） |
-| `script/` | 运维产物：nginx 配置示例、`print.sh`、队伍/组织 JSON 生成脚本、部署文档 |
+| `script/` | 运维产物：`print.sh`、队伍/组织 JSON 生成脚本、部署文档 |
 | `docs/` | 设计文档与实施计划 |
 
 ## 开发
