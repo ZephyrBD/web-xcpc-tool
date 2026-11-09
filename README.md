@@ -132,12 +132,12 @@ bun run compile   # 输出 dist/web-xcpc-tool(.exe)，配合 apps/server/static 
 - DOMjudge 打印命令示例（调用本工具的打印回调，脚本 `script/print.sh`）：
 
   ```bash
-  curl -s -X POST http://<host>:8080/wxt/dj/print \
+  curl -s -X POST http://<host>:8080/wxt/print \
     -H "org.domjudge.print-token: <token>" \
     -F "file=@[file]" -F "original=[original]"
   ```
 
-- 打印回调 `POST /wxt/dj/print` 接收 multipart 表单（`file` + `original`），并要求请求头 `org.domjudge.print-token` 与 `data/settings.json` 中配置的 token 一致；代码转 PDF 由服务端完成（参考 `script/print.sh`）。
+- 打印回调 `POST /wxt/print` 接收 multipart 表单（`file` + `original`），并要求请求头 `org.domjudge.print-token` 与 `data/settings.json` 中配置的 token 一致；代码转 PDF 由服务端完成（参考 `script/print.sh`）。
 
 ## CI
 

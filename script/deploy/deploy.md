@@ -1,7 +1,7 @@
 # 部署指南
 
 CUIT XCPC TOOL 使用 **Bun** 直接运行，无需打包 exe，无需 nginx、数据库。
-单个进程同时提供：`/wxt` 管理端（静态页面 + API）与 `/wxt/dj/*` DOMjudge 反向代理。
+单个进程同时提供：`/wxt` 管理端（静态页面 + API）与站点根路径 `/` 下的 DOMjudge 反向代理（DOMjudge 所有页面流量走根路径，baseUrl 自带路径前缀时会自动剥掉）。
 
 ## 前置条件
 
@@ -80,18 +80,17 @@ bun run server
 
 - `domjudge` 整段（Base URL、管理员账号、超时秒数）与打印回调令牌；
 - `admin.username` / `admin.password`（轮换密码后旧登录会话仍然有效，直到 Cookie 过期）；
-- `teamLogin.start` / `teamLogin.end`（登录时段，立即影响 `/dj/verify`）；
+- `teamLogin.start` / `teamLogin.end`（登录时段，立即影响 `/wxt/public/verify`）；
 - `balloon.contestId` / `balloon.pollIntervalSeconds`（气球轮询按新值重新排期）。
 
-**需要重启服务**的只有三项，原因是它们在进程启动时就绑死了（端口由 `Bun.serve` 绑定、访问前缀是启动时挂载的路由前缀、JWT 密钥在启动时用于签发令牌）：
+**需要重启服务**的只有两项，原因是它们在进程启动时就绑死了（端口由 `Bun.serve` 绑定、JWT 密钥在启动时用于签发令牌）：
 
 | 字段 | 不重启的后果 |
 |---|---|
 | `port` | 进程仍监听旧端口，新端口不生效 |
-| `contextPath` | 路由仍挂在旧前缀下 |
 | `jwt.secret` | 新密钥签发、旧密钥校验混用，现有管理端与队伍 Cookie 立即失效，需重新登录 |
 
-修改这三项后重启服务并重新登录。
+修改这两项后重启服务并重新登录。
 
 > 注意 `domjudge.baseUrl` 指向的是 **DOMjudge 本身**的地址；队伍/客户端访问本服务是通过 `http://<host>:<port>/wxt`（OMS 客户端进站地址），两条链路不要混淆。
 
@@ -196,8 +195,8 @@ powershell -File script/deploy/start.ps1   # Windows
 2. 浏览器打开 `http://<host>:8080/wxt/`，用 `admin.username` + 明文密码登录成功。
 3. 打开「设置 → 比赛设置」：填写本场比赛的比赛 ID 与气球轮询间隔（保存即锁定），按需设置登录时段；保存后 `data/logs/latest.log` 里应出现 `balloon` 模块的轮询记录。
 4. 升级安装（沿用旧的 `data/`）先点「清空数据」，再填写比赛 ID。
-5. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/wxt`（代理路径为 `/wxt/dj/...`）。
-6. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/wxt/dj/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
+5. DOMjudge 管理端里把队伍进站/外链 BaseURL 指向 `http://<host>:<port>/wxt`（DOMjudge 页面流量走站点根路径 `/` 反代）。
+6. 给队伍分配队伍码（管理端导入队伍密码后，通过 TeamStore `setTeamCode`），把队伍码投屏给各队；用一台队伍机器在 `/wxt/public/verify` 输入队伍码完成登录 + 打印。如需限制登录时段，配置 `teamLogin.start` / `teamLogin.end`（ISO 时间，留空不限）。
 
 ## 安全说明
 
