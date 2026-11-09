@@ -337,6 +337,70 @@ describe("settings hot reload", () => {
     expect(saved.admin.passwordHash).toBe(liveHash);
     expect(saved.balloon.contestId).toBe("contest-x");
   });
+
+  test("a username-only PUT keeps the stored password and is not reverted by the partial-file guard", async () => {
+    // Real-world shape: settings.json on disk has no admin block (older build /
+    // hand-edited), while the running process bootstrapped a hash at startup.
+    // A rename must land, and the guard must backfill only the hash — never the
+    // old username, which is what spreading the whole live block would do.
+    const diskCfg = {
+      ...loadConfigWithSecret(),
+      contextPath: "",
+      admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 },
+    };
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskCfg));
+    const store = new ConfigStore({ ...diskCfg, admin: { ...diskCfg.admin, passwordHash: liveHash, password: "live-pass" } });
+    const app = createApp(store, { dataDir });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ admin: { username: "chief" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.admin.username).toBe("chief");
+    expect(store.current.admin.passwordHash).toBe(liveHash);
+    // The old password still works under the new username.
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "chief", password: "live-pass" }),
+    });
+    expect(login.status).toBe(200);
+    // …and the rename is what is persisted, not the previous username.
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.username).toBe("chief");
+    expect(saved.admin.passwordHash).toBe(liveHash);
+    expect(saved.admin.password).toBe("live-pass");
+  });
+  test("a username-only PUT on a complete settings.json keeps the stored password", async () => {
+    // Same assertion against the steady-state file (hash already on disk): the
+    // guard is a no-op here and the rename must simply work.
+    const diskCfg = {
+      ...loadConfigWithSecret(),
+      contextPath: "",
+      admin: { username: "admin", passwordHash: liveHash, password: "live-pass", sessionTtlSeconds: 28800 },
+    };
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskCfg));
+    const store = new ConfigStore(diskCfg);
+    const app = createApp(store, { dataDir });
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers: await adminAuthHeaders(store.current),
+      body: JSON.stringify({ admin: { username: "chief" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.admin.username).toBe("chief");
+    expect(store.current.admin.passwordHash).toBe(liveHash);
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "chief", password: "live-pass" }),
+    });
+    expect(login.status).toBe(200);
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.username).toBe("chief");
+    expect(saved.admin.passwordHash).toBe(liveHash);
+  });
 });
 
 describe("admin login-request review API", () => {

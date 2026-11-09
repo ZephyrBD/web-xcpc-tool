@@ -359,4 +359,45 @@ describe("applySettingsPatch partial-file guards", () => {
     const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
     expect(saved.jwt.secret).toBe("test-secret");
   });
+
+  test("the admin guard backfills only the hash, so a rename survives a partial file", () => {
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+    );
+    const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
+    const live = {
+      ...loadConfigWithSecret(),
+      admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 },
+    };
+    const updated = applySettingsPatch(live, { admin: { username: "chief" } }, join(dataDir, "settings.json"), live.admin);
+    expect(updated.admin.username).toBe("chief");
+    expect(updated.admin.passwordHash).toBe(liveHash);
+    expect(updated.admin.password).toBe("pw");
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.username).toBe("chief");
+    expect(saved.admin.passwordHash).toBe(liveHash);
+  });
+
+  test("sessionTtlSeconds edits also survive the guard", () => {
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+    );
+    const liveHash = "$2b$04$livehashlivehashlivehashlivehashlivehashlivehashlive";
+    const live = {
+      ...loadConfigWithSecret(),
+      admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 },
+    };
+    // The UI schema does not expose sessionTtlSeconds, but a hand-built patch
+    // must still not be reverted by the guard when only the hash is missing.
+    const updated = applySettingsPatch(
+      live,
+      { admin: { username: "chief" } },
+      join(dataDir, "settings.json"),
+      live.admin,
+    );
+    expect(updated.admin.sessionTtlSeconds).toBe(28800);
+    expect(updated.admin.username).toBe("chief");
+  });
 });

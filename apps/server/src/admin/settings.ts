@@ -118,10 +118,15 @@ export function applySettingsPatch(
   }
 
   // Partial settings.json guard: the file had no usable admin hash, but this
-  // process bootstrapped one at startup. Restoring the live block (username,
-  // hash, banner plaintext) keeps login working and rewrites the file whole.
-  if (liveAdmin?.passwordHash && current.admin.passwordHash !== liveAdmin.passwordHash) {
-    base.admin = { ...liveAdmin };
+  // process bootstrapped one at startup. Backfill ONLY the missing hash (and
+  // the banner plaintext that goes with it) — never the whole live block, or a
+  // patch that just renames the admin would be silently reverted.
+  if (!current.admin.passwordHash && liveAdmin?.passwordHash) {
+    base.admin = {
+      ...current.admin,
+      passwordHash: liveAdmin.passwordHash,
+      password: liveAdmin.password ?? current.admin.password,
+    };
   }
   // Same trap for the JWT secret: ensureJwtSecret bootstraps it in memory and
   // in the file at boot, but a file written later without it would parse to an

@@ -581,16 +581,17 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
     throw new Error("balloon must not poll without a contest id");
   }) as unknown as typeof fetch;
 
+  /** Isolated store per test: never the shared data dir the other suites write to. */
   function reconfService(contestId: string, fetchImpl: typeof fetch = noPollFetch) {
     const scheduled: Array<{ fn: () => void; ms: number }> = [];
-    const cancelled: unknown[] = [];
+    const dir = mkdtempSync(join(tmpdir(), "balloon-reconf-"));
     const client = new DjClient(
       { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
       fetchImpl,
     );
     const svc = new BalloonService({
       client,
-      store: new JsonStore<BalloonTask[]>("balloon-tasks.json", []),
+      store: new JsonStore<BalloonTask[]>(join(dir, "balloon-tasks.json"), []),
       bus: new SseBus(),
       contestId,
       pollIntervalSeconds: 30,
@@ -598,7 +599,14 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
         scheduled.push({ fn, ms });
       },
     });
-    return { svc, scheduled, cancelled };
+    return {
+      svc,
+      scheduled,
+      cleanup: () => {
+        svc.stop();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
   }
 
   test("reconfigure onto a new contest restarts the loop against the new contest id", async () => {
@@ -608,7 +616,7 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
       if (u.includes("/contests/C2/")) fetched.push("C2");
       return Promise.resolve(new Response(JSON.stringify([])));
     }) as unknown as typeof fetch;
-    const { svc, scheduled } = reconfService("", fetchImpl);
+    const { svc, scheduled, cleanup } = reconfService("", fetchImpl);
     svc.start();
     expect(scheduled).toHaveLength(0); // no contest yet → inert
 
@@ -620,35 +628,75 @@ describe("BalloonService reconfigure (settings hot reload)", () => {
     for (let i = 0; i < 50 && scheduled.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
     expect(fetched.length).toBeGreaterThan(0);
     expect(scheduled[1].ms).toBe(5000); // new interval on the next tick
-    svc.stop();
+    cleanup();
   });
 
   test("reconfigure to an empty contest id stops the loop", () => {
-    const { svc, scheduled } = reconfService("C1");
+    const { svc, scheduled, cleanup } = reconfService("C1");
     svc.start();
     expect(scheduled).toHaveLength(1);
 
     svc.reconfigure({ contestId: "", pollIntervalSeconds: 30 });
     svc.reconfigure({ contestId: "", pollIntervalSeconds: 30 }); // idempotent
     expect(scheduled).toHaveLength(1);
+    cleanup();
   });
 
   test("reconfigure that only changes the interval keeps running with the new cadence", async () => {
-    const { svc, scheduled } = reconfService("c1", makeFetch());
+    const { svc, scheduled, cleanup } = reconfService("c1", makeFetch());
     svc.start();
     svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
     expect(scheduled).toHaveLength(2);
     scheduled[1].fn(); // the scheduled pollLoop tick (a successful poll)
     for (let i = 0; i < 50 && scheduled.length < 3; i++) await new Promise((r) => setTimeout(r, 5));
     expect(scheduled[scheduled.length - 1].ms).toBe(7000);
-    svc.stop();
+    cleanup();
   });
 
   test("reconfigure to the same values does not restart the loop", () => {
-    const { svc, scheduled } = reconfService("C1");
+    const { svc, scheduled, cleanup } = reconfService("C1");
     svc.start();
     svc.reconfigure({ contestId: "C1", pollIntervalSeconds: 30 });
     expect(scheduled).toHaveLength(1);
-    svc.stop();
+    cleanup();
+  });
+
+  test("reconfigure during an in-flight poll leaves exactly one polling chain", async () => {
+    // Gate every request so the poll started by `start()` is still pending when
+    // reconfigure() runs: that is the re-entrancy window a settings PUT opens.
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gatedFetch = (async () => {
+      await gate;
+      return new Response(JSON.stringify([]));
+    }) as unknown as typeof fetch;
+    const { svc, scheduled, cleanup } = reconfService("c1", gatedFetch);
+
+    svc.start();
+    expect(scheduled).toHaveLength(1);
+    scheduled[0].fn(); // pollLoop starts, then awaits the gate
+    // Let the in-flight poll reach its first await before reconfiguring.
+    await Promise.resolve();
+
+    svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
+    // stop() + start(): the old chain is marked not running and one new poll is
+    // scheduled. The stale in-flight poll must not add a second schedule.
+    expect(scheduled).toHaveLength(2);
+    expect(scheduled[1].ms).toBe(0);
+
+    (release as unknown as () => void)();
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5));
+    // Still exactly one chain: the finished stale poll saw `running === false`
+    // after its (simulated) await and returned without scheduling.
+    expect(scheduled).toHaveLength(2);
+
+    // Running the surviving chain schedules exactly one next tick at the new cadence.
+    scheduled[1].fn();
+    for (let i = 0; i < 50 && scheduled.length < 3; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(scheduled).toHaveLength(3);
+    expect(scheduled[2].ms).toBe(7000);
+    cleanup();
   });
 });

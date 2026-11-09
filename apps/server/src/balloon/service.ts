@@ -54,6 +54,8 @@ export class BalloonService {
   private consecutiveFailures = 0;
   /** Set while a pollLoop run is in flight, so start/stop stay re-entrant. */
   private polling = false;
+  /** Bumped by stop(); an in-flight poll from an older generation never reschedules. */
+  private generation = 0;
 
   constructor(deps: BalloonServiceDeps) {
     this.client = deps.client;
@@ -111,6 +113,8 @@ export class BalloonService {
 
   stop(): void {
     this.running = false;
+    // Invalidate any in-flight poll so it cannot schedule a duplicate chain.
+    this.generation++;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -334,12 +338,18 @@ export class BalloonService {
 
   private async pollLoop(): Promise<void> {
     if (!this.running || this.polling) return;
+    // Generation stamp: reconfigure()/stop() bump it, so a poll that was already
+    // in flight when the settings changed finishes its work but must not chain
+    // another tick — otherwise the restarted loop and the stale one both poll.
+    const generation = this.generation;
     this.polling = true;
     try {
       await this.pollOnce();
+      if (generation !== this.generation) return;
       this.consecutiveFailures = 0;
       this.scheduleNext(this.pollIntervalMs);
     } catch (err) {
+      if (generation !== this.generation) return;
       this.consecutiveFailures++;
       console.error(
         `balloon poll failed for contest ${this.contestId}:`,
