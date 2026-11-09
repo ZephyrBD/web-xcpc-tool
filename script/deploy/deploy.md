@@ -44,23 +44,25 @@ bun install
 bun run dev        # 等价于 bun run src/index.ts
 ```
 
-也可在仓库根目录使用快捷命令：
+也可在仓库根目录使用快捷命令（内部 `--cwd apps/server`，工作目录与上面一致）：
 
 ```bash
 bun install
 bun run server
 ```
 
+两种方式的工作目录都是 `apps/server`，运行时数据统一落在 `apps/server/data/`（`settings.json`、各 JSON 存储与密钥同处一个目录；旧版本遗留的 `data/data/` 会在启动时自动上移一级）。
+
 启动后：
 
 - 服务监听 `http://<host>:8080`，所有路由挂在 `/wxt` 下。
 - 健康检查：`curl http://localhost:8080/wxt/health` → `{"ok":true}`。
 - 管理端登录页：`http://localhost:8080/wxt/`。
-- 首次启动自动生成 `apps/server/data/settings.json` 与 JWT 密钥。
+- 首次启动自动生成 `apps/server/data/settings.json`、JWT 密钥与管理端密码；**密码会以明文打印在启动横幅里**（见下）。
 
 ## 配置（apps/server/data/settings.json）
 
-首次启动生成的默认配置需要修改以下字段后重启：
+首次启动生成的默认配置需要修改以下字段后重启（`admin` 段由服务自动维护，改密码请用管理台「设置」页）：
 
 | 字段 | 说明 |
 |---|---|
@@ -70,7 +72,7 @@ bun run server
 | `domjudge.adminUser` / `domjudge.adminPassword` | DOMjudge 管理员账号，供代理与 API 拉取使用 |
 | `domjudge.timeoutSeconds` | DOMjudge API 请求超时秒数，默认 `10`；官方 demo 等慢站点建议调大（如 `65`） |
 | `admin.username` | 本服务管理端用户名，默认 `admin` |
-| `admin.passwordHash` | 本服务管理端密码的 **bcrypt 哈希**（见下） |
+| `admin.password` | 管理端密码明文，仅供启动横幅显示；**不要手改**，在管理台「设置」页改密码（见下） |
 | `print.token` | DOMjudge 打印回调校验 token |
 | `balloon.contestId` | 气球服务监听的 DOMjudge 赛题 ID |
 
@@ -81,16 +83,20 @@ bun run server
 本工具会在队伍访问 DOMjudge 的 `/login` 时自动注入 `X-DOMjudge-Login`（用户名）与 `X-DOMjudge-Pass`（base64 密码）请求头实现免密登录。前提：DOMjudge 配置项 `auth_methods` 必须包含 `xheaders`（`etc/domserver-config.php` 或 `dbpasswords.secret` 所在配置，改后重启 domserver），否则注入的头会被忽略，考生看到的是普通登录页。该注入匹配 `/login` 的最终路径段，因此 `domjudge.baseUrl` 带路径前缀（如 `https://demo.example.com/demoweb`，登录页为 `/demoweb/login`）时同样生效。
 
 
-### 生成管理端 passwordHash
+### 管理端密码
 
-`admin.passwordHash` 是 bcrypt 哈希。任选一种方式生成：
+首次启动会自动生成一个随机管理端密码，并在启动横幅中打印，例如：
 
-```bash
-cd apps/server
-bun -e "import('bcryptjs').then(b=>console.log(b.hashSync('你的密码',10)))"
+```
+Web XCPC Tool <version>
+  服务   http://localhost:8080/wxt
+  管理台 http://localhost:8080/wxt/admin   用户名: admin
+  密码   NE5vetKj8kJmhr6V
 ```
 
-把输出的 `$2b$10$...` 字符串填入 `admin.passwordHash`，重启服务生效。
+密码同时以明文保存在 `data/settings.json` 的 `admin.password` 字段（对应的 `admin.passwordHash` 为 bcrypt 哈希）。**无需手工生成或填写哈希**。
+
+如需换成固定密码：登录管理端后到「设置」页修改，保存时会同时更新 `admin.passwordHash` 与明文 `admin.password`，重启服务后生效。全程不要直接编辑 `settings.json`。
 
 ## Linux：systemd 常驻
 
@@ -113,7 +119,7 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-> `WorkingDirectory` 必须是 `apps/server`，运行时数据 `data/` 与静态资源 `static/` 均按相对路径解析。
+> `WorkingDirectory` 必须是 `apps/server`：运行时数据目录 `data/`（相对工作目录）与静态资源 `static/` 都从这里解析。
 > `ExecStart` 中 bun 路径按实际安装位置调整（`which bun`）。
 
 ```bash

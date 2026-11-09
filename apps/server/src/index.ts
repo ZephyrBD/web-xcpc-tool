@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import { setDataDir } from "./store/store";
+import { migrateLegacyDataDir } from "./store/dataRoot";
 import { ensureAdminPassword, ensureJwtSecret, loadConfig, writeDefaultConfig } from "./config";
 import { createApp } from "./server";
 import { SseBus } from "./sse/bus";
@@ -14,10 +15,24 @@ import { TeamStore } from "./store/teams";
 import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
 import { getVersionInfo } from "./version";
 
-const CONFIG_PATH = "data/settings.json";
-const DATA_DIR = "data";
+/**
+ * Single data root, relative to the process cwd (so `bun run dev` in
+ * apps/server and a root-level launch each get their own checkout-local dir).
+ * Every path below is anchored to it — via `setDataDir` or an explicit
+ * `storePath(...)` — so there is exactly one `data/`, never `data/data/`.
+ */
+const DATA_ROOT = "data";
+const STORE_DIR = resolve(DATA_ROOT);
+const storePath = (name: string): string => join(STORE_DIR, name);
 
-mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(DATA_ROOT, { recursive: true });
+// Older builds could leave stores one level deeper; lift them once, before any
+// store reads (the admin password now lives only in settings.json).
+const migrated = migrateLegacyDataDir(DATA_ROOT);
+if (migrated.length > 0) {
+  console.log(`data: moved legacy ${join(DATA_ROOT, "data")} entries up into ${STORE_DIR} (${migrated.join(", ")})`);
+}
+const CONFIG_PATH = storePath("settings.json");
 if (!existsSync(CONFIG_PATH)) {
   writeDefaultConfig(CONFIG_PATH);
 }
@@ -28,19 +43,20 @@ cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
 cfg.admin = adminCfg.admin;
 
-setDataDir(DATA_DIR);
+// Absolute, so resolvePath returns store paths untouched (no second join).
+setDataDir(STORE_DIR);
 
 const bus = new SseBus();
-const printQueue = new PrintQueue(join(DATA_DIR, "print-tasks.json"));
+const printQueue = new PrintQueue(storePath("print-tasks.json"));
 const djClient = new DjClient(cfg.domjudge, undefined, cfg.domjudge.timeoutSeconds * 1000);
-const teamsStore = new JsonStore<DjTeam[]>(join(DATA_DIR, "teams.json"), []);
+const teamsStore = new JsonStore<DjTeam[]>(storePath("teams.json"), []);
 const teamStore = new TeamStore(
-  join(DATA_DIR, "team-passwords.json"),
-  new SecretBox(ensureKeyFile(join(DATA_DIR, "secret.key"))),
+  storePath("team-passwords.json"),
+  new SecretBox(ensureKeyFile(storePath("secret.key"))),
 );
 const balloonService = new BalloonService({
   client: djClient,
-  store: new JsonStore(join(DATA_DIR, "balloon-tasks.json"), []),
+  store: new JsonStore(storePath("balloon-tasks.json"), []),
   bus,
   contestId: cfg.balloon.contestId,
   pollIntervalSeconds: cfg.balloon.pollIntervalSeconds,
@@ -50,6 +66,7 @@ const balloonService = new BalloonService({
 
 let server: Bun.Server<never> | null = null;
 const app = createApp(cfg, {
+  dataDir: STORE_DIR,
   bus,
   printQueue,
   djClient,

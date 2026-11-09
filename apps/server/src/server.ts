@@ -65,7 +65,9 @@ export function resolveStaticDir(opts?: {
 }
 
 export function createApp(cfg: Config, deps?: Partial<Deps>): Hono {
-  const dataDir = deps?.dataDir ?? "data";
+  // Absolute, matching index.ts: everything derived here is joined onto it, so
+  // a relative default would let JsonStore join a second time (data/data/).
+  const dataDir = resolve(deps?.dataDir ?? "data");
   const staticDir = deps?.staticDir ? resolve(deps.staticDir) : resolveStaticDir();
   const app = new Hono();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SecretBox, ensureKeyFile } from "./secretbox";
@@ -53,8 +53,15 @@ describe("ensureKeyFile", () => {
     expect(second).toBe(first);
   });
 
-  it("works for a bare filename in the cwd (dirname is '.', which already exists)", () => {
+  it("creates a fresh key with 0o600 so it is not world-readable (POSIX)", () => {
+    if (process.platform === "win32") return; // Windows ignores POSIX modes
     const dir = mkdtempSync(join(tmpdir(), "secretbox-"));
+    const path = join(dir, "secret.key");
+    ensureKeyFile(path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("works for a bare filename in the cwd (dirname is '.', which already exists)", () => {    const dir = mkdtempSync(join(tmpdir(), "secretbox-"));
     const prev = process.cwd();
     try {
       process.chdir(dir);

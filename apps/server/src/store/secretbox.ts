@@ -52,9 +52,11 @@ export function ensureKeyFile(path: string): string {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const keyHex = randomBytes(KEY_BYTES).toString("hex");
-  // exclusive: never clobber a key another process just created
+  // exclusive: never clobber a key another process just created. 0o600: the key
+  // decrypts every stored team password and should not be world-readable
+  // (no-op where the platform ignores POSIX modes; existing files are left as-is).
   try {
-    writeFileSync(path, keyHex + "\n", { encoding: "utf8", flag: "wx" });
+    writeFileSync(path, keyHex + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
     return keyHex;
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code === "EEXIST") {
