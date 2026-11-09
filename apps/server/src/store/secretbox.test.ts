@@ -52,4 +52,18 @@ describe("ensureKeyFile", () => {
     const second = ensureKeyFile(path);
     expect(second).toBe(first);
   });
+
+  it("works for a bare filename in the cwd (dirname is '.', which already exists)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "secretbox-"));
+    const prev = process.cwd();
+    try {
+      process.chdir(dir);
+      // mkdirSync(".") throws EEXIST; a fresh bare path must still create the key.
+      const key = ensureKeyFile("secret.key");
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+      expect(readFileSync(join(dir, "secret.key"), "utf8").trim()).toBe(key);
+    } finally {
+      process.chdir(prev);
+    }
+  });
 });
