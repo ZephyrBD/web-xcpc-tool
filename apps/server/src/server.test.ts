@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
+import { hashSync } from "bcryptjs";
 import { loadConfig } from "./config";
 import { createApp, resolveStaticDir } from "./server";
 import { adminAuthHeaders } from "./admin/auth";
@@ -194,6 +195,8 @@ describe("login approval flow (outside the login window)", () => {
 
 describe("settings hot reload", () => {
   let dataDir: string;
+  /** bcrypt hash of "live-pass": stands in for a password bootstrapped at boot. */
+  const liveHash = hashSync("live-pass", 4);
 
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), "server-hot-reload-"));
@@ -204,11 +207,11 @@ describe("settings hot reload", () => {
   });
 
   test("a PUT that closes the login window takes effect on the same app instance", async () => {
-    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
+    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } });
     const teamStore = makeTeamStore(dataDir);
     const teamCode = teamStore.setTeamCode("icpc1");
     const loginRequests = new LoginRequestStore(join(dataDir, "login-requests.json"));
-    const app = createApp(cfg, { dataDir, teamStore, loginRequests });
+    const app = createApp(store, { dataDir, teamStore, loginRequests });
 
     // Window open: the valid code logs in directly.
     const open = await app.request(`/dj/verify?code=${teamCode}`, { redirect: "manual" });
@@ -218,7 +221,7 @@ describe("settings hot reload", () => {
     // Close the window in the past through the admin API (same instance).
     const put = await app.request("/admin/api/settings", {
       method: "PUT",
-      headers: await adminAuthHeaders(cfg),
+      headers: await adminAuthHeaders(store.current),
       body: JSON.stringify({ teamLogin: { start: "", end: "2000-01-01T00:00:00Z" } }),
     });
     expect(put.status).toBe(200);
@@ -230,20 +233,19 @@ describe("settings hot reload", () => {
     expect(loginRequests.listPending().length).toBe(1);
 
     // GET reflects the live values too.
-    const view = await (await app.request("/admin/api/settings", { headers: await adminAuthHeaders(cfg) })).json();
+    const view = await (await app.request("/admin/api/settings", { headers: await adminAuthHeaders(store.current) })).json();
     expect((view as { teamLogin: unknown }).teamLogin).toEqual({ start: "", end: "2000-01-01T00:00:00Z" });
   });
 
   test("a ConfigStore passed to createApp is updated in place by a PUT", async () => {
-    const cfg = { ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } };
-    const store = new ConfigStore(cfg);
+    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", teamLogin: { start: "", end: "" } });
     const app = createApp(store, { dataDir });
     const changes: string[] = [];
     store.onChange((next) => changes.push(next.teamLogin.end));
 
     const put = await app.request("/admin/api/settings", {
       method: "PUT",
-      headers: await adminAuthHeaders(cfg),
+      headers: await adminAuthHeaders(store.current),
       body: JSON.stringify({ teamLogin: { end: "2001-01-01T00:00:00Z" } }),
     });
     expect(put.status).toBe(200);
@@ -252,12 +254,12 @@ describe("settings hot reload", () => {
   });
 
   test("replacing print.token hot-reloads the print callback auth", async () => {
-    const cfg = { ...loadConfigWithSecret(), contextPath: "", print: { token: "old-token" } };
-    const app = createApp(cfg, { dataDir });
+    const store = new ConfigStore({ ...loadConfigWithSecret(), contextPath: "", print: { token: "old-token" } });
+    const app = createApp(store, { dataDir });
 
     const put = await app.request("/admin/api/settings", {
       method: "PUT",
-      headers: await adminAuthHeaders(cfg),
+      headers: await adminAuthHeaders(store.current),
       body: JSON.stringify({ print: { token: "new-token" } }),
     });
     expect(put.status).toBe(200);
@@ -274,12 +276,16 @@ describe("settings hot reload", () => {
   });
 
   test("an admin password change is usable for login on the same instance", async () => {
-    const cfg = { ...loadConfigWithSecret(), contextPath: "", admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 } };
-    const app = createApp(cfg, { dataDir });
+    const store = new ConfigStore({
+      ...loadConfigWithSecret(),
+      contextPath: "",
+      admin: { username: "admin", passwordHash: "", sessionTtlSeconds: 28800 },
+    });
+    const app = createApp(store, { dataDir });
     // No hash configured yet → bootstrap one via PUT with a known password.
     const put = await app.request("/admin/api/settings", {
       method: "PUT",
-      headers: await adminAuthHeaders(cfg),
+      headers: await adminAuthHeaders(store.current),
       body: JSON.stringify({ admin: { password: "brand-new-pass", username: "chief" } }),
     });
     expect(put.status).toBe(200);
@@ -288,6 +294,48 @@ describe("settings hot reload", () => {
       body: JSON.stringify({ username: "chief", password: "brand-new-pass" }),
     });
     expect(login.status).toBe(200);
+  });
+
+  test("an unrelated PUT cannot wipe a live admin password when settings.json lacks the admin block", async () => {
+    // settings.json is hand-maintained in the field: a partial file (generated
+    // by an older build, or edited by hand) has no admin block. The disk value
+    // must not overwrite the live hash that the running process bootstrapped.
+    const cfg = {
+      ...loadConfigWithSecret(),
+      contextPath: "",
+      admin: { username: "admin", passwordHash: "", password: undefined, sessionTtlSeconds: 28800 },
+    };
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+    );
+    // The live config carries a real bcrypt hash (as ensureAdminPassword would
+    // have produced at boot), the file does not.
+    const store = new ConfigStore({ ...cfg, admin: { ...cfg.admin, passwordHash: liveHash, password: "live-pass" } });
+    const app = createApp(store, { dataDir });
+    const headers = await adminAuthHeaders(store.current);
+
+    const put = await app.request("/admin/api/settings", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ balloon: { contestId: "contest-x" } }),
+    });
+    expect(put.status).toBe(200);
+    expect(store.current.balloon.contestId).toBe("contest-x");
+    // The live admin block survives the merge instead of being blanked out.
+    expect(store.current.admin.passwordHash).toBe(liveHash);
+    expect(store.current.admin.username).toBe("admin");
+    // …and the running password still logs in.
+    const login = await app.request("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "admin", password: "live-pass" }),
+    });
+    expect(login.status).toBe(200);
+    // The on-disk file is rewritten with the restored block, so a later restart
+    // keeps the operator logged in with the same password.
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.passwordHash).toBe(liveHash);
+    expect(saved.balloon.contestId).toBe("contest-x");
   });
 });
 

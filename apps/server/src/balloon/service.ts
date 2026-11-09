@@ -44,8 +44,8 @@ export class BalloonService {
   private readonly client: DjClient;
   private readonly store: JsonStore<BalloonTask[]>;
   private readonly bus: SseBus;
-  private readonly contestId: string;
-  private readonly pollIntervalMs: number;
+  private contestId: string;
+  private pollIntervalMs: number;
   private readonly schedule: (fn: () => void, ms: number) => void;
   private teams: DjTeam[];
   private problems: Array<Pick<DjProblem, "id" | "label" | "name">>;
@@ -115,6 +115,28 @@ export class BalloonService {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  /**
+   * Apply a settings edit (runtime config store → index.ts onChange handler).
+   * contestId and pollIntervalSeconds used to be fixed at boot, which made the
+   * "settings hot reload" claim false for balloons. A real change stops the
+   * loop and starts it again against the new values (an empty contestId leaves
+   * it stopped, exactly like start()); no-op changes are ignored so an
+   * unrelated PUT does not reset the backoff cadence.
+   *
+   * The poll itself (pollOnce) is untouched — this only swaps the inputs.
+   */
+  reconfigure(next: { contestId: string; pollIntervalSeconds: number }): void {
+    const contestChanged = next.contestId !== this.contestId;
+    const intervalChanged = next.pollIntervalSeconds * 1000 !== this.pollIntervalMs;
+    if (!contestChanged && !intervalChanged) return;
+    this.contestId = next.contestId;
+    this.pollIntervalMs = next.pollIntervalSeconds * 1000;
+    // A different contest must not inherit the previous contest's backoff.
+    if (contestChanged) this.consecutiveFailures = 0;
+    this.stop();
+    this.start();
   }
 
   list(status?: BalloonTask["status"]): BalloonTask[] {

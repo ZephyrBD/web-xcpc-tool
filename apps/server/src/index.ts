@@ -71,6 +71,17 @@ const balloonService = new BalloonService({
   problems: [],
 });
 
+// Settings hot reload for the balloon poller: contestId/pollIntervalSeconds are
+// the only balloon inputs that can change without a restart (pollOnce is
+// untouched). A change stops and restarts the loop; an empty contestId leaves
+// it stopped, exactly like start() at boot.
+configStore.onChange((next) => {
+  balloonService.reconfigure({
+    contestId: next.balloon.contestId,
+    pollIntervalSeconds: next.balloon.pollIntervalSeconds,
+  });
+});
+
 let server: Bun.Server<never> | null = null;
 const app = createApp(configStore, {
   dataDir: STORE_DIR,

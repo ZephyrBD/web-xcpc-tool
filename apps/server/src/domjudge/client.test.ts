@@ -174,4 +174,76 @@ describe("DjClient", () => {
     expect(err).toBeInstanceOf(DjApiError);
     expect((err as DjApiError).status).toBe(0);
   });
+
+  describe("live config (runtime config store getter)", () => {
+    /** Records the abort signal's eventual timeout and the headers of each call. */
+    function recordingFetch() {
+      const calls: Array<{ url: string; auth: string | null }> = [];
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        calls.push({ url, auth: new Headers(init?.headers).get("authorization") });
+        return jsonResponse([]);
+      }) as unknown as typeof fetch;
+      return { calls, fetchImpl };
+    }
+
+    test("domjudge.timeoutSeconds is applied per request when built from a getter", async () => {
+      // Spy on AbortSignal.timeout to capture the exact budget handed to fetch.
+      const original = AbortSignal.timeout;
+      const budgets: number[] = [];
+      AbortSignal.timeout = ((ms: number) => {
+        budgets.push(ms);
+        return original.call(AbortSignal, ms);
+      }) as typeof AbortSignal.timeout;
+      try {
+        let live: Config["domjudge"] = { ...djCfg, timeoutSeconds: 10 };
+        const client = new DjClient(() => live, recordingFetch().fetchImpl);
+        await client.getContests();
+        expect(budgets).toEqual([10_000]);
+        live = { ...live, timeoutSeconds: 3 };
+        await client.getContests();
+        expect(budgets).toEqual([10_000, 3_000]);
+      } finally {
+        AbortSignal.timeout = original;
+      }
+    });
+
+    test("an explicit constructor timeout still wins over the live config", async () => {
+      const original = AbortSignal.timeout;
+      const budgets: number[] = [];
+      AbortSignal.timeout = ((ms: number) => {
+        budgets.push(ms);
+        return original.call(AbortSignal, ms);
+      }) as typeof AbortSignal.timeout;
+      try {
+        const client = new DjClient(() => ({ ...djCfg, timeoutSeconds: 10 }), recordingFetch().fetchImpl, 250);
+        await client.getContests();
+        expect(budgets).toEqual([250]);
+      } finally {
+        AbortSignal.timeout = original;
+      }
+    });
+
+    test("URL and credentials follow the getter; a failing getter leaves the client intact", async () => {
+      const { calls, fetchImpl } = recordingFetch();
+      let live: Config["domjudge"] | null = { ...djCfg };
+      const client = new DjClient(() => {
+        if (!live) throw new Error("config unavailable");
+        return live;
+      }, fetchImpl);
+
+      await client.getContests();
+      live = { baseUrl: "https://dj2.example.com", adminUser: "u2", adminPassword: "p2", timeoutSeconds: 10 };
+      await client.getContests();
+      expect(calls[1].url).toBe("https://dj2.example.com/api/v4/contests");
+      expect(calls[1].auth).toBe(`Basic ${Buffer.from("u2:p2").toString("base64")}`);
+
+      // A throwing getter rejects the call but never corrupts the stored state.
+      live = null;
+      await expect(client.getContests()).rejects.toThrow("config unavailable");
+      live = { ...djCfg };
+      await client.getContests();
+      expect(calls[2].url).toBe("http://mock.local/domjudge/api/v4/contests");
+    });
+  });
 });

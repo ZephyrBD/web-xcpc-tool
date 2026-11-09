@@ -349,12 +349,19 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     if (newPassword !== undefined && newPassword !== "" && newPassword.trim() === "") {
       return c.json({ error: "密码不能是空白字符，请输入至少 6 个非空白字符" }, 400);
     }
+    const before = cfg();
     let updated: Config;
     try {
-      updated = applySettingsPatch(cfg(), parsed.data, settingsPathFor(dataDir));
+      updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir), before.admin);
     } catch (err) {
       console.error("settings update failed:", err instanceof Error ? err.message : err);
       return c.json({ error: "保存失败，请稍后重试" }, 500);
+    }
+    // Defence in depth for a partial settings.json that slipped past the merge
+    // (e.g. an admin patch carrying no password): never replace a live admin
+    // hash with an empty one, otherwise the next request locks the operator out.
+    if (!updated.admin.passwordHash && before.admin.passwordHash) {
+      updated = { ...updated, admin: { ...before.admin } };
     }
     // Hot reload: the file is already written above, so a failing listener must
     // never turn a successful save into an error response (ConfigStore logs it).

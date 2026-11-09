@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { compare } from "bcryptjs";
 import { loadConfig } from "../config";
 import { createApp } from "../server";
 import { adminAuthHeaders } from "./auth";
-import { maskToken } from "./settings";
+import { applySettingsPatch, maskToken } from "./settings";
 
 const loadConfigWithSecret = () => ({
   ...loadConfig("/nonexistent/settings.json"),
@@ -318,5 +318,45 @@ describe("settings routes", () => {
       body: JSON.stringify({ balloon: { pollIntervalSeconds: 0 } }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("applySettingsPatch partial-file guards", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "settings-patch-"));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  test("a disk file without an admin block keeps the live hash instead of blanking it", () => {
+    const diskOnly = {
+      ...loadConfig("/nonexistent/settings.json"),
+      jwt: { secret: "disk-secret", ttlSeconds: 3600 },
+    };
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify(diskOnly));
+    const liveHash = "$2b$04$keepthislivehashvaluexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const live = { ...diskOnly, admin: { username: "admin", passwordHash: liveHash, password: "pw", sessionTtlSeconds: 28800 } };
+    const updated = applySettingsPatch(live, { balloon: { contestId: "c9" } }, join(dataDir, "settings.json"), live.admin);
+    expect(updated.admin.passwordHash).toBe(liveHash);
+    expect(updated.admin.username).toBe("admin");
+    expect(updated.balloon.contestId).toBe("c9");
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.admin.passwordHash).toBe(liveHash);
+  });
+
+  test("a disk file without a jwt secret keeps the live one (never a zero-length key)", () => {
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ port: 8080, contextPath: "", teamLogin: { start: "", end: "" } }),
+    );
+    const live = { ...loadConfigWithSecret(), contextPath: "" };
+    const updated = applySettingsPatch(live, { balloon: { contestId: "c9" } }, join(dataDir, "settings.json"), live.admin);
+    expect(updated.jwt.secret).toBe("test-secret");
+    const saved = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8"));
+    expect(saved.jwt.secret).toBe("test-secret");
   });
 });

@@ -575,3 +575,80 @@ describe("BalloonService start guard", () => {
     svc.stop();
   });
 });
+
+describe("BalloonService reconfigure (settings hot reload)", () => {
+  const noPollFetch = (() => {
+    throw new Error("balloon must not poll without a contest id");
+  }) as unknown as typeof fetch;
+
+  function reconfService(contestId: string, fetchImpl: typeof fetch = noPollFetch) {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const cancelled: unknown[] = [];
+    const client = new DjClient(
+      { baseUrl: "https://dj.example.com", adminUser: "admin", adminPassword: "pw", timeoutSeconds: 10 },
+      fetchImpl,
+    );
+    const svc = new BalloonService({
+      client,
+      store: new JsonStore<BalloonTask[]>("balloon-tasks.json", []),
+      bus: new SseBus(),
+      contestId,
+      pollIntervalSeconds: 30,
+      schedule: (fn, ms) => {
+        scheduled.push({ fn, ms });
+      },
+    });
+    return { svc, scheduled, cancelled };
+  }
+
+  test("reconfigure onto a new contest restarts the loop against the new contest id", async () => {
+    const fetched: string[] = [];
+    const fetchImpl = ((url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/contests/C2/")) fetched.push("C2");
+      return Promise.resolve(new Response(JSON.stringify([])));
+    }) as unknown as typeof fetch;
+    const { svc, scheduled } = reconfService("", fetchImpl);
+    svc.start();
+    expect(scheduled).toHaveLength(0); // no contest yet → inert
+
+    svc.reconfigure({ contestId: "C2", pollIntervalSeconds: 5 });
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].ms).toBe(0); // polls immediately
+
+    scheduled[0].fn(); // the scheduled pollLoop tick, against C2
+    for (let i = 0; i < 50 && scheduled.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(fetched.length).toBeGreaterThan(0);
+    expect(scheduled[1].ms).toBe(5000); // new interval on the next tick
+    svc.stop();
+  });
+
+  test("reconfigure to an empty contest id stops the loop", () => {
+    const { svc, scheduled } = reconfService("C1");
+    svc.start();
+    expect(scheduled).toHaveLength(1);
+
+    svc.reconfigure({ contestId: "", pollIntervalSeconds: 30 });
+    svc.reconfigure({ contestId: "", pollIntervalSeconds: 30 }); // idempotent
+    expect(scheduled).toHaveLength(1);
+  });
+
+  test("reconfigure that only changes the interval keeps running with the new cadence", async () => {
+    const { svc, scheduled } = reconfService("c1", makeFetch());
+    svc.start();
+    svc.reconfigure({ contestId: "c1", pollIntervalSeconds: 7 });
+    expect(scheduled).toHaveLength(2);
+    scheduled[1].fn(); // the scheduled pollLoop tick (a successful poll)
+    for (let i = 0; i < 50 && scheduled.length < 3; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(scheduled[scheduled.length - 1].ms).toBe(7000);
+    svc.stop();
+  });
+
+  test("reconfigure to the same values does not restart the loop", () => {
+    const { svc, scheduled } = reconfService("C1");
+    svc.start();
+    svc.reconfigure({ contestId: "C1", pollIntervalSeconds: 30 });
+    expect(scheduled).toHaveLength(1);
+    svc.stop();
+  });
+});

@@ -142,9 +142,10 @@ export class DjClient {
   /** False when constructed from a plain config: URL/auth/timeout stay frozen. */
   private readonly live: boolean;
   private readonly fetchImpl: typeof fetch;
-  private baseUrl: string;
-  private authHeader: string;
-  private timeoutMs: number;
+  /** Constructor-derived values, used only when `live` is false. */
+  private readonly baseUrl: string;
+  private readonly authHeader: string;
+  private readonly timeoutMs: number;
   /** Constructor override (tests pin a short timeout); live config never touches it. */
   private readonly explicitTimeoutMs: number | undefined;
 
@@ -170,14 +171,29 @@ export class DjClient {
    * plain-config client). Called per request — cheap: one concat + base64 — so
    * a settings PUT is visible on the very next API call. An explicit
    * constructor `timeoutMs` always wins over the config value.
+   *
+   * Pure: returns fresh values and never writes back to the fields derived
+   * from the constructor config, so a getter that throws (or returns junk)
+   * cannot leave the client holding a half-updated URL.
    */
   private sync(): { baseUrl: string; authHeader: string; timeoutMs: number } {
-    if (this.live) {
-      const cfg = this.cfg();
-      this.baseUrl = cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/";
-      this.authHeader = "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64");
+    const explicit = this.explicitTimeoutMs;
+    if (!this.live) {
+      return {
+        baseUrl: this.baseUrl,
+        authHeader: this.authHeader,
+        timeoutMs: explicit ?? this.timeoutMs,
+      };
     }
-    return { baseUrl: this.baseUrl, authHeader: this.authHeader, timeoutMs: this.timeoutMs };
+    const cfg = this.cfg();
+    return {
+      baseUrl: cfg.baseUrl.replace(/\/+$/, "") + "/api/v4/",
+      authHeader: "Basic " + Buffer.from(`${cfg.adminUser}:${cfg.adminPassword}`).toString("base64"),
+      // domjudge.timeoutSeconds is a live setting too: dropping it here is the
+      // regression the first version shipped (config timeout ignored whenever
+      // the client was built from a getter).
+      timeoutMs: explicit ?? cfg.timeoutSeconds * 1000,
+    };
   }
 
   private async get<T>(path: string): Promise<T> {

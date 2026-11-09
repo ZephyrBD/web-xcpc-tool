@@ -62,10 +62,23 @@ export function safeSettingsView(cfg: Config) {
 
 /**
  * Merges the patch into settings.json (only provided fields; empty-string
- * secrets are skipped) and returns the resulting parsed Config. The running
- * process keeps its old Config — changes take effect after a restart.
+ * secrets are skipped) and returns the resulting parsed Config. Callers that
+ * hot-reload must hand the result to `ConfigStore.replace` — writing the file
+ * alone changes nothing until the next restart (that is what the admin PUT
+ * does, and why the settings page no longer asks for one).
+ *
+ * `liveAdmin` (the currently running config) guards a partial settings.json:
+ * when the merged result has no admin hash but the process has one — e.g. the
+ * file was generated without an admin block and the hash was bootstrapped at
+ * startup — the live block wins, so an unrelated PUT can never lock the
+ * operator out.
  */
-export function applySettingsPatch(cfg: Config, patch: SettingsPatch, settingsPath: string): Config {
+export function applySettingsPatch(
+  cfg: Config,
+  patch: SettingsPatch,
+  settingsPath: string,
+  liveAdmin?: Config["admin"],
+): Config {
   // Prefer the settings on disk (another PUT may have written them since this
   // process started); fall back to the running config if the file is missing
   // or hand-edited into a shape the schema rejects.
@@ -102,6 +115,20 @@ export function applySettingsPatch(cfg: Config, patch: SettingsPatch, settingsPa
       ...rest,
       ...(password ? { passwordHash: hashSync(password, 10), password } : {}),
     };
+  }
+
+  // Partial settings.json guard: the file had no usable admin hash, but this
+  // process bootstrapped one at startup. Restoring the live block (username,
+  // hash, banner plaintext) keeps login working and rewrites the file whole.
+  if (liveAdmin?.passwordHash && current.admin.passwordHash !== liveAdmin.passwordHash) {
+    base.admin = { ...liveAdmin };
+  }
+  // Same trap for the JWT secret: ensureJwtSecret bootstraps it in memory and
+  // in the file at boot, but a file written later without it would parse to an
+  // empty secret and every signing call (admin login, team tokens) would fail
+  // with "Zero-length key". Never let the disk base blank a live secret.
+  if (cfg.jwt.secret && !current.jwt.secret) {
+    base.jwt = { ...current.jwt, secret: cfg.jwt.secret };
   }
 
   const updated = parseConfig(base);
