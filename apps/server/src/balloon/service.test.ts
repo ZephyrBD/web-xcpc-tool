@@ -5,7 +5,21 @@ import { join } from "node:path";
 import { DjClient, type DjBalloon } from "../domjudge/client";
 import { SseBus } from "../sse/bus";
 import { JsonStore, setDataDir } from "../store/store";
-import { BalloonService, type BalloonTask } from "./service";
+import { BalloonService, type BalloonTask, type BalloonLogger } from "./service";
+
+/**
+ * Records what the service reports, in the same `(name, msg, ...args)` shape
+ * as the real logger, so assertions read like `recorder.warn.calls`.
+ */
+function makeRecorder() {
+  const calls = { info: [] as unknown[][], warn: [] as unknown[][], error: [] as unknown[][] };
+  const logger = {
+    info: (name: string, msg: string, ...args: unknown[]) => calls.info.push([msg, ...args]),
+    warn: (name: string, msg: string, ...args: unknown[]) => calls.warn.push([msg, ...args]),
+    error: (name: string, msg: string, ...args: unknown[]) => calls.error.push([msg, ...args]),
+  } satisfies BalloonLogger;
+  return { logger, calls };
+}
 
 const CONTEST = "c1";
 const BASE = "https://dj.example.com/api/v4/";
@@ -119,7 +133,7 @@ function memoryStore(): JsonStore<BalloonTask[]> {
 function makeService(
   fetchImpl: typeof fetch,
   schedule?: (fn: () => void, ms: number) => void,
-  opts: { teams?: typeof TEAMS; contestId?: string } = {},
+  opts: { teams?: typeof TEAMS; contestId?: string; logger?: BalloonLogger } = {},
 ) {
   const client = makeClient(fetchImpl);
   const store = memoryStore();
@@ -132,6 +146,7 @@ function makeService(
     pollIntervalSeconds: 10,
     teams: opts.teams ?? TEAMS,
     schedule,
+    logger: opts.logger ?? makeRecorder().logger,
   });
   return { svc, store, bus };
 }
@@ -484,13 +499,10 @@ describe("BalloonService stale balloons (gone from the API)", () => {
 });
 
 describe("BalloonService legacy row migration", () => {
-  let info: ReturnType<typeof spyOn>;
+  let recorder: ReturnType<typeof makeRecorder>;
 
   beforeEach(() => {
-    info = spyOn(console, "info").mockImplementation(() => {});
-  });
-  afterEach(() => {
-    info.mockRestore();
+    recorder = makeRecorder();
   });
 
   /** Store pre-loaded with rows, as an upgrade from a pre-refactor data dir. */
@@ -506,6 +518,7 @@ describe("BalloonService legacy row migration", () => {
       contestId,
       pollIntervalSeconds: 10,
       teams: TEAMS,
+      logger: recorder.logger,
     });
     return { svc, store, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
@@ -520,7 +533,7 @@ describe("BalloonService legacy row migration", () => {
     const { svc, store, cleanup } = serviceWithRows(legacyRows);
     try {
       expect(store.load()).toEqual([]);
-      const lines = info.mock.calls.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"));
+      const lines = recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"));
       expect(lines).toHaveLength(1);
       expect(String(lines[0][0])).toContain("discarded 2");
       expect(String(lines[0][0])).toContain(CONTEST);
@@ -543,7 +556,7 @@ describe("BalloonService legacy row migration", () => {
     const { svc, store, cleanup } = serviceWithRows([keep]);
     try {
       expect(store.load()).toEqual([keep]);
-      expect(info.mock.calls.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"))).toHaveLength(0);
+      expect(recorder.calls.info.filter((c: unknown[]) => String(c[0]).includes("legacy row(s)"))).toHaveLength(0);
       expect(svc.list()).toEqual([keep]);
     } finally {
       cleanup();
@@ -554,7 +567,7 @@ describe("BalloonService legacy row migration", () => {
     const { store, cleanup } = serviceWithRows(legacyRows, "");
     try {
       expect(store.load()).toHaveLength(2);
-      expect(info.mock.calls).toHaveLength(0);
+      expect(recorder.calls.info).toHaveLength(0);
     } finally {
       cleanup();
     }
@@ -562,21 +575,18 @@ describe("BalloonService legacy row migration", () => {
 });
 
 describe("BalloonService empty-list warning", () => {
-  let warn: ReturnType<typeof spyOn>;
+  let recorder: ReturnType<typeof makeRecorder>;
 
   beforeEach(() => {
-    warn = spyOn(console, "warn").mockImplementation(() => {});
-  });
-  afterEach(() => {
-    warn.mockRestore();
+    recorder = makeRecorder();
   });
 
   const emptyWarnings = () =>
-    warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes("气球列表为空：DOMjudge 可能未启用气球功能")).length;
+    recorder.calls.warn.filter((c: unknown[]) => String(c[0]).includes("气球列表为空：DOMjudge 可能未启用气球功能")).length;
 
   test("warns once on the 3rd consecutive empty poll, not before", async () => {
     const fake = makeFetch([]);
-    const { svc } = makeService(fake.fetchImpl);
+    const { svc } = makeService(fake.fetchImpl, undefined, { logger: recorder.logger });
     await svc.pollOnce();
     await svc.pollOnce();
     expect(emptyWarnings()).toBe(0);
@@ -590,7 +600,7 @@ describe("BalloonService empty-list warning", () => {
 
   test("a non-empty poll resets the streak so a later streak warns again", async () => {
     const fake = makeFetch([]);
-    const { svc } = makeService(fake.fetchImpl);
+    const { svc } = makeService(fake.fetchImpl, undefined, { logger: recorder.logger });
     await svc.pollOnce();
     await svc.pollOnce();
     await svc.pollOnce();
@@ -609,13 +619,17 @@ describe("BalloonService empty-list warning", () => {
   test("an empty contestId never schedules a poll and never warns", () => {
     const fake = makeFetch([]);
     const scheduled: Array<() => void> = [];
-    const { svc } = makeService(fake.fetchImpl, (fn) => {
-      scheduled.push(fn);
-    }, { contestId: "" });
+    const { svc } = makeService(
+      fake.fetchImpl,
+      (fn) => {
+        scheduled.push(fn);
+      },
+      { contestId: "", logger: recorder.logger },
+    );
     svc.start();
     expect(scheduled).toHaveLength(0);
     expect(fake.calls).toHaveLength(0);
-    expect(warn.mock.calls).toHaveLength(0);
+    expect(recorder.calls.warn).toHaveLength(0);
   });
 });
 

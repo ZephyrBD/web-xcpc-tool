@@ -4,6 +4,7 @@ import type { Config } from "../config";
 import { verifyTeamToken } from "../auth/token";
 import { upstreamErrorPage } from "../pages/teamPages";
 import type { TeamStore } from "../store/teams";
+import { log } from "../log/logger";
 
 /** A config snapshot, or a getter for the live one (runtime config store). */
 export type ConfigSource = Config | (() => Config);
@@ -150,7 +151,7 @@ async function forwardToDj(
     const res = await proxy(target, { raw: req, headers, redirect: "manual" });
     return await rewriteResponseCookies(res);
   } catch (err) {
-    console.error(`dj proxy upstream error: ${target}`, err instanceof Error ? err.message : err);
+    log.error("proxy", `upstream error: ${target}`, err instanceof Error ? err.message : err);
     // Browsers navigating here are humans: show a friendly retry page instead
     // of raw JSON. API clients still get machine-readable JSON.
     const accept = req.headers.get("accept") ?? "";

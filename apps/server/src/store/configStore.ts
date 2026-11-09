@@ -1,4 +1,5 @@
 import type { Config } from "../config";
+import { log } from "../log/logger";
 
 /**
  * Mutable holder for the running configuration so admin settings edits apply
@@ -33,7 +34,7 @@ export class ConfigStore {
       try {
         cb(next);
       } catch (err) {
-        console.error("config change listener failed:", err instanceof Error ? err.message : err);
+        log.error("config", "change listener failed:", err instanceof Error ? err.message : err);
       }
     }
   }

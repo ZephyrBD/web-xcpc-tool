@@ -15,6 +15,7 @@ import { TeamStore } from "./store/teams";
 import { legacyContextPathRedirect, makeRootDispatch } from "./domjudge/proxy";
 import { getVersionInfo } from "./version";
 import { ConfigStore } from "./store/configStore";
+import { initLogger, log, registerSecret } from "./log/logger";
 
 /**
  * Single data root, relative to the process cwd (so `bun run dev` in
@@ -27,11 +28,16 @@ const STORE_DIR = resolve(DATA_ROOT);
 const storePath = (name: string): string => join(STORE_DIR, name);
 
 mkdirSync(DATA_ROOT, { recursive: true });
+// One log file per run: truncated here, appended to by every module via `log`.
+initLogger({ logFilePath: storePath(join("logs", "latest.log")) });
 // Older builds could leave stores one level deeper; lift them once, before any
 // store reads (the admin password now lives only in settings.json).
 const migrated = migrateLegacyDataDir(DATA_ROOT);
 if (migrated.length > 0) {
-  console.log(`data: moved legacy ${join(DATA_ROOT, "data")} entries up into ${STORE_DIR} (${migrated.join(", ")})`);
+  log.info(
+    "data",
+    `moved legacy ${join(DATA_ROOT, "data")} entries up into ${STORE_DIR} (${migrated.join(", ")})`,
+  );
 }
 const CONFIG_PATH = storePath("settings.json");
 if (!existsSync(CONFIG_PATH)) {
@@ -43,6 +49,8 @@ cfg.jwt.secret = ensureJwtSecret(cfg, CONFIG_PATH);
 // a configured hash is never replaced.
 const adminCfg = ensureAdminPassword(cfg, CONFIG_PATH);
 cfg.admin = adminCfg.admin;
+// The generated plaintext is printed by the banner and masked in the log file.
+registerSecret(cfg.admin.password);
 
 // Runtime config store: every request reads `configStore.current`, and the
 // admin settings PUT calls replace() so edits apply without a restart.
@@ -130,22 +138,25 @@ balloonService.start();
 /**
  * Startup banner: everything needed to reach the tool and log in, so a fresh
  * install never needs to hand-edit settings.json. Re-printed on every start;
- * the plaintext password comes from settings.json (admin.password).
+ * the plaintext password comes from settings.json (admin.password) and is
+ * masked in data/logs/latest.log (registered as a secret above).
  */
 const printBanner = (): void => {
   // getVersionInfo().hash is the full version string (build tag, env, or git hash).
   const version = getVersionInfo().hash;
   const base = `http://localhost:${cfg.port}${cfg.contextPath.replace(/\/+$/, "")}`;
-  console.log(
+  log.info(
+    "startup",
     [
       `Web XCPC Tool ${version}`,
-      `  服务   ${base || "/"}`,
-      `  管理台 ${base}/admin   用户名: ${cfg.admin.username}`,
+      // CJK labels are two terminal columns wide, so they pad with one space less.
+      `服务    ${base || "/"}`,
+      `管理台  ${base}/admin   用户名: ${cfg.admin.username}`,
       cfg.admin.password
-        ? `  密码   ${cfg.admin.password}`
-        : `  密码   未保存明文（旧版配置），请在管理台「设置」页重设密码`,
-      `  DOMjudge  ${cfg.domjudge.baseUrl || "未配置"}`,
-      `  气球   ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`,
+        ? `密码    ${cfg.admin.password}`
+        : `密码    未保存明文（旧版配置），请在管理台「设置」页重设密码`,
+      `DOMjudge ${cfg.domjudge.baseUrl || "未配置"}`,
+      `气球    ${cfg.balloon.contestId || "未启用（未配置赛题 ID）"}`,
     ].join("\n"),
   );
 };
@@ -154,6 +165,7 @@ printBanner();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     balloonService.stop();
+    log.info("startup", `收到 ${signal}，正在退出`);
     process.exit(0);
   });
 }

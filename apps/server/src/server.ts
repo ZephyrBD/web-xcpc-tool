@@ -23,6 +23,7 @@ import { signTeamToken } from "./auth/token";
 import { LoginRequestStore } from "./auth/loginRequests";
 import { ConfigStore } from "./store/configStore";
 import { purgePulledData, type PurgeReport } from "./admin/purge";
+import { log } from "./log/logger";
 
 export type Deps = {
   dataDir: string;
@@ -364,7 +365,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     try {
       updated = applySettingsPatch(before, parsed.data, settingsPathFor(dataDir), before.admin);
     } catch (err) {
-      console.error("settings update failed:", err instanceof Error ? err.message : err);
+      log.error("admin", "settings update failed:", err instanceof Error ? err.message : err);
       return c.json({ error: "保存失败，请稍后重试" }, 500);
     }
     // Defence in depth for a partial settings.json that slipped past the merge
@@ -426,7 +427,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
     // is scheduled when the response returns.
     deps?.balloonService?.stop();
     if (partialError || !report) {
-      console.error("data purge failed:", partialError instanceof Error ? partialError.message : partialError);
+      log.error("admin", "data purge failed:", partialError instanceof Error ? partialError.message : partialError);
       return c.json({ error: "清空数据失败，已清空部分数据，请再次点击清空" }, 500);
     }
     return c.json(report);

@@ -1,6 +1,7 @@
 import type { DjBalloon, DjClient, DjTeam } from "../domjudge/client";
 import type { SseBus } from "../sse/bus";
 import type { JsonStore } from "../store/store";
+import { log } from "../log/logger";
 
 /**
  * A balloon to deliver. Kept in the field shape the admin UI already renders
@@ -46,7 +47,15 @@ export type BalloonServiceDeps = {
   teams?: DjTeam[];
   /** Injectable scheduler for tests; defaults to setTimeout. */
   schedule?: (fn: () => void, ms: number) => void;
+  /**
+   * Optional event sink (defaults to the process logger). Tests constructing
+   * the service directly can inject a recorder instead of spying on console.
+   */
+  logger?: BalloonLogger;
 };
+
+/** The logger methods this service reports through. */
+export type BalloonLogger = Pick<typeof log, "info" | "warn" | "error">;
 
 const MAX_BACKOFF_MULTIPLIER = 10;
 /** Consecutive empty balloon lists before the operator gets told once. */
@@ -78,6 +87,7 @@ export class BalloonService {
   private contestId: string;
   private pollIntervalMs: number;
   private readonly schedule: (fn: () => void, ms: number) => void;
+  private readonly logger: BalloonLogger;
   private teams: DjTeam[];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -105,6 +115,7 @@ export class BalloonService {
       this.timer = setTimeout(fn, ms);
     });
     this.teams = deps.teams ?? [];
+    this.logger = deps.logger ?? log;
     this.discardForeignRows();
   }
 
@@ -124,8 +135,9 @@ export class BalloonService {
     const discarded = rows.length - kept.length;
     if (discarded === 0) return;
     this.store.save(kept);
-    console.info(
-      `balloon tasks: discarded ${discarded} legacy row(s) that do not belong to contest ${this.contestId}` +
+    this.logger.info(
+      "balloon",
+      `discarded ${discarded} legacy row(s) that do not belong to contest ${this.contestId}` +
         ` (pre-refactor rows were synthesized from submissions; DOMjudge balloon ids cannot match them)`,
     );
   }
@@ -256,8 +268,9 @@ export class BalloonService {
       // next poll may still see a predated `done: false`, and after that the
       // failed delivery is landed locally by synchronize().
       this.ackPending.set(id, { postCompletedAt: Date.now(), postFailed: true });
-      console.error(
-        `balloon ack: could not mark balloon done in domjudge for task ${id}:`,
+      this.logger.error(
+        "balloon",
+        `ack: could not mark balloon done in domjudge for task ${id}:`,
         err instanceof Error ? err.message : err,
       );
     }
@@ -296,7 +309,8 @@ export class BalloonService {
       this.emptyStreak++;
       if (this.emptyStreak >= EMPTY_WARN_STREAK && !this.emptyWarned) {
         this.emptyWarned = true;
-        console.warn(
+        this.logger.warn(
+          "balloon",
           `气球列表为空：DOMjudge 可能未启用气球功能（比赛 ${this.contestId}，已连续 ${this.emptyStreak} 次轮询为空）`,
         );
       }
@@ -447,8 +461,9 @@ export class BalloonService {
     } catch (err) {
       if (generation !== this.generation) return;
       this.consecutiveFailures++;
-      console.error(
-        `balloon poll failed for contest ${this.contestId}:`,
+      this.logger.error(
+        "balloon",
+        `poll failed for contest ${this.contestId}:`,
         err instanceof Error ? err.message : err,
       );
       const multiplier = Math.min(2 ** this.consecutiveFailures, MAX_BACKOFF_MULTIPLIER);
