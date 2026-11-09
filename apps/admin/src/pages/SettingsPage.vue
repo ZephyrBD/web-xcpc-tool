@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElButton, ElInput, ElMessage } from 'element-plus'
 import { apiFetch } from '@/api'
 import { serverMessage } from '@/lib/apiError'
@@ -70,14 +70,8 @@ const pollIntervalValid = computed(() => {
 const pollIntervalTouched = ref(false)
 const showPollIntervalError = computed(() => pollIntervalTouched.value && !pollIntervalValid.value)
 
-/** 清空后填了新比赛 ID：报告还在，但「比赛 ID 已置空」这句话已经不成立了。 */
-const purgeIdRefilled = ref(false)
-watch(
-  () => form.balloonContestId,
-  (next) => {
-    if (next.trim() !== '') purgeIdRefilled.value = true
-  },
-)
+/** 比赛 ID 填了值：「已置空」的提示就不成立；再清空回空串时提示自动恢复。 */
+const purgeIdRefilled = computed(() => form.balloonContestId.trim() !== '')
 
 /**
  * 把表单快照下来：只和快照比较，不维护逐字段的 dirty 标记（漏标一个字段就会悄悄改掉
@@ -102,17 +96,22 @@ function applyBaseline(): void {
  * 保存或清空后不整体覆盖表单：服务端回写的是请求体里的值，而表单里可能还有别的卡片
  * 尚未保存的编辑。这里只覆盖「服务端已经落地」的字段，以及服务端派生、前端只读的内容
  * （比赛 ID 锁定状态、令牌掩码、版本信息）。返回是否成功。
+ *
+ * `errorFallback` 为空时不弹 toast、也不写页面级提示：调用方（保存）已经有自己的结论，
+ * 两句话一起弹会自相矛盾。
  */
-async function pullSettings(options: { merge: boolean }): Promise<boolean> {
+async function pullSettings(options: { merge: boolean; errorFallback?: string }): Promise<boolean> {
   loading.value = true
-  refreshError.value = ''
+  if (options.errorFallback) refreshError.value = ''
   try {
     const s = await apiFetch<SettingsView>('/admin/api/settings')
     applySettings(s, options.merge ? baseline.value : null)
     return true
   } catch (e) {
-    refreshError.value = serverMessage(e, '设置加载失败，请刷新重试')
-    ElMessage.error(refreshError.value)
+    if (options.errorFallback) {
+      refreshError.value = serverMessage(e, options.errorFallback)
+      ElMessage.error(refreshError.value)
+    }
     return false
   } finally {
     loading.value = false
@@ -143,7 +142,7 @@ function applySettings(s: SettingsView, keep: Snapshot | null): void {
 }
 
 function refresh(): Promise<boolean> {
-  return pullSettings({ merge: false })
+  return pullSettings({ merge: false, errorFallback: '设置加载失败，请刷新重试' })
 }
 
 async function save(): Promise<void> {
@@ -196,10 +195,11 @@ async function save(): Promise<void> {
     // 清空结果只服务于「刚清空完」的那次配置；保存成功后它就不再代表当前状态。
     purgeReport.value = null
     purgeError.value = ''
-    purgeIdRefilled.value = false
     // 只同步服务端派生状态（锁定、掩码、版本），不重读表单：别的卡片里还没保存的编辑必须留着。
-    await pullSettings({ merge: true })
+    // 重读失败由这里统一说话：保存本身已经成功，不能再弹一句「设置加载失败」。
+    const refreshed = await pullSettings({ merge: true })
     ElMessage.success('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
+    if (!refreshed) refreshError.value = '已保存，但设置未能重新读取，请手动刷新'
   } catch (e) {
     // 403 锁定的说明必须原样展示：管理员要据此知道先清空数据才能换比赛。
     const msg = serverMessage(e, '保存没成功，请检查填写内容后再试')
@@ -214,7 +214,6 @@ async function purge(): Promise<void> {
   if (!purgeReady.value || purging.value) return
   purgeError.value = ''
   purgeReport.value = null
-  purgeIdRefilled.value = false
   purging.value = true
   try {
     purgeReport.value = await apiFetch<PurgeReport>('/admin/api/data/purge', { method: 'POST' })
@@ -228,7 +227,7 @@ async function purge(): Promise<void> {
   }
   // 清空已成功：随后按最新状态重渲染（比赛 ID 已置空、解锁）。刷新失败是另一回事，
   // 由 pullSettings 自己提示，绝不能反过来把清空说成失败。
-  const refreshed = await pullSettings({ merge: false })
+  const refreshed = await pullSettings({ merge: false, errorFallback: '设置加载失败，请刷新重试' })
   if (!refreshed) refreshError.value = '已清空，但页面刷新失败，请手动刷新'
   purging.value = false
 }

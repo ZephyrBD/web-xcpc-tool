@@ -564,6 +564,48 @@ describe('SettingsPage', () => {
     expect(wrapper.find('.purge-result').exists()).toBe(true)
   })
 
+  test('clearing the typed id back to empty restores the “比赛 ID 已置空” hint', async () => {
+    const wrapper = await mountReady()
+    await purgeNow(wrapper)
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(true)
+
+    await contestInput(wrapper).setValue('next-contest')
+    await flush()
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(false)
+
+    // 提示是派生状态而不是一次性锁存：清回空串就恢复。
+    await contestInput(wrapper).setValue('')
+    await flush()
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(true)
+
+    // 只剩空白也算空。
+    await contestInput(wrapper).setValue('   ')
+    await flush()
+    expect(wrapper.find('.purge-result-hint').exists()).toBe(true)
+  })
+
+  test('a save that succeeds but cannot re-read settings says only that', async () => {
+    const wrapper = await mountReady()
+    await domjudgeBaseUrlInput(wrapper).setValue('http://dj.after-save')
+    getError = { status: 500, body: { error: '设置读取失败，请稍后重试' } }
+
+    await saveButton(wrapper).trigger('click')
+    for (let i = 0; i < 4; i++) await flush()
+
+    // 保存确实成功了：PUT 带上了新值，并且发了成功提示。
+    expect(putCalls.length).toBe(1)
+    expect((putCalls[0]!.body as Record<string, Record<string, unknown>>).domjudge.baseUrl).toBe(
+      'http://dj.after-save',
+    )
+    expect(messageMock.success).toHaveBeenCalledWith('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
+    // 不能同时弹一句「设置加载失败」把结论说反。
+    expect(messageMock.error).not.toHaveBeenCalled()
+    expect(wrapper.find('.save-error').exists()).toBe(false)
+    expect(wrapper.find('.refresh-error').text()).toContain('已保存，但设置未能重新读取，请手动刷新')
+    // 操作员刚输入的值不会被吞掉。
+    expect((domjudgeBaseUrlInput(wrapper).element as HTMLInputElement).value).toBe('http://dj.after-save')
+  })
+
   test('the purge report clears on the next successful save', async () => {
     const wrapper = await mountReady()
     await purgeNow(wrapper)
