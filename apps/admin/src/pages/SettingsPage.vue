@@ -60,6 +60,8 @@ const purgeConfirm = ref('')
 const purgeError = ref('')
 const purgeReport = ref<PurgeReport | null>(null)
 const purgeReady = computed(() => purgeConfirm.value.trim() === PURGE_WORD)
+/** 危险操作默认折叠：只留一行开关，展开后才出现清单、确认框和按钮。 */
+const purgeExpanded = ref(false)
 
 /** 轮询间隔必须是正整数：在提交前拦住，不把非法值丢给服务端换一个 400。 */
 const pollIntervalValid = computed(() => {
@@ -198,7 +200,7 @@ async function save(): Promise<void> {
     // 只同步服务端派生状态（锁定、掩码、版本），不重读表单：别的卡片里还没保存的编辑必须留着。
     // 重读失败由这里统一说话：保存本身已经成功，不能再弹一句「设置加载失败」。
     const refreshed = await pullSettings({ merge: true })
-    ElMessage.success('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
+    ElMessage.success('已保存，立即生效（端口与 JWT 密钥例外，修改后需重启）')
     if (!refreshed) refreshError.value = '已保存，但设置未能重新读取，请手动刷新'
   } catch (e) {
     // 403 锁定的说明必须原样展示：管理员要据此知道先清空数据才能换比赛。
@@ -290,6 +292,8 @@ onMounted(() => void refresh())
         <span class="field-help">
           填写本场比赛的 DOMjudge 比赛 ID 与气球轮询间隔，并设置队伍码登录的允许时段。
         </span>
+
+        <h3 class="group-title">比赛绑定</h3>
         <label class="field">
           <span class="field-label">比赛 ID（contestId）</span>
           <ElInput
@@ -299,7 +303,7 @@ onMounted(() => void refresh())
           />
           <span v-if="contestLocked" class="lock-hint">
             <span class="lock-badge">已锁定</span>
-            比赛 ID 已锁定，如需更换请先清空比赛数据
+            比赛 ID 已锁定，如下一场比赛请先清空数据
           </span>
           <span v-else class="field-help">
             保存后即锁定；气球任务会绑定到这场比赛上，想换比赛要先清空数据。
@@ -318,28 +322,40 @@ onMounted(() => void refresh())
 
         <div class="card-divider" role="separator"></div>
 
-        <span class="field-label">登录时段</span>
+        <h3 class="group-title">队伍码登录时段</h3>
         <span class="field-help">留空表示不限制；登录时段外队伍码无法登入。</span>
-        <label class="field">
-          <span class="field-label">开始时间</span>
-          <input v-model="form.teamLoginStart" class="datetime-input" type="datetime-local" />
-        </label>
-        <label class="field">
-          <span class="field-label">结束时间</span>
-          <input v-model="form.teamLoginEnd" class="datetime-input" type="datetime-local" />
-        </label>
-        <div class="token-actions">
-          <ElButton
-            size="small"
-            :disabled="form.teamLoginStart === '' && form.teamLoginEnd === ''"
-            @click="clearTeamLogin"
-          >清除时段</ElButton>
+        <div class="login-window-row">
+          <label class="field">
+            <span class="field-label">开始时间</span>
+            <input v-model="form.teamLoginStart" class="datetime-input" type="datetime-local" />
+          </label>
+          <label class="field">
+            <span class="field-label">结束时间</span>
+            <input v-model="form.teamLoginEnd" class="datetime-input" type="datetime-local" />
+          </label>
+          <div class="token-actions">
+            <ElButton
+              size="small"
+              :disabled="form.teamLoginStart === '' && form.teamLoginEnd === ''"
+              @click="clearTeamLogin"
+            >清除时段</ElButton>
+          </div>
         </div>
 
         <template v-if="contestLocked">
           <div class="card-divider" role="separator"></div>
-          <div class="purge-block">
-            <h3 class="purge-title">清空数据</h3>
+
+          <h3 class="group-title">危险操作</h3>
+          <button
+            type="button"
+            class="purge-toggle"
+            :aria-expanded="purgeExpanded"
+            @click="purgeExpanded = !purgeExpanded"
+          >
+            <span>危险操作 · 清空数据</span>
+            <span class="purge-toggle-action">{{ purgeExpanded ? '收起' : '展开' }}</span>
+          </button>
+          <div v-if="purgeExpanded" class="purge-block">
             <p class="field-help">清空后比赛 ID 解锁，可以重新配置另一场比赛。此操作不可撤销。</p>
             <ul class="purge-list">
               <li>
@@ -370,7 +386,7 @@ onMounted(() => void refresh())
           </div>
         </template>
 
-        <!-- 清空结果放在锁定区之外：刷新解锁后锁定区整体收起，条数仍然可见。 -->
+        <!-- 清空结果独立成浅色条：刷新解锁后危险操作区整体收起，条数仍然可见。 -->
         <div v-if="purgeReport" class="purge-result">
           <p class="purge-result-title">已清空：</p>
           <p class="purge-result-line">
@@ -465,7 +481,7 @@ onMounted(() => void refresh())
     <div class="settings-footer">
       <ElButton type="primary" :loading="saving" :disabled="!loaded" @click="save">保存设置</ElButton>
       <span class="footer-note">
-        保存后立即生效；端口、访问前缀、JWT 密钥例外，修改后需重启并重新登录。
+        保存后立即生效；端口与 JWT 密钥例外，修改后需重启并重新登录。
       </span>
     </div>
     <p v-if="saveError" class="field-error save-error">{{ saveError }}</p>
@@ -484,8 +500,14 @@ onMounted(() => void refresh())
 <style scoped>
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+@media (max-width: 960px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-card {
@@ -504,11 +526,18 @@ onMounted(() => void refresh())
   box-shadow: 0 8px 24px rgba(15, 15, 20, 0.08);
 }
 
-/* 比赛设置是本页的主卡片：跨两列并带品牌色描边。 */
+/* 比赛设置是本页的主卡片：跨两列并带品牌色描边；宽屏下其余三卡两列均分。 */
 .contest-card {
   grid-column: 1 / -1;
   border-color: color-mix(in srgb, var(--brand-blue) 35%, transparent);
   background: color-mix(in srgb, var(--brand-blue) 5%, var(--bg-alt));
+}
+
+@media (min-width: 961px) {
+  /* 三张下级卡片在两列网格里均分高度，避免被主卡片挤扁。 */
+  .settings-grid > .settings-card:not(.contest-card) {
+    min-height: 100%;
+  }
 }
 
 .card-title {
@@ -580,6 +609,56 @@ onMounted(() => void refresh())
   margin: 2px 0;
 }
 
+.group-title {
+  margin: 0;
+  font-size: var(--text-13);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.login-window-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.login-window-row .field {
+  flex: 1 1 200px;
+}
+
+.login-window-row .token-actions {
+  padding-bottom: 4px;
+}
+
+.purge-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--brand-red) 30%, transparent);
+  background: color-mix(in srgb, var(--brand-red) 6%, transparent);
+  color: var(--brand-red);
+  font-family: var(--font-body);
+  font-size: var(--text-13);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.purge-toggle:hover {
+  background: color-mix(in srgb, var(--brand-red) 12%, transparent);
+}
+
+.purge-toggle-action {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
 .purge-block {
   display: flex;
   flex-direction: column;
@@ -588,13 +667,6 @@ onMounted(() => void refresh())
   border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--brand-red) 30%, transparent);
   background: color-mix(in srgb, var(--brand-red) 6%, transparent);
-}
-
-.purge-title {
-  margin: 0;
-  font-size: var(--text-15);
-  font-weight: 600;
-  color: var(--brand-red);
 }
 
 .purge-list {

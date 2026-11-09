@@ -102,7 +102,7 @@ function mockFetch() {
       if (putError) return json(putError.body, putError.status)
       // 服务端会保存这次 PUT 的内容：后续 GET 反映的是它，而不是 mock 的旧视图。
       settingsView = mergeIntoView(settingsView, body)
-      return json({ ...settingsView, note: '已保存，立即生效（端口与访问前缀例外，修改后需重启）' })
+      return json({ ...settingsView, note: '已保存，立即生效（端口与 JWT 密钥例外，修改后需重启）' })
     }
     if (method === 'POST' && path === '/admin/api/data/purge') {
       purgeCalls.push({ method, path })
@@ -184,11 +184,20 @@ function formToken(wrapper: Wrapper): string {
 }
 
 async function purgeNow(wrapper: Wrapper): Promise<void> {
+  await expandPurge(wrapper)
   await purgeConfirmInput(wrapper).setValue('清空')
   await flush()
   await findButton(wrapper, purgeButtonText).trigger('click')
   // POST → refresh() → GET → 重渲染：留足微任务与宏任务的拍子。
   for (let i = 0; i < 6; i++) await flush()
+}
+
+/** 危险操作默认折叠：先点开「危险操作 · 清空数据」这一行。 */
+async function expandPurge(wrapper: Wrapper): Promise<void> {
+  const toggle = wrapper.find('.purge-toggle')
+  if (!toggle.exists()) throw new Error('purge toggle not found')
+  await toggle.trigger('click')
+  await flush()
 }
 
 async function setPollInterval(wrapper: Wrapper, value: string): Promise<void> {
@@ -248,7 +257,7 @@ describe('SettingsPage', () => {
     expect(ownCard.length).toBe(0)
   })
 
-  test('locked contest id is read-only, shows the hint and the purge button', async () => {
+  test('locked contest id is read-only, shows the badge and the collapsed purge toggle', async () => {
     const wrapper = await mountReady()
     const input = contestInput(wrapper)
     expect((input.element as HTMLInputElement).readOnly).toBe(true)
@@ -256,8 +265,11 @@ describe('SettingsPage', () => {
 
     const text = wrapper.text()
     expect(text).toContain('比赛 ID 已锁定')
-    expect(text).toContain('如需更换请先清空比赛数据')
-    expect(hasButton(wrapper, purgeButtonText)).toBe(true)
+    expect(text).toContain('如下一场比赛请先清空数据')
+    expect(text).toContain('已锁定')
+    expect(wrapper.find('.lock-badge').exists()).toBe(true)
+    expect(hasButton(wrapper, purgeButtonText)).toBe(false)
+    expect(wrapper.find('.purge-toggle').exists()).toBe(true)
   })
 
   test('an empty contest id stays editable and hides the purge button', async () => {
@@ -480,8 +492,33 @@ describe('SettingsPage', () => {
     expect(section.text()).toContain('Version: abc1234')
   })
 
+  test('the danger zone is collapsed by default and expands on click', async () => {
+    const wrapper = await mountReady()
+    const toggle = wrapper.find('.purge-toggle')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.text()).toContain('危险操作 · 清空数据')
+    // 折叠时只有开关一行：清单、确认输入框、按钮都不可见。
+    expect(wrapper.find('.purge-block').exists()).toBe(false)
+    expect(hasButton(wrapper, purgeButtonText)).toBe(false)
+    expect(
+      wrapper
+        .findAll('input')
+        .some((i) => ((i.element as HTMLInputElement).placeholder ?? '').includes('清空')),
+    ).toBe(false)
+
+    await expandPurge(wrapper)
+    expect(wrapper.find('.purge-block').exists()).toBe(true)
+    expect(hasButton(wrapper, purgeButtonText)).toBe(true)
+
+    // 再点一次收起。
+    await wrapper.find('.purge-toggle').trigger('click')
+    await flush()
+    expect(wrapper.find('.purge-block').exists()).toBe(false)
+  })
+
   test('the purge confirm button stays disabled until the exact word 清空 is typed', async () => {
     const wrapper = await mountReady()
+    await expandPurge(wrapper)
     expect(findButton(wrapper, purgeButtonText).attributes('disabled')).toBeDefined()
     // 未确认前不发清空请求。
     expect(purgeCalls.length).toBe(0)
@@ -504,6 +541,7 @@ describe('SettingsPage', () => {
 
   test('the purge card lists what is deleted and what is kept', async () => {
     const wrapper = await mountReady()
+    await expandPurge(wrapper)
     const text = wrapper.text()
     for (const item of [
       '队伍列表',
@@ -597,7 +635,7 @@ describe('SettingsPage', () => {
     expect((putCalls[0]!.body as Record<string, Record<string, unknown>>).domjudge.baseUrl).toBe(
       'http://dj.after-save',
     )
-    expect(messageMock.success).toHaveBeenCalledWith('已保存，立即生效（端口与访问前缀例外，修改后需重启）')
+    expect(messageMock.success).toHaveBeenCalledWith('已保存，立即生效（端口与 JWT 密钥例外，修改后需重启）')
     // 不能同时弹一句「设置加载失败」把结论说反。
     expect(messageMock.error).not.toHaveBeenCalled()
     expect(wrapper.find('.save-error').exists()).toBe(false)
@@ -650,6 +688,7 @@ describe('SettingsPage', () => {
 
   test('a successful purge whose refresh fails says so instead of blaming the purge', async () => {
     const wrapper = await mountReady()
+    await expandPurge(wrapper)
     await purgeConfirmInput(wrapper).setValue('清空')
     await flush()
     getError = { status: 500, body: { error: '设置读取失败，请稍后重试' } }
@@ -801,6 +840,7 @@ describe('SettingsPage', () => {
 
   test('the purge confirmation word is trimmed, and a wrong word gets a hint', async () => {
     const wrapper = await mountReady()
+    await expandPurge(wrapper)
     const confirm = purgeConfirmInput(wrapper)
     expect(wrapper.find('.purge-confirm-hint').exists()).toBe(false)
 
@@ -828,13 +868,14 @@ describe('SettingsPage', () => {
     expect(wrapper.find('.save-error').text()).toContain('配置格式不正确，请检查各字段后重试')
   })
 
-  test('no copy claims the save needs a restart; only the port / prefix / JWT note remains', async () => {
+  test('no copy claims the save needs a restart; only the port / JWT note remains', async () => {
     const wrapper = await mountReady()
     const text = wrapper.text()
     expect(text).not.toContain('重启服务才生效')
     expect(text).not.toContain('保存后重启生效')
+    // 工具路径固定为 /wxt，「访问前缀」相关的字段与文案已整体移除。
+    expect(text).not.toContain('访问前缀')
     expect(text).toContain('端口')
-    expect(text).toContain('访问前缀')
     expect(text).toContain('JWT')
     expect(text).toContain('重启')
   })
