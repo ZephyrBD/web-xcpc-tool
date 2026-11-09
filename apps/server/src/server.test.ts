@@ -268,7 +268,7 @@ describe("admin login-request review API", () => {
     expect(times[0]).toBeGreaterThanOrEqual(times[1]);
   });
 
-  test("recent is capped at 50 and only holds non-pending requests", async () => {
+  test("recent is capped at 50 and holds every decided request, claimed included", async () => {
     const { app, auth, loginRequests } = setup();
     // 55 decided + 1 still pending; seeding the store directly keeps this fast.
     for (let i = 0; i < 55; i++) {
@@ -276,12 +276,18 @@ describe("admin login-request review API", () => {
       loginRequests.decide(r.id, i % 2 === 0 ? "approved" : "rejected");
     }
     loginRequests.create({ icpcId: "pending-team", teamCode: "pending-code", teamName: "Pending", ip: null });
+    // A claimed (already consumed) request stays in history: it is decided, not pending.
+    const claimed = loginRequests.create({ icpcId: "claimed-team", teamCode: "claimed-code", teamName: "Claimed", ip: null });
+    loginRequests.decide(claimed.id, "approved");
+    loginRequests.consume(claimed.id);
 
     const body = await (await app.request("/admin/api/login-requests", { headers: await auth() })).json();
     expect(body.pending.length).toBe(1);
     expect(body.pending[0].icpcId).toBe("pending-team");
+    // 56 decided entries, newest (the claimed one) first, capped at 50.
     expect(body.recent.length).toBe(50);
-    expect(body.recent.every((r: { status: string }) => r.status !== "pending" && r.status !== "claimed")).toBe(true);
+    expect(body.recent[0]).toMatchObject({ icpcId: "claimed-team", status: "claimed" });
+    expect(body.recent.every((r: { status: string }) => r.status !== "pending")).toBe(true);
   });
 
   test("decision on an unknown id is 404 and a bad decision value is 400", async () => {
