@@ -26,7 +26,7 @@ const navItems = [
   { path: '/auth', label: '认证管理', accent: 'var(--brand-green)' },
   { path: '/jobs', label: '打印 / 气球', accent: 'var(--brand-orange)' },
   { path: '/teams', label: '队伍', accent: 'var(--brand-blue)' },
-  { path: '/api_list', label: '接口', accent: 'var(--brand-red)' },
+  { path: '/api-list', label: '接口', accent: 'var(--brand-red)' },
   { path: '/help', label: '帮助', accent: 'var(--brand-purple)' },
   { path: '/settings', label: '设置', accent: 'var(--brand-green)' },
 ]
@@ -36,7 +36,7 @@ const accents: Record<string, string> = {
   auth: 'var(--brand-green)',
   jobs: 'var(--brand-orange)',
   teams: 'var(--brand-blue)',
-  'api_list': 'var(--brand-red)',
+  'api-list': 'var(--brand-red)',
   help: 'var(--brand-purple)',
   settings: 'var(--brand-green)',
 }

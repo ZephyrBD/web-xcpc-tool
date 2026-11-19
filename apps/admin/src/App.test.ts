@@ -39,7 +39,7 @@ describe('App', () => {
     await wrapper.vm.$nextTick()
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    for (const route of ['/', '/auth', '/jobs', '/teams', '/api_list', '/help', '/settings']) {
+    for (const route of ['/', '/auth', '/jobs', '/teams', '/api-list', '/help', '/settings']) {
       expect(hrefs).toContain(route)
     }
   })

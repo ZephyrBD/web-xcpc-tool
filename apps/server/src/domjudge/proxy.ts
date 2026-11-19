@@ -141,7 +141,6 @@ function escapeRegExp(text: string): string {
  */
 export function rewriteLocation(location: string, baseUrl: string): string {
   const prefix = basePathOf(baseUrl);
-  if (!prefix) return location;
 
   let absolute: URL | null = null;
   try {
@@ -156,14 +155,18 @@ export function rewriteLocation(location: string, baseUrl: string): string {
     } catch {
       return location;
     }
-    // Only our own DOMjudge origin may be folded into a root path.
+    // Any redirect to our own DOMjudge origin becomes a root path so the
+    // browser stays on the host it reached us by (even when the user typed a
+    // different address than the configured baseUrl, e.g. a LAN IP or domain).
     if (absolute.origin !== base.origin) return location;
+    if (!prefix) return `${absolute.pathname}${absolute.search}${absolute.hash}`;
     const rest = stripPrefixPath(absolute.pathname, prefix);
     if (rest === null) return location;
     return `${rest}${absolute.search}${absolute.hash}`;
   }
 
   // Root-relative form: /demoweb/public?x=1#top
+  if (!prefix) return location;
   const split = location.search(/[?#]/);
   const path = split === -1 ? location : location.slice(0, split);
   const tail = split === -1 ? "" : location.slice(split);
