@@ -51,6 +51,45 @@ describe("DjClient", () => {
     expect(await client.findTeamUser("999")).toBeNull();
   });
 
+  test("putUserPassword replaces the user with full fields via PUT /users/{id}", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      capturedInit = init;
+      return jsonResponse({ id: "demo", username: "demo" });
+    }) as unknown as typeof fetch;
+    const client = new DjClient(djCfg, fetchImpl);
+    // DOMjudge 8.3+ only exposes PUT (PATCH is main-branch only and yields 405).
+    // PUT replaces the whole user, so every field we must keep has to be sent.
+    await client.putUserPassword(
+      {
+        id: "demo",
+        username: "demo",
+        name: "Example teamname",
+        email: "demo@example.com",
+        ip: "10.0.0.1",
+        enabled: true,
+        team_id: "exteam",
+        roles: ["team"],
+      },
+      "newpass",
+    );
+    expect(capturedUrl).toBe("http://mock.local/domjudge/api/v4/users/demo");
+    expect(capturedInit?.method).toBe("PUT");
+    expect(JSON.parse(String(capturedInit?.body))).toEqual({
+      id: "demo",
+      username: "demo",
+      name: "Example teamname",
+      email: "demo@example.com",
+      ip: "10.0.0.1",
+      enabled: true,
+      team_id: "exteam",
+      roles: ["team"],
+      password: "newpass",
+    });
+  });
+
   test("404 throws DjApiError with URL and status in message", async () => {
     const fetchImpl = (async () => jsonResponse({ error: "nf" }, 404)) as unknown as typeof fetch;
     const client = new DjClient(djCfg, fetchImpl);

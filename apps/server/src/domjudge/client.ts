@@ -50,6 +50,10 @@ export type DjUser = {
   id: string;
   username: string;
   name?: string;
+  email?: string | null;
+  /** Auto-login IP whitelist, serialized as `ip` by DOMjudge. */
+  ip?: string | null;
+  enabled?: boolean;
   /** CLICS User roles, e.g. ["team"] or ["admin"]. */
   roles?: string[];
   /** CLICS User team_id, present on team accounts (matches the team key). */
@@ -159,13 +163,13 @@ export class DjClient {
     return (await res.json()) as T;
   }
 
-  private async patch(path: string, body: unknown): Promise<unknown> {
+  private async put(path: string, body: unknown): Promise<unknown> {
     const { baseUrl, authHeader, timeoutMs } = this.sync();
     const url = baseUrl + path;
     let res: Response;
     try {
       res = await this.fetchImpl(url, {
-        method: "PATCH",
+        method: "PUT",
         headers: {
           Authorization: authHeader,
           Accept: "application/json",
@@ -232,9 +236,27 @@ export class DjClient {
     return users.find((u) => u.username === `team${teamKey}`) ?? null;
   }
 
-  /** Reset a DOMjudge user's password via the admin API (PATCH /users/{id}). */
-  patchUserPassword(userId: string, password: string): Promise<unknown> {
-    return this.patch(`users/${encodeURIComponent(userId)}`, { password });
+  /**
+   * Reset a DOMjudge user's password via the admin API.
+   *
+   * Released DOMjudge (8.3+) only exposes `PUT /users/{id}` — PATCH exists on
+   * the main branch alone and answers 405 on every stable version. PUT
+   * *replaces* the user, so the whole current record must be echoed back or
+   * fields like name/email/roles would be cleared; only `password` changes.
+   */
+  putUserPassword(user: DjUser, password: string): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      id: user.id,
+      username: user.username,
+      name: user.name ?? user.username,
+      roles: user.roles ?? [],
+      password,
+    };
+    if (user.email !== undefined) body.email = user.email;
+    if (user.ip !== undefined) body.ip = user.ip;
+    if (user.enabled !== undefined) body.enabled = user.enabled;
+    if (user.team_id !== undefined) body.team_id = user.team_id;
+    return this.put(`users/${encodeURIComponent(user.id)}`, body);
   }
 
   getTeams(contestId: string): Promise<DjTeam[]> {

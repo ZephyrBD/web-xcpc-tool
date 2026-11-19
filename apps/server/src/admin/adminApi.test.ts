@@ -246,7 +246,15 @@ describe("POST /admin/api/team-codes/provision", () => {
   // Mock DOMjudge user directory covering the roles guard matrix, in the
   // demo-realistic shape: username is `team<numeric-id>`, never the team key.
   const DJ_USERS = [
-    { id: "7", username: "team1095218", team_id: "icpc1", roles: ["team"] },
+    {
+      id: "7",
+      username: "team1095218",
+      name: "队伍一",
+      email: "t1@example.com",
+      enabled: true,
+      team_id: "icpc1",
+      roles: ["team"],
+    },
     { id: "2", username: "team1095219", team_id: "icpc2", roles: ["admin"] },
     { id: "3", username: "team1095220", team_id: "icpc4", roles: ["jury"] },
     // Roles missing entirely: cannot prove it is a team account.
@@ -287,7 +295,7 @@ describe("POST /admin/api/team-codes/provision", () => {
           headers: { "content-type": "application/json" },
         });
       }
-      if (/\/users\/\d+$/.test(path) && init?.method === "PATCH") {
+      if (/\/users\/\d+$/.test(path) && init?.method === "PUT") {
         return new Response(JSON.stringify({ id: "7", username: "team1095218" }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -312,7 +320,7 @@ describe("POST /admin/api/team-codes/provision", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  test("patches the DOMjudge user password and stores it encrypted", async () => {
+  test("replaces the DOMjudge user password and stores it encrypted", async () => {
     const res = await app.request("/admin/api/team-codes/provision", {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
@@ -321,11 +329,23 @@ describe("POST /admin/api/team-codes/provision", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { provisioned: number; skipped: number; errors: unknown[] };
     expect(body).toEqual({ provisioned: 1, skipped: 0, errors: [] });
-    // full user list fetched once, then PATCH {password} on /users/{id}
+    // full user list fetched once, then PUT the replacement user on /users/{id}
     expect(djCalls[0]).toMatchObject({ method: "GET", url: "users" });
-    expect(djCalls[1].method).toBe("PATCH");
+    expect(djCalls[1].method).toBe("PUT");
     expect(djCalls[1].url).toBe("users/7");
-    const password = (djCalls[1].body as { password: string }).password;
+    const payload = djCalls[1].body as Record<string, unknown>;
+    // PUT replaces the whole user: preserving these fields is the regression
+    // guard against silently clearing name/email/roles on a real DOMjudge.
+    expect(payload).toMatchObject({
+      id: "7",
+      username: "team1095218",
+      name: "队伍一",
+      email: "t1@example.com",
+      enabled: true,
+      team_id: "icpc1",
+      roles: ["team"],
+    });
+    const password = payload.password as string;
     expect(password).toHaveLength(16);
     expect(password).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{16}$/);
     // raw password must never appear in the store file
@@ -356,7 +376,7 @@ describe("POST /admin/api/team-codes/provision", () => {
     expect(body.errors).toEqual([{ icpcId: "icpc3", reason: expect.any(String) }]);
     // no password stored for the skipped team
     expect(teamStore.hasPassword("icpc3")).toBe(false);
-    expect(djCalls.some((call) => call.method === "PATCH")).toBe(false);
+    expect(djCalls.some((call) => call.method === "PUT")).toBe(false);
   });
 
   test.each([
@@ -378,7 +398,7 @@ describe("POST /admin/api/team-codes/provision", () => {
     expect(teamStore.hasPassword(icpcId)).toBe(false);
     // refused users never get a team code stored either
     expect(teamStore.getTeamCode(icpcId)).toBeNull();
-    expect(djCalls.some((call) => call.method === "PATCH")).toBe(false);
+    expect(djCalls.some((call) => call.method === "PUT")).toBe(false);
   });
 
   test("all:true targets teams missing a code or a password", async () => {

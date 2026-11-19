@@ -547,7 +547,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
           continue;
         }
         // Hard guard after the demo-API incident: only exact team accounts
-        // may be PATCHed, no matter what the API returned.
+        // may be rewritten, no matter what the API returned.
         const roles = Array.isArray(user.roles) ? user.roles : [];
         const teamOnly = roles.length > 0 && roles.every((r) => r === "team");
         if (!teamOnly) {
@@ -557,7 +557,7 @@ export function createApp(config: Config | ConfigStore, deps?: Partial<Deps>): H
         }
         // Only team-role accounts ever get a code stored.
         if (!teamStore.getTeamCode(icpcId)) teamStore.setTeamCode(icpcId);
-        await client.patchUserPassword(user.id, password);
+        await client.putUserPassword(user, password);
       } catch (err) {
         errors.push({ icpcId, reason: err instanceof Error ? err.message : String(err) });
         continue;
