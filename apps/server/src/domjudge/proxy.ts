@@ -155,10 +155,12 @@ export function rewriteLocation(location: string, baseUrl: string): string {
     } catch {
       return location;
     }
-    // Any redirect to our own DOMjudge origin becomes a root path so the
-    // browser stays on the host it reached us by (even when the user typed a
-    // different address than the configured baseUrl, e.g. a LAN IP or domain).
-    if (absolute.origin !== base.origin) return location;
+    // Any redirect pointing at our own DOMjudge host becomes a root path so
+    // the browser stays on the host it reached us by. Hostname-only match:
+    // DOMjudge emits Locations from *its own* baseurl (scheme and port can
+    // differ from the proxy's baseUrl, e.g. https://127.0.0.1:9443 vs
+    // http://127.0.0.1:8790 behind a TLS-terminating nginx).
+    if (absolute.hostname !== base.hostname) return location;
     if (!prefix) return `${absolute.pathname}${absolute.search}${absolute.hash}`;
     const rest = stripPrefixPath(absolute.pathname, prefix);
     if (rest === null) return location;

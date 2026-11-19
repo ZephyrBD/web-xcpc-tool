@@ -512,9 +512,14 @@ describe("DOMjudge base path prefix rewriting", () => {
     );
     expect(rewriteLocation("/demoweb2/x", base)).toBe("/demoweb2/x");
     expect(rewriteLocation("mailto:judge@example.com", base)).toBe("mailto:judge@example.com");
-    // no prefix configured: same-origin absolute Locations still fold to root
+    // no prefix configured: same-host absolute Locations still fold to root
     // paths so the browser keeps the host it reached us by; foreign stays.
+    // Scheme and port may differ from baseUrl (DOMjudge's own baseurl wins
+    // in its Locations, e.g. https://127.0.0.1:9443 behind a TLS proxy).
     expect(rewriteLocation("https://www.domjudge.org/public", "https://www.domjudge.org")).toBe(
+      "/public",
+    );
+    expect(rewriteLocation("https://127.0.0.1:9443/public", "http://127.0.0.1:8790")).toBe(
       "/public",
     );
     expect(
