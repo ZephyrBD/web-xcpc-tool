@@ -3,8 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory } from 'vue-router'
 import { createPinia } from 'pinia'
 import App from './App.vue'
-import { createAppRouter, routes } from './router'
-import { useSessionStore } from './stores/session'
+import { createAppRouter } from './router'
+import { useSessionStore } from '@/store/session'
 import { clearToken, setToken } from './api'
 
 // DashboardPage opens an SSE connection on mount; bun has no EventSource.
@@ -39,22 +39,20 @@ describe('App', () => {
     await wrapper.vm.$nextTick()
 
     const hrefs = wrapper.findAll('a').map((a) => a.attributes('href'))
-    for (const route of ['/', '/auth', '/jobs', '/teams', '/api-list', '/help', '/settings']) {
+    for (const route of ['/', '/auth', '/jobs', '/teams', '/api_list', '/help', '/settings']) {
       expect(hrefs).toContain(route)
     }
   })
 
   test('/auth is the 认证管理 route and the legacy /team-codes path redirects to it', async () => {
-    const auth = routes.find((r) => r.path === '/auth')!
+    const router = createAppRouter(createMemoryHistory())
+    const auth = router.resolve('/auth')
     expect(auth.name).toBe('auth')
-    expect(auth.meta?.title).toBe('认证管理')
-    // the redirect record keeps old bookmarks working
-    expect(routes.find((r) => r.path === '/team-codes')?.redirect).toBe('/auth')
+    expect(auth.meta.title).toBe('认证管理')
 
     // real navigation (not just resolve): the guard needs a token, then the
     // redirect record normalizes the old URL to /auth.
     setToken('tok')
-    const router = createAppRouter(createMemoryHistory())
     await router.push('/team-codes')
     await router.isReady()
     expect(router.currentRoute.value.path).toBe('/auth')
@@ -73,9 +71,9 @@ describe('App', () => {
     await router.push('/login')
     await router.isReady()
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('.admin-layout').exists()).toBe(false)
-    expect(wrapper.find('.layout-header').exists()).toBe(false)
-    expect(wrapper.find('.login-page').exists()).toBe(true)
+    expect(wrapper.find('.admin_layout').exists()).toBe(false)
+    expect(wrapper.find('.layout_header').exists()).toBe(false)
+    expect(wrapper.find('.login_page').exists()).toBe(true)
   })
 
   test('shows 退出 button and no 登录 link when authenticated; logout returns to login', async () => {
@@ -85,16 +83,16 @@ describe('App', () => {
     await router.push('/')
     await router.isReady()
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('.logout-btn').exists()).toBe(true)
-    expect(wrapper.find('.login-link').exists()).toBe(false)
+    expect(wrapper.find('.logout_btn').exists()).toBe(true)
+    expect(wrapper.find('.login_link').exists()).toBe(false)
 
-    await wrapper.find('.logout-btn').trigger('click')
+    await wrapper.find('.logout_btn').trigger('click')
     await flushPromises()
     const session = useSessionStore(pinia)
     expect(session.token).toBeNull()
     expect(router.currentRoute.value.path).toBe('/login')
     // 登录页是独立页面，不再渲染导航壳
-    expect(wrapper.find('.logout-btn').exists()).toBe(false)
-    expect(wrapper.find('.login-page').exists()).toBe(true)
+    expect(wrapper.find('.logout_btn').exists()).toBe(false)
+    expect(wrapper.find('.login_page').exists()).toBe(true)
   })
 })

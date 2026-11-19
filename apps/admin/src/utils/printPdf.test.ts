@@ -2,9 +2,16 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { confirmOnAfterprint, printPdfTask, printViaIframe } from '@/utils/printPdf'
 
 /** Controllable MediaQueryList stub matching the real browser API surface. */
-function makeFakeMql() {
+interface FakeMql {
+  matches: boolean
+  addEventListener: (name: string, fn: () => void) => void
+  removeEventListener: (name: string, fn: () => void) => void
+  setMatches: (v: boolean) => void
+}
+
+function makeFakeMql(): FakeMql {
   const listeners: Array<() => void> = []
-  const mql: any = {
+  const mql: FakeMql = {
     matches: false,
     addEventListener(name: string, fn: () => void) {
       if (name === 'change') listeners.push(fn)
@@ -21,7 +28,7 @@ function makeFakeMql() {
       for (const fn of [...listeners]) fn()
     },
   }
-  return mql as { matches: boolean; setMatches: (v: boolean) => void }
+  return mql
 }
 
 const originalMatchMedia = window.matchMedia
@@ -71,15 +78,15 @@ describe('confirmOnAfterprint', () => {
   })
 
   test('a frame window without event methods still confirms via the top window', async () => {
-    const frameWin: any = { printCount: 0, print() { frameWin.printCount++ } }
-    const p = confirmOnAfterprint(frameWin, 50)
+    const frameWin = { printCount: 0, print() { frameWin.printCount++ } }
+    const p = confirmOnAfterprint(frameWin as unknown as Window, 50)
     window.dispatchEvent(new Event('afterprint'))
     expect(await p).toBe(true)
   })
 
   test('print media open→close transition confirms even without afterprint', async () => {
     const mql = makeFakeMql()
-    window.matchMedia = (() => mql) as any
+    window.matchMedia = (() => mql) as unknown as typeof window.matchMedia
     const win = makeFakeWindow()
     const p = confirmOnAfterprint(win, 50)
     mql.setMatches(true) // preview opened
@@ -94,7 +101,7 @@ describe('confirmOnAfterprint', () => {
 
   test('a close-transition without a prior open is ignored', async () => {
     const mql = makeFakeMql()
-    window.matchMedia = (() => mql) as any
+    window.matchMedia = (() => mql) as unknown as typeof window.matchMedia
     const win = makeFakeWindow()
     const p = confirmOnAfterprint(win, 20)
     mql.setMatches(false) // stale/false without an open — no signal
@@ -103,7 +110,7 @@ describe('confirmOnAfterprint', () => {
 
   test('a media transition after the timeout does not flip the result to true', async () => {
     const mql = makeFakeMql()
-    window.matchMedia = (() => mql) as any
+    window.matchMedia = (() => mql) as unknown as typeof window.matchMedia
     const win = makeFakeWindow()
     const p = confirmOnAfterprint(win, 10)
     expect(await p).toBe(false)
@@ -189,7 +196,7 @@ function makeFakeWindow(): Window & {
   fire: (name: string) => void
 } {
   const listeners: Record<string, Array<() => void>> = {}
-  const win: any = {
+  const win = {
     printCount: 0,
     print() {
       win.printCount++
@@ -207,6 +214,6 @@ function makeFakeWindow(): Window & {
     fire(name: string) {
       for (const fn of [...(listeners[name] ?? [])]) fn()
     },
-  }
+  } as unknown as Window & { printCount: number; fire: (name: string) => void }
   return win
 }

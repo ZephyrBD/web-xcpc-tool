@@ -1,0 +1,106 @@
+@use './tokens' as *;
+
+/* base reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Element Plus theme bridge — routes brand hues into EP components.
+ * --accent is set per-route by AdminLayout, so el-primary follows the
+ * section rotation (总览 purple / 认证管理 green / 打印·气球 orange / 队伍 blue /
+ * 接口 red / 帮助 purple / 设置 green — adjacent sections never share a hue).
+ * --brand-red doubles as the 接口 accent and the danger state.
+ */
+:root {
+  --el-color-primary: var(--accent);
+  /* match EP's tint/shade ladder so hover/disabled/variants follow the section accent */
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, white);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, black);
+  --el-color-success: var(--brand-green);
+  --el-color-warning: var(--brand-orange);
+  --el-color-danger: var(--brand-red);
+  --el-color-error: var(--brand-red);
+  --el-border-radius-base: 8px;
+  --el-font-family: var(--font-body);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-secondary: var(--text-muted);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-bg-color: var(--bg);
+  --el-fill-color-blank: var(--bg);
+  --el-box-shadow-light: var(--shadow-card);
+}
+
+/*
+ * Full-height pages: page roots opt in via .page_fill so they stretch to the
+ * bottom of .layout_scroll (no dead space below, no outer scrollbar when the
+ * content is short). Tables inside .table_fill_wrap grow to the leftover
+ * height and scroll internally when rows exceed it.
+ */
+.page_fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.table_fill_wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.table_fill_wrap > .el-table {
+  flex: 1;
+  min-height: 0;
+}

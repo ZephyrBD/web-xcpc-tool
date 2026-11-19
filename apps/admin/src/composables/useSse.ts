@@ -1,5 +1,5 @@
 import { onUnmounted } from 'vue'
-import { useSessionStore } from '@/stores/session'
+import { useSessionStore } from '@/store/session'
 
 export type SseHandler = (event: string, data: unknown) => void
 
